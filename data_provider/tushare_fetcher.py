@@ -16,6 +16,7 @@ TushareFetcher - 备用数据源 1 (Priority 2)
 
 import json as _json
 import logging
+import math
 import re
 import time
 from datetime import datetime, timedelta
@@ -151,6 +152,8 @@ class TushareFetcher(BaseFetcher):
     
     name = "TushareFetcher"
     priority = int(os.getenv("TUSHARE_PRIORITY", "2"))  # 默认优先级，会在 __init__ 中根据配置动态调整
+    # 声明可服务的个股资金流市场；资金流补充链（base.py）据此把它纳入兜底候选
+    capital_flow_markets = {"cn"}
 
     def __init__(self, rate_limit_per_minute: int = 80):
         """
@@ -1148,6 +1151,84 @@ class TushareFetcher(BaseFetcher):
     
 
     
+    def get_capital_flow(self, stock_code: str, top_n: int = 5) -> Dict[str, Any]:
+        """
+        通过 Tushare moneyflow 获取个股主力资金流。
+
+        口径与 AkShare/东财主链路一致：主力净流入 = (大单买入-大单卖出) + (特大单买入-特大单卖出)。
+        接口金额单位为万元，此处统一换算为元；moneyflow 在较低积分档即可访问，
+        作为主链路（东财公开接口）被限流时的稳定补充源参与资金流兜底链。
+        板块排行不在本补充源范围内（主链路健康时由 AkShare 提供）。
+        """
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "stock_flow": {},
+            "sector_rankings": {"top": [], "bottom": []},
+            "source_chain": [],
+            "errors": [],
+        }
+        if _is_us_code(stock_code) or _is_etf_code(stock_code) or _is_hk_market(stock_code):
+            return result
+        try:
+            ts_code = self._convert_stock_code(stock_code)
+        except Exception as exc:
+            result["errors"].append(f"tushare: convert code failed: {exc}")
+            return result
+
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
+        try:
+            df = self._call_api_with_rate_limit(
+                "moneyflow",
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except Exception as exc:
+            result["errors"].append(f"tushare: moneyflow failed: {exc}")
+            return result
+        if df is None or df.empty or "trade_date" not in df.columns:
+            result["errors"].append("tushare: empty moneyflow response")
+            return result
+
+        work = df.copy()
+        work["trade_date"] = work["trade_date"].astype(str)
+        work = work.sort_values("trade_date", ascending=False)
+        amount_cols = ("buy_lg_amount", "sell_lg_amount", "buy_elg_amount", "sell_elg_amount")
+
+        def _main_net(row: pd.Series) -> Optional[float]:
+            values = [row.get(col) for col in amount_cols]
+            if any(v is None or pd.isna(v) for v in values):
+                return None
+            net_wan = (float(values[0]) - float(values[1])) + (float(values[2]) - float(values[3]))
+            return net_wan * 10000.0
+
+        series: List[Tuple[str, Optional[float]]] = [
+            (str(row["trade_date"]), _main_net(row)) for _, row in work.iterrows()
+        ]
+        if not series:
+            result["errors"].append("tushare: empty moneyflow series")
+            return result
+        latest_date, latest_value = series[0]
+        if latest_value is None or not math.isfinite(latest_value):
+            result["errors"].append("tushare: latest main-force flow unavailable")
+            return result
+
+        def _window_sum(size: int) -> Optional[float]:
+            values = [v for _, v in series[:size]]
+            if len(values) < size or any(v is None for v in values):
+                return None
+            return float(sum(values))
+
+        result["stock_flow"] = {
+            "main_net_inflow": latest_value,
+            "inflow_5d": _window_sum(5),
+            "inflow_10d": _window_sum(10),
+        }
+        result["status"] = "partial"
+        result["source_chain"].append(f"tushare:moneyflow:{latest_date}")
+        return result
+
     def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
         """
         获取筹码分布数据

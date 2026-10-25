@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
+- [新功能] TushareFetcher 新增个股资金流补充源（moneyflow，主力净流入按大单+特大单净额口径、万元换算为元），东财主链路被限流时自动参与资金流兜底链。
+- [新功能] 新增 MCP 管家（mcp_server/，python -m mcp_server）：把分析服务暴露为 Streamable HTTP MCP 接口（服务启停、个股分析、大盘复盘、历史报告），Bearer 认证，已完成 Nex 网关（nex-stock 项目）接入，文档见 docs/mcp-service.md。
+- [新功能] 新增 Windows 常驻化脚本 scripts/nex_stock_service.ps1：计划任务登录自启 MCP 管家（看门狗 5 秒自恢复）+ 防火墙仅放行 ZeroTier 网段；分析服务由管家托管并支持按需拉起。
+- [新功能] 选股硬过滤新增可选字段 `board_whitelist`（按代码前缀过滤沪深主板/创业板/科创板/北交所）与 `concept_keywords`（概念题材关键词包含匹配，快照缺概念列时放行），新增 `SCREENING_EXTRA_STRATEGIES_DIR` 用户自定义选股策略目录（与内置策略合并、同名覆盖）。
 
 ## [3.33.0] - 2026-10-15
 
