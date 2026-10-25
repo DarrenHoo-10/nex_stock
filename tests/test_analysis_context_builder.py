@@ -416,6 +416,41 @@ def test_news_block_treats_blank_as_missing_and_records_pack_metadata() -> None:
     assert available.metadata["news_result_count"] == 5
 
 
+def test_news_block_marks_agent_tool_evidence_available_without_content() -> None:
+    """Agent 路径无拼装文本但证据计数 > 0：新闻已进入本次分析，不能按缺失误报。"""
+    evidence = AnalysisContextBuilder.build(
+        _artifacts(news_context=None, news_result_count=4)
+    )
+    assert evidence.blocks["news"].status == ContextFieldStatus.AVAILABLE
+    assert evidence.blocks["news"].items["content"].source == "agent_search_tool"
+    assert evidence.blocks["news"].items["content"].value is None
+    assert evidence.metadata["news_result_count"] == 4
+
+
+def test_news_block_zero_hits_without_content_stays_missing() -> None:
+    """Agent 搜过但零命中：仍按缺失披露，不虚构来源。"""
+    searched = AnalysisContextBuilder.build(
+        _artifacts(news_context=None, news_result_count=0)
+    )
+    assert searched.blocks["news"].status == ContextFieldStatus.MISSING
+    assert (
+        searched.blocks["news"].items["content"].missing_reason
+        == "news_context_missing"
+    )
+
+
+def test_news_block_unknown_count_without_content_stays_missing() -> None:
+    """计数未知（渠道不可用）：维持缺失语义，来源不能标记为 agent_search_tool。"""
+    unknown = AnalysisContextBuilder.build(
+        _artifacts(news_context=None, news_result_count=None)
+    )
+    assert unknown.blocks["news"].status == ContextFieldStatus.MISSING
+    assert (
+        unknown.blocks["news"].items["content"].missing_reason
+        == "news_context_missing"
+    )
+
+
 def test_data_quality_scores_fixed_blocks_and_limits_auxiliary_missing() -> None:
     pack = AnalysisContextBuilder.build(_artifacts())
 

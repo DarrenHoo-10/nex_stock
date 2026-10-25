@@ -421,11 +421,25 @@ def _build_fundamentals_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisC
 
 def _build_news_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBlock:
     content = (artifacts.news_context or "").strip()
+    result_count = artifacts.news_result_count
     metadata: Dict[str, Any] = {}
-    if artifacts.news_result_count is not None:
-        metadata["news_result_count"] = artifacts.news_result_count
+    if result_count is not None:
+        metadata["news_result_count"] = result_count
 
     if not content:
+        # Agent 路径：新闻由 Agent 通过搜索工具取证进入 LLM，不留拼装文本；
+        # 证据计数 > 0 即代表新闻上下文已进入本次分析，不能按缺失误报。
+        if result_count is not None and result_count > 0:
+            return AnalysisContextBlock(
+                status=ContextFieldStatus.AVAILABLE,
+                items={
+                    "content": AnalysisContextItem(
+                        status=ContextFieldStatus.AVAILABLE,
+                        source="agent_search_tool",
+                    )
+                },
+                metadata=metadata,
+            )
         return AnalysisContextBlock(
             status=ContextFieldStatus.MISSING,
             items={

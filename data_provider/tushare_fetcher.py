@@ -19,7 +19,7 @@ import logging
 import math
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional, Tuple, List, Dict, Any
 
 import pandas as pd
@@ -47,6 +47,15 @@ logger = logging.getLogger(__name__)
 _ETF_SH_PREFIXES = ('51', '52', '56', '58')
 _ETF_SZ_PREFIXES = ('15', '16', '18')
 _ETF_ALL_PREFIXES = _ETF_SH_PREFIXES + _ETF_SZ_PREFIXES
+
+
+def _to_float_or_none(value: Any) -> Optional[float]:
+    """宽容解析数值：None/NaN/非数值一律返回 None。"""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _is_etf_code(stock_code: str) -> bool:
@@ -154,6 +163,8 @@ class TushareFetcher(BaseFetcher):
     priority = int(os.getenv("TUSHARE_PRIORITY", "2"))  # 默认优先级，会在 __init__ 中根据配置动态调整
     # 声明可服务的个股资金流市场；资金流补充链（base.py）据此把它纳入兜底候选
     capital_flow_markets = {"cn"}
+    # 声明可服务的基本面捆绑市场；基本面补充链（base.py）据此把它纳入兜底候选
+    fundamental_bundle_markets = {"cn"}
 
     def __init__(self, rate_limit_per_minute: int = 80):
         """
@@ -1228,6 +1239,285 @@ class TushareFetcher(BaseFetcher):
         result["status"] = "partial"
         result["source_chain"].append(f"tushare:moneyflow:{latest_date}")
         return result
+
+    def fundamental_bundle_available(self) -> bool:
+        """基本面捆绑兜底可用性：仅要求 Token 已初始化，接口权限由运行时探测。"""
+        return self._api is not None
+
+    def get_fundamental_bundle(
+        self,
+        stock_code: str,
+        budget_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        AkShare 基本面捆绑（fundamental_adapter.get_fundamental_bundle）失败时的
+        Tushare 兜底，growth/earnings/institution 字段口径与主链路对齐。
+
+        - 三个子块独立 fail-open：单接口失败只登记错误，不拖垮整包；
+          全部零产出时返回 not_supported。
+        - budget_seconds 为剩余阶段预算：提供时到期即跳过低优先级子块（业绩预告/
+          分红/十大流通股东），None 表示无预算信息、不门控；核心财务三接口
+          （fina_indicator/income/cashflow）始终尝试。
+        - fina_indicator/income 等接口需要 2000 积分；积分不足时按接口报错
+          走 fail-open，不影响其余子块。
+        """
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "growth": {},
+            "earnings": {},
+            "institution": {},
+            "source_chain": [],
+            "errors": [],
+        }
+        if _is_etf_code(stock_code):
+            result["errors"].append("tushare: etf fundamental bundle not supported")
+            return result
+        try:
+            ts_code = self._convert_stock_code(stock_code)
+        except Exception as exc:
+            result["errors"].append(f"tushare: convert code failed: {exc}")
+            return result
+
+        deadline = (
+            time.monotonic() + max(0.0, float(budget_seconds))
+            if budget_seconds is not None
+            else None
+        )
+
+        def _optional_budget_left() -> Optional[float]:
+            return None if deadline is None else deadline - time.monotonic()
+
+        def _query(api_name: str, error_label: str, fields: str, **kwargs) -> Optional[pd.DataFrame]:
+            try:
+                df = self._call_api_with_rate_limit(api_name, fields=fields, **kwargs)
+            except Exception as exc:
+                result["errors"].append(f"tushare: {error_label} failed: {exc}")
+                return None
+            if df is None or df.empty:
+                result["errors"].append(f"tushare: {error_label} empty response")
+                return None
+            return df
+
+        def _latest_by(df: pd.DataFrame, sort_keys: Tuple[str, ...]) -> Optional[pd.Series]:
+            if df is None or df.empty:
+                return None
+            work = df
+            keys = [key for key in sort_keys if key in work.columns]
+            if keys:
+                work = work.copy()
+                for key in keys:
+                    work[key] = work[key].astype(str)
+                work = work.sort_values(keys, ascending=False)
+            return None if work.empty else work.iloc[0]
+
+        def _num(value: Any) -> Optional[float]:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if math.isfinite(parsed) else None
+
+        # 1) 财务指标：growth 主数据（营收/净利同比、ROE、毛利率）
+        fin_df = _query(
+            "fina_indicator",
+            "fina_indicator",
+            "ts_code,end_date,or_yoy,netprofit_yoy,roe,grossprofit_margin",
+            ts_code=ts_code,
+        )
+        fin_latest = _latest_by(fin_df, ("end_date",))
+        if fin_latest is not None:
+            growth_payload = {
+                "revenue_yoy": _num(fin_latest.get("or_yoy")),
+                "net_profit_yoy": _num(fin_latest.get("netprofit_yoy")),
+                "roe": _num(fin_latest.get("roe")),
+                "gross_margin": _num(fin_latest.get("grossprofit_margin")),
+            }
+            if any(v is not None for v in growth_payload.values()):
+                result["growth"] = growth_payload
+                result["source_chain"].append("growth:tushare.fina_indicator")
+
+        # 2) 利润表 + 现金流量表：财务报告绝对值（合并报表口径 report_type=1）
+        income_df = _query(
+            "income",
+            "income",
+            "ts_code,end_date,total_revenue,n_income_attr_p",
+            ts_code=ts_code,
+            report_type="1",
+        )
+        cashflow_df = _query(
+            "cashflow",
+            "cashflow",
+            "ts_code,end_date,n_cashflow_act",
+            ts_code=ts_code,
+        )
+        income_latest = _latest_by(income_df, ("end_date",))
+        cashflow_latest = _latest_by(cashflow_df, ("end_date",))
+        anchor_date_raw = ""
+        for row in (income_latest, cashflow_latest, fin_latest):
+            if row is not None:
+                anchor_date_raw = str(row.get("end_date") or "")
+                if anchor_date_raw:
+                    break
+
+        def _row_for_date(latest: Optional[pd.Series], df: Optional[pd.DataFrame]) -> Optional[pd.Series]:
+            """优先取与锚定报告期对齐的行，缺失时退回各自最新行。"""
+            if latest is None or df is None or not anchor_date_raw or "end_date" not in df.columns:
+                return latest
+            matches = df[df["end_date"].astype(str) == anchor_date_raw]
+            return latest if matches.empty else matches.iloc[0]
+
+        income_row = _row_for_date(income_latest, income_df)
+        cashflow_row = _row_for_date(cashflow_latest, cashflow_df)
+        fin_row = _row_for_date(fin_latest, fin_df)
+        if income_row is not None or cashflow_row is not None or fin_row is not None:
+            financial_report_payload = {
+                "report_date": (
+                    f"{anchor_date_raw[:4]}-{anchor_date_raw[4:6]}-{anchor_date_raw[6:8]}"
+                    if len(anchor_date_raw) >= 8 and anchor_date_raw.isdigit()
+                    else anchor_date_raw or None
+                ),
+                "revenue": _num(income_row.get("total_revenue")) if income_row is not None else None,
+                "net_profit_parent": _num(income_row.get("n_income_attr_p")) if income_row is not None else None,
+                "operating_cash_flow": _num(cashflow_row.get("n_cashflow_act")) if cashflow_row is not None else None,
+                "roe": _num(fin_row.get("roe")) if fin_row is not None else None,
+            }
+            if any(v is not None for k, v in financial_report_payload.items() if k != "report_date"):
+                result["earnings"]["financial_report"] = financial_report_payload
+                result["source_chain"].append("earnings_report:tushare.income,cashflow")
+
+        # 3) 业绩预告 / 分红 / 十大流通股东：低优先级，阶段预算耗尽时跳过
+        if _optional_budget_left() is None or _optional_budget_left() > 0:
+            forecast_df = _query(
+                "forecast",
+                "forecast",
+                "ts_code,ann_date,end_date,type,p_change_min,p_change_max,summary",
+                ts_code=ts_code,
+            )
+            forecast_latest = _latest_by(forecast_df, ("ann_date", "end_date"))
+            if forecast_latest is not None:
+                summary_parts = [str(forecast_latest.get("type") or "").strip()]
+                p_min = _num(forecast_latest.get("p_change_min"))
+                p_max = _num(forecast_latest.get("p_change_max"))
+                if p_min is not None or p_max is not None:
+                    summary_parts.append(
+                        f"净利润同比区间 {p_min if p_min is not None else '-'}%~"
+                        f"{p_max if p_max is not None else '-'}%"
+                    )
+                summary_text = "；".join(part for part in summary_parts if part)[:200]
+                if summary_text:
+                    result["earnings"]["forecast_summary"] = summary_text
+                    result["source_chain"].append("earnings_forecast:tushare")
+
+        if _optional_budget_left() is None or _optional_budget_left() > 0:
+            dividend_df = _query(
+                "dividend",
+                "dividend",
+                "ts_code,end_date,div_proc,cash_div,cash_div_tax,record_date,ex_date,pay_date",
+                ts_code=ts_code,
+            )
+            if dividend_df is not None:
+                dividend_payload = self._build_tushare_dividend_payload(dividend_df)
+                if dividend_payload:
+                    result["earnings"]["dividend"] = dividend_payload
+                    result["source_chain"].append("dividend:tushare")
+
+        if _optional_budget_left() is None or _optional_budget_left() > 0:
+            top10_df = _query(
+                "top10_floatholders",
+                "top10_floatholders",
+                "ts_code,ann_date,end_date,holder_name,hold_change",
+                ts_code=ts_code,
+            )
+            top10_latest = _latest_by(top10_df, ("end_date",)) if top10_df is not None else None
+            if top10_latest is not None:
+                holder_change = _num(top10_latest.get("hold_change"))
+                if holder_change is not None:
+                    result["institution"]["top10_holder_change"] = holder_change
+                    result["source_chain"].append("top10:tushare")
+
+        has_content = bool(result["growth"] or result["earnings"] or result["institution"])
+        result["status"] = "partial" if has_content else "not_supported"
+        return result
+
+    def _build_tushare_dividend_payload(self, dividend_df: pd.DataFrame) -> Dict[str, Any]:
+        """将 Tushare dividend 行规范化为与 AkShare 主链路一致的分红载荷（税前口径）。"""
+        now_date = datetime.now().date()
+        ttm_start_date = now_date - timedelta(days=365)
+        events: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        work = dividend_df
+        if "div_proc" in work.columns:
+            work = work[work["div_proc"].astype(str).str.contains("实施", na=False)]
+        for _, row in work.iterrows():
+            event_raw = row.get("ex_date") or row.get("record_date") or row.get("pay_date")
+            event_date = self._parse_tushare_date(event_raw)
+            if event_date is None or event_date > now_date:
+                continue
+            per_share = _to_float_or_none(row.get("cash_div"))
+            if per_share is None or per_share <= 0:
+                per_share = _to_float_or_none(row.get("cash_div_tax"))
+            if per_share is None or per_share <= 0:
+                continue
+            dedupe_key = (event_date.isoformat(), round(per_share, 6))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            events.append(
+                {
+                    "event_date": event_date.isoformat(),
+                    "ex_dividend_date": (
+                        self._parse_tushare_date(row.get("ex_date")).isoformat()
+                        if self._parse_tushare_date(row.get("ex_date")) is not None
+                        else None
+                    ),
+                    "record_date": (
+                        self._parse_tushare_date(row.get("record_date")).isoformat()
+                        if self._parse_tushare_date(row.get("record_date")) is not None
+                        else None
+                    ),
+                    "announcement_date": None,
+                    "cash_dividend_per_share": round(per_share, 6),
+                    "is_pre_tax": True,
+                }
+            )
+
+        if not events:
+            return {}
+        events.sort(key=lambda item: item.get("event_date") or "", reverse=True)
+        ttm_events = [
+            item
+            for item in events
+            if ttm_start_date
+            <= datetime.strptime(item["event_date"], "%Y-%m-%d").date()
+            <= now_date
+        ]
+        return {
+            "events": events[:5],
+            "ttm_event_count": len(ttm_events),
+            "ttm_cash_dividend_per_share": (
+                round(sum(float(item.get("cash_dividend_per_share") or 0.0) for item in ttm_events), 6)
+                if ttm_events else None
+            ),
+            "coverage": "cash_dividend_pre_tax",
+            "as_of": now_date.isoformat(),
+        }
+
+    @staticmethod
+    def _parse_tushare_date(value: Any) -> Optional[date]:
+        """解析 Tushare 返回的 YYYYMMDD / YYYY-MM-DD 文本为日期。"""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() in ("nan", "none", "nat"):
+            return None
+        compact = text.split(" ")[0].split("T")[0]
+        for fmt in ("%Y%m%d", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(compact, fmt).date()
+            except ValueError:
+                continue
+        return None
 
     def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
         """

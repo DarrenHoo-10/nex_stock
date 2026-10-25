@@ -670,5 +670,162 @@ class TestFundamentalContext(unittest.TestCase):
                 DataFetcherManager._has_meaningful_payload(sentinel)
 
 
+class _FakeBundleFetcher:
+    """实现了 get_fundamental_bundle 能力声明的模拟补充源（如 Tushare）。"""
+
+    name = "TushareFetcher"
+    priority = 2
+    fundamental_bundle_markets = {"cn"}
+
+    def __init__(self, payload=None, calls=None):
+        self._payload = payload
+        self.calls = calls if calls is not None else []
+
+    def fundamental_bundle_available(self) -> bool:
+        return True
+
+    def get_fundamental_bundle(self, stock_code, budget_seconds=None):
+        self.calls.append((stock_code, budget_seconds))
+        return self._payload
+
+
+def _fundamental_cfg() -> SimpleNamespace:
+    return SimpleNamespace(
+        enable_fundamental_pipeline=True,
+        fundamental_cache_ttl_seconds=0,
+        fundamental_stage_timeout_seconds=1.5,
+        fundamental_fetch_timeout_seconds=0.8,
+        fundamental_retry_max=1,
+    )
+
+
+class TestFundamentalBundleSupplement(unittest.TestCase):
+    """AkShare 基本面捆绑零产出时的补充数据源兜底链。"""
+
+    def setUp(self) -> None:
+        # 熔断注册表是类级全局（跨 manager 实例共享）；其他测试真实网络超时
+        # 注册的 key 会让本类走 _run_with_timeout 的补充调用快速失败，先清空隔离。
+        DataFetcherManager._fundamental_timed_out_workers.clear()
+
+    def tearDown(self) -> None:
+        DataFetcherManager._fundamental_timed_out_workers.clear()
+
+    def _run_context(self, manager: DataFetcherManager, quote_price: float = 50.0) -> dict:
+        cfg = _fundamental_cfg()
+        quote = SimpleNamespace(
+            price=quote_price,
+            pe_ratio=12.3,
+            pb_ratio=2.1,
+            total_mv=1.0e11,
+            circ_mv=7.0e10,
+            source=SimpleNamespace(value="tencent"),
+        )
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "get_realtime_quote", return_value=quote), \
+                patch(
+                    "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_fundamental_bundle",
+                    return_value=None,
+                ), \
+                patch.object(manager, "get_capital_flow_context", return_value={"status": "not_supported", "source_chain": []}), \
+                patch.object(manager, "get_dragon_tiger_context", return_value={"status": "not_supported", "source_chain": []}), \
+                patch.object(manager, "get_board_context", return_value={"status": "not_supported", "source_chain": []}):
+            return manager.get_fundamental_context("600519", budget_seconds=1.5)
+
+    def test_zero_content_bundle_falls_back_to_supplement_fetcher(self) -> None:
+        supplement_payload = {
+            "status": "partial",
+            "growth": {"revenue_yoy": 10.1, "net_profit_yoy": 8.5, "roe": 12.0},
+            "earnings": {
+                "financial_report": {
+                    "report_date": "2026-06-30",
+                    "revenue": 6.35e10,
+                    "net_profit_parent": 2.17e9,
+                    "operating_cash_flow": -4.2e9,
+                    "roe": 12.0,
+                }
+            },
+            "institution": {},
+            "source_chain": ["growth:tushare.fina_indicator"],
+            "errors": [],
+        }
+        fetcher = _FakeBundleFetcher(payload=supplement_payload)
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        ctx = self._run_context(manager)
+
+        self.assertEqual(fetcher.calls[0][0], "600519")
+        self.assertIsNotNone(fetcher.calls[0][1])
+        self.assertEqual(ctx["growth"]["status"], "ok")
+        self.assertIn(
+            "tushare.fina_indicator",
+            str(ctx["growth"]["source_chain"]),
+        )
+        self.assertEqual(ctx["earnings"]["status"], "ok")
+        self.assertEqual(ctx["status"], "partial")
+
+    def test_supplement_not_invoked_when_akshare_has_content(self) -> None:
+        fetcher = _FakeBundleFetcher(
+            payload={"status": "partial", "growth": {"revenue_yoy": 1.0}}
+        )
+        manager = DataFetcherManager(fetchers=[fetcher])
+        cfg = _fundamental_cfg()
+        quote = SimpleNamespace(
+            pe_ratio=12.3,
+            pb_ratio=2.1,
+            total_mv=1.0e11,
+            circ_mv=7.0e10,
+            source=SimpleNamespace(value="tencent"),
+        )
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "get_realtime_quote", return_value=quote), \
+                patch(
+                    "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_fundamental_bundle",
+                    return_value={
+                        "status": "partial",
+                        "growth": {"revenue_yoy": 10.1},
+                        "earnings": {},
+                        "institution": {},
+                        "source_chain": ["growth:akshare"],
+                        "errors": [],
+                    },
+                ), \
+                patch.object(manager, "get_capital_flow_context", return_value={"status": "not_supported", "source_chain": []}), \
+                patch.object(manager, "get_dragon_tiger_context", return_value={"status": "not_supported", "source_chain": []}), \
+                patch.object(manager, "get_board_context", return_value={"status": "not_supported", "source_chain": []}):
+            ctx = manager.get_fundamental_context("600519", budget_seconds=1.5)
+
+        self.assertEqual(fetcher.calls, [])
+        self.assertIn("growth:akshare", str(ctx["growth"]["source_chain"]))
+
+    def test_unavailable_supplement_fetcher_is_not_eligible(self) -> None:
+        fetcher = _FakeBundleFetcher(payload={"status": "partial", "growth": {"revenue_yoy": 1.0}})
+        fetcher.fundamental_bundle_available = lambda: False
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        ctx = self._run_context(manager)
+
+        self.assertEqual(fetcher.calls, [])
+        self.assertEqual(ctx["growth"]["status"], "failed")
+
+    def test_supplement_budget_within_stage_budget(self) -> None:
+        supplement_payload = {
+            "status": "partial",
+            "growth": {"revenue_yoy": 10.1},
+            "earnings": {},
+            "institution": {},
+            "source_chain": [],
+            "errors": [],
+        }
+        fetcher = _FakeBundleFetcher(payload=supplement_payload)
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        self._run_context(manager)
+
+        self.assertTrue(fetcher.calls)
+        _, supplement_budget = fetcher.calls[0]
+        self.assertLessEqual(supplement_budget, 1.5)
+        self.assertGreaterEqual(supplement_budget, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

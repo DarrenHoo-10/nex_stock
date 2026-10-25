@@ -4397,6 +4397,22 @@ class DataFetcherManager:
         )
 
         # growth / earnings / institution (one AkShare call)
+        # 主适配器（AkShare/东财）在存在补充数据源时只分配部分预算；东财被限流时
+        # 重试会耗尽全部预算，预留余量给实现了 get_fundamental_bundle 的补充数据源
+        # （如 Tushare），与资金流补充链的预算分配口径一致。
+        bundle_supplement_fetchers = (
+            []
+            if _is_non_cn_request(stock_code) or is_etf
+            else [
+                f for f in self._get_fetchers_snapshot()
+                if callable(getattr(f, "get_fundamental_bundle", None))
+                and "cn" in (getattr(f, "fundamental_bundle_markets", None) or set())
+                and (
+                    not callable(getattr(f, "fundamental_bundle_available", None))
+                    or f.fundamental_bundle_available()
+                )
+            ]
+        )
         if remaining_seconds <= 0:
             bundle_status = "failed"
             bundle_payload: Dict[str, Any] = {}
@@ -4404,9 +4420,14 @@ class DataFetcherManager:
             bundle_ms = 0
         else:
             bundle_timeout = min(fetch_timeout, remaining_seconds)
+            bundle_adapter_budget = (
+                bundle_timeout * 0.6
+                if bundle_timeout > 0 and bundle_supplement_fetchers
+                else bundle_timeout
+            )
             bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
                 lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
-                bundle_timeout,
+                bundle_adapter_budget,
                 "fundamental_bundle",
                 quarantine_key=("akshare", "fundamental_bundle"),
             )
@@ -4420,6 +4441,19 @@ class DataFetcherManager:
             else:
                 bundle_status = str(bundle_payload.get("status", "not_supported"))
                 bundle_errors = [bundle_err_msg] if bundle_err_msg else []
+            # 主链路零产出时，用剩余阶段预算尝试补充数据源（如 Tushare）
+            if bundle_supplement_fetchers and not self._bundle_has_content(bundle_payload):
+                supplemental, sup_cost_ms = self._supplement_fundamental_bundle_from_fetchers(
+                    stock_code,
+                    bundle_supplement_fetchers,
+                    min(fetch_timeout, remaining_seconds),
+                )
+                _consume_budget(sup_cost_ms)
+                if supplemental is not None:
+                    bundle_ms += sup_cost_ms
+                    bundle_payload = supplemental
+                    bundle_status = str(supplemental.get("status", "partial"))
+                    bundle_errors = list(bundle_errors) + list(supplemental.get("errors") or [])
 
         bundle_chain = self._normalize_source_chain(
             bundle_payload.get("source_chain", []),
@@ -4651,6 +4685,60 @@ class DataFetcherManager:
                 if isinstance(payload.get("errors"), list):
                     payload["errors"].append(f"{fetcher.name}: {sup_err}")
                 logger.warning("[资金流] %s 获取 %s 失败: %s", fetcher.name, stock_code, sup_err)
+
+    def _supplement_fundamental_bundle_from_fetchers(
+        self,
+        stock_code: str,
+        eligible_fetchers: List[Any],
+        budget_seconds: float,
+    ) -> Tuple[Optional[Dict[str, Any]], int]:
+        """AkShare 基本面捆绑零产出时，尝试实现了 get_fundamental_bundle 的补充数据源（如 Tushare）。
+
+        与 _supplement_capital_flow_from_fetchers 同一 fail-open 语义：每次补充调用
+        都通过 _run_with_timeout 受剩余阶段预算硬约束，不突破
+        FUNDAMENTAL_*_TIMEOUT_SECONDS；返回 (payload, cost_ms)，payload 为 None
+        表示没有任何补充源产出内容。
+        """
+        remaining = max(0.0, float(budget_seconds))
+        total_cost_ms = 0
+        for fetcher in eligible_fetchers:
+            if remaining <= 0:
+                break
+            getter = getattr(fetcher, "get_fundamental_bundle")
+            supplemental, sup_err, sup_cost_ms = self._run_with_timeout(
+                lambda f=getter, left=remaining: f(stock_code, budget_seconds=left),
+                remaining,
+                "fundamental_bundle_supplement",
+                quarantine_key=(fetcher.name, "fundamental_bundle"),
+            )
+            total_cost_ms += sup_cost_ms
+            remaining = max(0.0, remaining - sup_cost_ms / 1000.0)
+            if isinstance(supplemental, dict) and self._bundle_has_content(supplemental):
+                logger.info(
+                    "[基本面] %s 使用 %s 补充财务捆绑 (%dms)",
+                    stock_code,
+                    fetcher.name,
+                    sup_cost_ms,
+                )
+                return supplemental, total_cost_ms
+            if sup_err:
+                logger.warning(
+                    "[基本面] %s 补充财务捆绑失败 (%s): %s",
+                    stock_code,
+                    fetcher.name,
+                    sup_err,
+                )
+        return None, total_cost_ms
+
+    @staticmethod
+    def _bundle_has_content(bundle_payload: Any) -> bool:
+        """判断基本面捆绑是否至少产出一个子块内容（growth/earnings/institution）。"""
+        if not isinstance(bundle_payload, dict):
+            return False
+        return any(
+            DataFetcherManager._has_meaningful_payload(bundle_payload.get(key))
+            for key in ("growth", "earnings", "institution")
+        )
 
     def get_capital_flow_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
         """资金流向块（fail-open）。"""

@@ -19,6 +19,7 @@ from pathlib import Path
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -1571,21 +1572,22 @@ class StockAnalysisPipeline:
                 code, stock_name, analysis_target=analysis_target
             )
             market = "cn" if is_index else get_market_for_stock(normalize_stock_code(code))
+            agent_artifacts = self._build_agent_analysis_artifacts(
+                code=code,
+                stock_name=stock_name,
+                market=market,
+                phase=market_phase_context,
+                initial_context=initial_context,
+                fundamental_context=fundamental_context,
+                query_id=query_id,
+                base_context=analysis_context,
+                portfolio_context=portfolio_context,
+            )
             (
                 analysis_context_pack_summary,
                 analysis_context_pack_overview,
             ) = self._build_analysis_context_pack_outputs(
-                self._build_agent_analysis_artifacts(
-                    code=code,
-                    stock_name=stock_name,
-                    market=market,
-                    phase=market_phase_context,
-                    initial_context=initial_context,
-                    fundamental_context=fundamental_context,
-                    query_id=query_id,
-                    base_context=analysis_context,
-                    portfolio_context=portfolio_context,
-                ),
+                agent_artifacts,
                 report_language=report_language,
                 code=code,
                 query_id=query_id,
@@ -1636,20 +1638,41 @@ class StockAnalysisPipeline:
             # 三态计数取自 Agent 实际消费的搜索工具结果：渠道不可用为 None（未执行
             # 检索），渠道可用则从 0 起步、拿到多少算多少。
             if result is not None and news_evidence is not None:
-                result.news_result_count = news_evidence.resolve(
+                agent_news_result_count = news_evidence.resolve(
                     search_available=bool(
                         self.search_service is not None
                         and self.search_service.is_available
                     ),
                 )
+                result.news_result_count = agent_news_result_count
                 # 与普通路径同样按来源逐个登记：Agent 运行期自己搜到的条数、注入的
                 # 社交情绪、注入的本地资讯池。这条路径不经过 format_intel_report()，
                 # 但仍不传拼好的整段，避免以后有人往里加会造占位文本的来源。
                 result.news_evidence_present = news_evidence_present(
-                    result.news_result_count,
+                    agent_news_result_count,
                     social_evidence_context,
                     persisted_intelligence_context,
                 )
+                # Agent 的新闻证据经工具调用进入 LLM；把证据计数回填后重建输入包
+                # 概览，避免数据上下文面板在新闻已消费时仍按 news_context_missing
+                # 误报"未进入本次分析"。Agent 提示词里的 pre-run 摘要保持不动。
+                if agent_news_result_count is not None and agent_news_result_count > 0:
+                    try:
+                        _, refreshed_overview = self._build_analysis_context_pack_outputs(
+                            replace(agent_artifacts, news_result_count=agent_news_result_count),
+                            report_language=report_language,
+                            code=code,
+                            query_id=query_id,
+                        )
+                        if refreshed_overview is not None:
+                            analysis_context_pack_overview = refreshed_overview
+                    except Exception as exc:
+                        logger.warning(
+                            "Agent 新闻证据回填上下文包失败 %s query_id=%s: %s",
+                            code,
+                            query_id,
+                            exc,
+                        )
             record_llm_run(
                 success=bool(result and getattr(result, "success", True)),
                 model=getattr(result, "model_used", None) if result else getattr(agent_result, "model", None),
