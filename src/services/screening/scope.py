@@ -15,7 +15,7 @@ from src.services.screening.normalize import normalize_code
 class ScreeningTopic(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=80)
-    source: Literal["concept", "industry"] = "concept"
+    source: Literal["concept", "industry", "custom"] = "custom"
 
 
 class ScreeningScope(BaseModel):
@@ -31,29 +31,18 @@ class ScreeningScope(BaseModel):
 
     @model_validator(mode="after")
     def unique_topics(self):
-        keys = [(topic.source, topic.name) for topic in self.topics]
+        keys = [topic.name for topic in self.topics]
         if len(keys) != len(set(keys)):
             raise ValueError("不能重复选择相同题材")
         return self
 
 
-def apply_scope(df: pd.DataFrame, scope: ScreeningScope, memberships: list[set[str]]) -> tuple[pd.DataFrame, dict]:
-    """Intersect a trusted membership set with the snapshot before strategy filters."""
-    if len(memberships) != len(scope.topics):
-        raise ValueError("题材成分股数据不完整，无法执行筛选")
-    if not scope.boards and not scope.topics:
-        return df, {"board_count": len(df), "topic_count": len(df)}
+def apply_scope(df: pd.DataFrame, scope: ScreeningScope) -> tuple[pd.DataFrame, dict]:
+    """Apply only deterministic board constraints; themes belong to the model stage."""
+    if not scope.boards:
+        return df, {"board_count": len(df)}
     if "code" not in df.columns:
         raise ValueError("行情缺少股票代码，无法核验筛选范围")
     codes = df["code"].map(normalize_code)
-    mask = pd.Series(True, index=df.index)
-    if scope.boards:
-        mask &= codes.map(_board_of).isin(scope.boards)
-    board_count = int(mask.sum())
-    if scope.topics:
-        matches = [codes.isin(members) for members in memberships]
-        topic_mask = matches[0].copy()
-        for match in matches[1:]:
-            topic_mask = topic_mask & match if scope.topic_match == "all" else topic_mask | match
-        mask &= topic_mask
-    return df.loc[mask].copy(), {"board_count": board_count, "topic_count": int(mask.sum())}
+    mask = codes.map(_board_of).isin(scope.boards)
+    return df.loc[mask].copy(), {"board_count": int(mask.sum())}

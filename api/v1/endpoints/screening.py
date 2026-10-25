@@ -146,9 +146,12 @@ def screening_hotspots(
     top: int = Query(12, ge=1, le=50),
     refresh: bool = Query(False),
     include_details: bool = Query(False),
+    sort_by: str = Query("heat", pattern="^(heat|limit_up_count)$"),
     config: Config = Depends(get_config_dep),
 ) -> Dict[str, Any]:
     refresh_value = refresh if isinstance(refresh, bool) else bool(getattr(refresh, "default", False))
+    if sort_by == "limit_up_count":
+        return _service(config).limit_up_hotspots(top=top, refresh=refresh_value)
     include_details_value = (
         include_details
         if isinstance(include_details, bool)

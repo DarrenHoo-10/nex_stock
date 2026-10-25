@@ -84,6 +84,8 @@ DSA_SCREENING_HOTSPOT_CONNECTIVITY_ERROR_MARKERS = (
 )
 _DSA_FETCHER_MANAGER_LOCK = threading.RLock()
 _DSA_FETCHER_MANAGER: Any = None
+_LIMIT_UP_RECOMMENDATIONS_LOCK = threading.Lock()
+_LIMIT_UP_RECOMMENDATIONS_LAST_ATTEMPT: float = 0.0
 _FUNDAMENTAL_BLOCKS = ("valuation", "growth", "earnings", "institution", "capital_flow", "boards")
 _SCREENING_LITELLM_COMPLETION_ROUTES: ContextVar[Optional[Tuple[Dict[str, Any], ...]]] = ContextVar(
     "screening_litellm_completion_routes",
@@ -968,6 +970,80 @@ class ScreeningService:
             )
         return self.db_manager
 
+    def limit_up_hotspots(self, *, top: int = 12, refresh: bool = False) -> Dict[str, Any]:
+        """Cached recommendations from one dated pool, with offline theme mappings.
+
+        Pool membership is supplied by Eastmoney, not guessed from 9.8% changes
+        (which would misclassify STAR/ChiNext, ST and unrestricted listings).
+        """
+        _ensure_screening_enabled(self.config)
+        from src.services.screening.recommendations import aggregate_limit_up_topics
+        from src.services.screening.industry import (
+            load_industry_map, _akshare_board_cache_path, _read_akshare_board_cache,
+        )
+        from src.core.trading_calendar import get_effective_trading_date
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
+        import akshare as ak
+
+        global _LIMIT_UP_RECOMMENDATIONS_LAST_ATTEMPT
+        path = _resolve_screening_data_dir() / "hotspot_recommendations.json"
+        with _LIMIT_UP_RECOMMENDATIONS_LOCK:
+            cached = None
+            try:
+                candidate = json.loads(path.read_text(encoding="utf-8"))
+                if candidate.get("sort_by") == "limit_up_count" and isinstance(candidate.get("hotspots"), list):
+                    cached = candidate
+            except (OSError, ValueError, AttributeError):
+                pass
+            payload = cached or {"enabled": True, "hotspots": [], "source_errors": [], "sort_by": "limit_up_count"}
+            payload = {**payload, "cache_used": bool(cached)}
+            if refresh and time.monotonic() - _LIMIT_UP_RECOMMENDATIONS_LAST_ATTEMPT >= 30:
+                _LIMIT_UP_RECOMMENDATIONS_LAST_ATTEMPT = time.monotonic()
+                try:
+                    trade_date = get_effective_trading_date("cn").strftime("%Y%m%d")
+                    frame = _akshare_call_with_timeout(
+                        ak.stock_zt_pool_em, date=trade_date,
+                        timeout=DSA_SCREENING_HOTSPOT_CALL_TIMEOUT_SECONDS,
+                        call_name="screening.limit_up_recommendations",
+                    )
+                    if frame is None or frame.empty:
+                        raise ValueError("涨停池暂无数据")
+                    with _screening_runtime_env(self.config):
+                        runtime = ScreeningPipelineConfig.from_env()
+                    mapping: dict = {}
+                    notes = []
+                    for map_file in runtime.industry_map_files:
+                        try:
+                            mapping.update(load_industry_map(map_file))
+                        except (OSError, ValueError):
+                            notes.append("部分本地题材映射不可用，概念统计可能不完整。")
+                    if runtime.industry_provider_cache_dir:
+                        provider_mapping, _ = _read_akshare_board_cache(
+                            _akshare_board_cache_path(runtime.industry_provider_cache_dir, max_boards=runtime.industry_provider_max_boards),
+                            max_boards=runtime.industry_provider_max_boards,
+                            ttl_seconds=runtime.industry_provider_cache_ttl_hours * 3600,
+                        )
+                        for code, value in (provider_mapping or {}).items():
+                            mapping.setdefault(code, value)
+                    rows = aggregate_limit_up_topics(frame, trade_date=trade_date, mapping=mapping)
+                    if not any(row["source"] == "concept" for row in rows):
+                        notes.append("暂无可用概念映射，当前仅按涨停池所属行业推荐；仍可自定义任何题材。")
+                    payload = {"enabled": True, "hotspots": rows, "sort_by": "limit_up_count",
+                               "provider": "eastmoney", "cached_at": _utc_now_iso(), "cache_used": False,
+                               "source_errors": notes, "trade_date": trade_date}
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    temp = path.with_suffix(".tmp")
+                    temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                    temp.replace(path)
+                except Exception as exc:
+                    payload = {**payload, "fallback_used": bool(cached), "stale": bool(cached),
+                               "source_errors": [*payload.get("source_errors", []),
+                                                 f"涨停统计刷新失败（{type(exc).__name__}），请稍后手动重试。"]}
+            elif refresh:
+                payload = {**payload, "source_errors": [*payload.get("source_errors", []), "刷新间隔至少 30 秒，请稍后再试。"]}
+            rows = sorted(payload["hotspots"], key=lambda row: -int(row["limit_up_count"]))[:max(1, min(top, 50))]
+            return {**payload, "hotspots": rows, "hotspot_count": len(rows)}
+
     def hotspots(
         self,
         *,
@@ -1229,52 +1305,6 @@ class ScreeningService:
         matches.sort(key=lambda item: (item["name"].casefold() != query, item["name"], item["source"]))
         return {"items": matches[:50], "warnings": errors}
 
-    def _resolve_scope(self, scope: ScreeningScope) -> tuple[list[set[str]], list[dict]]:
-        provider = DsaEastMoneyHotspotProvider() if scope.topics else None
-        memberships, evidence = [], []
-
-        def member_codes(frame) -> set[str]:
-            if frame is None or frame.empty:
-                raise ValueError("未取得可核验的成分股名单")
-            column = next((key for key in ("代码", "code", "symbol") if key in frame.columns), None)
-            if column is None:
-                raise ValueError("成分股名单缺少股票代码")
-            codes = {normalize_code(value) for value in frame[column]}
-            codes = {code for code in codes if _board_of(code)}
-            if not codes:
-                raise ValueError("成分股名单没有有效 A 股代码")
-            return codes
-
-        for topic in scope.topics:
-            try:
-                catalog = provider.screening_topic_catalog(topic.source)
-                if not any(item["name"] == topic.name for item in catalog):
-                    raise ValueError("题材不在当前目录中，请重新搜索并选择")
-                # Deliberately exclude detail previews, fuzzy matches and leader-stock fallbacks.
-                provider_name = "eastmoney"
-                coverage = "provider_returned"
-                try:
-                    with provider._source_call_budget():
-                        frame = provider._fetch_eastmoney_constituents(topic.name, source=topic.source)
-                    codes = member_codes(frame)
-                except Exception:
-                    if topic.source != "concept":
-                        raise
-                    with provider._source_call_budget():
-                        frame = provider._fetch_ths_constituents(topic.name, exact=True)
-                    codes = member_codes(frame)
-                    provider_name = "ths"
-                    coverage = "partial"
-            except Exception as exc:
-                raise HTTPException(424, detail={
-                    "error": "screening_topic_membership_unavailable",
-                    "message": f"无法核验题材“{topic.name}”的成分股，请重试或移除此题材；筛选范围未扩大。",
-                }) from exc
-            memberships.append(codes)
-            evidence.append({**topic.model_dump(), "provider": provider_name, "retrieved_at": datetime.now(timezone.utc).isoformat(),
-                             "member_count": len(codes), "coverage": coverage, "stale": False})
-        return memberships, evidence
-
     def screen(
         self,
         *,
@@ -1294,7 +1324,9 @@ class ScreeningService:
         if market != "cn" and (scope.boards or scope.topics):
             raise HTTPException(422, detail={"error": "screening_scope_market", "message": "交易板块和题材筛选仅支持 A 股"})
         _emit_screening_progress(progress_callback, 22, "正在核验选股范围")
-        memberships, topic_evidence = self._resolve_scope(scope)
+        # Themes are free text, evaluated by the model after quantitative filtering.
+        # No catalog lookup or constituent request belongs on this execution path.
+        topic_evidence = []
         candidate_context_cache: Dict[str, Dict[str, Any]] = {}
         try:
             raw = _call_screening_screen(
@@ -1306,7 +1338,6 @@ class ScreeningService:
                 progress_callback=progress_callback,
                 candidate_context_cache=candidate_context_cache,
                 scope=scope,
-                topic_memberships=memberships,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -1356,17 +1387,13 @@ class ScreeningService:
         for candidate in selected:
             code = normalize_code(candidate.get("code"))
             candidate["board"] = _board_of(code) if market == "cn" else None
-            candidate["matched_topics"] = [topic.model_dump() for topic, members in zip(scope.topics, memberships) if code in members]
         warnings = _collect_screening_warning_messages(raw_data)
-        warnings.extend(
-            f"题材“{item['name']}”使用同花顺当前页的 {item['member_count']} 只已核验成分股，覆盖不完整，可能遗漏其他符合条件的股票。"
-            for item in topic_evidence if item["coverage"] == "partial"
-        )
         response = {
             "enabled": True,
             "scope": scope.model_dump(),
             "scope_counts": raw_data.get("scope_counts") or {},
             "topic_evidence": topic_evidence,
+            "topic_filter_mode": "model" if scope.topics else "none",
             "max_results": max_results,
             "created_at": raw_data.get("created_at") or datetime.now(timezone.utc).isoformat(),
             "candidates": selected,
@@ -1840,7 +1867,6 @@ def _call_screening_screen(
     config: Config,
     *,
     scope: ScreeningScope | None = None,
-    topic_memberships: list[set[str]] | None = None,
     selection_seed: str = "",
     progress_callback: Callable[[int, str], None] | None = None,
     candidate_context_cache: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -1866,7 +1892,6 @@ def _call_screening_screen(
             use_llm=True,
             selection_seed=selection_seed,
             scope=scope,
-            topic_memberships=topic_memberships,
             context=pipeline_context,
             config=pipeline_config,
             progress_callback=progress_callback,
@@ -4080,6 +4105,8 @@ def _normalize_candidate(
         "llm_confidence": _first_present(item, source, "llm_confidence"),
         "llm_sector": item.get("llm_sector") or source.get("llm_sector") or "",
         "llm_theme": item.get("llm_theme") or source.get("llm_theme") or "",
+        "matched_topics": item.get("matched_topics") or source.get("matched_topics") or [],
+        "topic_reason": item.get("topic_reason") or source.get("topic_reason") or "",
         "llm_tags": item.get("llm_tags") or source.get("llm_tags") or [],
         "llm_thesis": item.get("llm_thesis") or source.get("llm_thesis") or "",
         "llm_catalysts": item.get("llm_catalysts") or source.get("llm_catalysts") or [],

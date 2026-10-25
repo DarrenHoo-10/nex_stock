@@ -25,6 +25,7 @@ export type ScreeningStatus = {
 export type ScreeningCandidate = {
   board?: string;
   matchedTopics?: ScreeningTopic[];
+  topicReason?: string;
   rank: number;
   code: string;
   name: string;
@@ -125,6 +126,9 @@ export type ScreeningStrategiesResponse = {
 };
 
 export type ScreeningHotspot = {
+  limitUpCount?: number | null;
+  tradeDate?: string;
+  countCoverage?: string;
   topic: string;
   name?: string;
   source?: string;
@@ -219,7 +223,7 @@ export type ScreeningHotspotsResponse = {
   details?: Record<string, ScreeningHotspotDetail>;
 };
 
-export type ScreeningTopic = { name: string; source: 'concept' | 'industry' };
+export type ScreeningTopic = { name: string; source: 'concept' | 'industry' | 'custom' };
 export type ScreeningScope = {
   boards: string[];
   topics: ScreeningTopic[];
@@ -229,7 +233,8 @@ export type ScreeningRequest = { market: string; strategy: string; maxResults: n
 
 export type ScreeningScreenResponse = {
   scope?: ScreeningScope;
-  scopeCounts?: { boardCount: number; topicCount: number };
+  scopeCounts?: { boardCount: number; topicCount?: number; modelReviewedCount?: number };
+  topicFilterMode?: string;
   topicEvidence?: (ScreeningTopic & { provider: string; retrievedAt: string; memberCount: number; coverage: string })[];
   maxResults?: number;
   createdAt?: string;
@@ -447,13 +452,14 @@ export const screeningApi = {
     return toCamelCase<ScreeningStrategiesResponse>(response.data);
   },
 
-  async getHotspots(payload: { provider?: string; top?: number; refresh?: boolean; includeDetails?: boolean } = {}): Promise<ScreeningHotspotsResponse> {
+  async getHotspots(payload: { provider?: string; top?: number; refresh?: boolean; includeDetails?: boolean; sortBy?: 'limit_up_count' } = {}): Promise<ScreeningHotspotsResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/screening/hotspots', {
       params: {
         provider: payload.provider || 'akshare',
         top: payload.top ?? 12,
         refresh: payload.refresh ?? false,
         include_details: payload.includeDetails ?? false,
+        ...(payload.sortBy ? { sort_by: payload.sortBy } : {}),
       },
       timeout: SCREENING_REQUEST_TIMEOUT_MS,
     });

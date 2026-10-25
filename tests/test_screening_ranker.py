@@ -13,6 +13,27 @@ import pytest
 from src.llm.generation_params import clear_litellm_generation_param_recovery_cache
 from src.services.screening.models import Pick
 from src.services.screening.ranker import _RANKING_SYSTEM_INSTRUCTIONS, _call_llm, rank_candidates_with_metadata
+from src.services.screening.scope import ScreeningScope
+
+
+@pytest.mark.parametrize("verdict", [
+    {"matched_topics": ["未知题材"], "topic_reason": "业务相关", "llm_score": 90},
+    {"matched_topics": "机器人", "topic_reason": "业务相关", "llm_score": 90},
+    {"matched_topics": ["机器人"], "topic_reason": "", "llm_score": 90},
+    {"matched_topics": ["机器人"], "topic_reason": "业务相关"},
+])
+def test_theme_verdict_must_be_complete_and_use_requested_names(monkeypatch, verdict):
+    candidate = Pick(rank=1, code="600001", name="Fixture", screen_score=90, final_score=90)
+    monkeypatch.setattr("src.services.screening.ranker._call_llm", lambda *a, **k: json.dumps({
+        "ranked": [{"code": candidate.code, **verdict}],
+    }))
+    result = rank_candidates_with_metadata(
+        [candidate], "", "fixture", "fixture", max_retries=0,
+        topic_scope=ScreeningScope(topics=[{"name": "机器人"}]),
+    )
+    assert not result.ranked
+    assert result.picks == []
+    assert candidate.matched_topics == []
 
 
 def _response(content: str = "ok") -> SimpleNamespace:

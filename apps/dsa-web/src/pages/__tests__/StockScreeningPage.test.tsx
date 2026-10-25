@@ -299,16 +299,16 @@ describe('StockScreeningPage', () => {
     render(<StockScreeningPage />);
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
-    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false }));
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false, sortBy: 'limit_up_count' }));
     expect(getHotspotDetail).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
     fireEvent.click(screen.getByRole('button', { name: /刷新热点题材/ }));
 
-    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: true }));
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: true, sortBy: 'limit_up_count' }));
     fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
     await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledWith({ topic: 'AI算力', provider: 'akshare', refresh: false }));
     await waitFor(() => expect(screen.getAllByText('AI算力').length).toBeGreaterThan(0));
-    expect(screen.getByText('强势领先')).toBeInTheDocument();
+    expect(screen.getByText('点击加入筛选')).toBeInTheDocument();
     expect(screen.getAllByText(/中际旭创、工业富联/).length).toBeGreaterThan(0);
     expect(screen.getByText(/覆盖 8 股/)).toBeInTheDocument();
     expect(await screen.findByText('发酵时间线')).toBeInTheDocument();
@@ -553,7 +553,7 @@ describe('StockScreeningPage', () => {
     render(<StockScreeningPage />);
 
     await waitFor(() => expect(getHotspots).toHaveBeenCalledTimes(1));
-    expect(screen.queryByText('暂无热点缓存')).not.toBeInTheDocument();
+    expect(await screen.findByText('暂无热点缓存')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
     expect(await screen.findByText('暂无热点缓存')).toBeInTheDocument();
     expect(screen.queryByText(/No cached Screening hotspot snapshot/)).not.toBeInTheDocument();
@@ -608,7 +608,7 @@ describe('StockScreeningPage', () => {
 
     render(<StockScreeningPage />);
 
-    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false }));
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false, sortBy: 'limit_up_count' }));
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
     fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
 
@@ -645,7 +645,7 @@ describe('StockScreeningPage', () => {
 
     render(<StockScreeningPage />);
 
-    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false }));
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false, sortBy: 'limit_up_count' }));
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
     fireEvent.click(await screen.findByRole('button', { name: /^查看题材 Moly/ }));
 
@@ -684,7 +684,7 @@ describe('StockScreeningPage', () => {
     render(<StockScreeningPage />);
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
-    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false }));
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false, sortBy: 'limit_up_count' }));
     expect(getHotspotDetail).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
     fireEvent.click(screen.getByRole('button', { name: /^查看题材 AI算力/ }));
@@ -936,7 +936,7 @@ describe('StockScreeningPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /刷新热点题材/ }));
 
-    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: true }));
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: true, sortBy: 'limit_up_count' }));
     await waitFor(() => expect(getHotspotDetail).toHaveBeenLastCalledWith({
       topic: 'AI算力',
       provider: 'akshare',
@@ -979,14 +979,14 @@ describe('StockScreeningPage', () => {
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    expect(await screen.findByText('强势领先')).toBeInTheDocument();
+    expect(await screen.findByText('点击加入筛选')).toBeInTheDocument();
     expect(screen.getByText(/中际旭创、工业富联/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /刷新热点题材/ }));
 
-    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: true }));
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: true, sortBy: 'limit_up_count' }));
     expect(await screen.findByText(/manual refresh failed/)).toBeInTheDocument();
-    expect(screen.getByText('强势领先')).toBeInTheDocument();
+    expect(screen.getByText('点击加入筛选')).toBeInTheDocument();
     expect(screen.getByText(/中际旭创、工业富联/)).toBeInTheDocument();
     expect(screen.queryByText(/点击刷新后会拉取热点概念/)).not.toBeInTheDocument();
   });

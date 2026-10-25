@@ -172,6 +172,8 @@ class Pick:
     llm_confidence: float | None = None
     llm_sector: str = ""
     llm_theme: str = ""
+    matched_topics: list[dict[str, str]] = field(default_factory=list)
+    topic_reason: str = ""
     llm_tags: list[str] = field(default_factory=list)
     llm_catalysts: list[str] = field(default_factory=list)
     llm_risks: list[str] = field(default_factory=list)

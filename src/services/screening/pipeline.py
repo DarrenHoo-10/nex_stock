@@ -72,7 +72,6 @@ def screen(
     deep_analysis: bool = False,
     deep_analysis_max_picks: int | None = None,
     scope: ScreeningScope | None = None,
-    topic_memberships: list[set[str]] | None = None,
     selection_seed: str = "",
     context: dict[str, object] | None = None,
     config: Config | None = None,
@@ -202,7 +201,7 @@ def screen(
             )
 
     snapshot_df, scope_counts = apply_scope(
-        snapshot_df, scope or ScreeningScope(), topic_memberships or [],
+        snapshot_df, scope or ScreeningScope(),
     )
 
     # 3. L1 hard filter. If a strategy needs daily features, first apply only
@@ -447,6 +446,7 @@ def screen(
             timeout_sec=config.llm_timeout_sec,
             max_tokens=config.llm_max_tokens,
             degradation=llm_prompt_degradation,
+            **({"topic_scope": scope} if scope and scope.topics else {}),
         )
         degradation.extend(llm_prompt_degradation)
         picks = llm_result.picks
@@ -460,17 +460,24 @@ def screen(
         llm_failure_reason = getattr(llm_result, "failure_reason", "")
         llm_ranked = llm_result.ranked
         if not llm_ranked:
+            if scope and scope.topics:
+                raise RuntimeError("模型未能完成题材判断，请稍后重试；未返回未核验的候选股票")
             picks = llm_fallback_picks
             degradation.append("LLM ranking failed: fell back to screen_score")
             for i, p in enumerate(picks):
                 p.rank = i + 1
                 p.final_score = p.screen_score
     else:
+        if scope and scope.topics:
+            raise ValueError("题材筛选需要启用并配置模型，用于候选股票的题材判断和排序")
         if use_llm and not config.has_llm_config():
             degradation.append("LLM ranking skipped: no LLM config")
         for i, p in enumerate(picks):
             p.rank = i + 1
             p.final_score = p.screen_score
+
+    scope_counts.update({"model_reviewed_count": len(df_top) if llm_ranked else 0,
+                         "topic_count": len(picks)})
 
     # 8. Independent risk overlay
     if config.risk_enabled:

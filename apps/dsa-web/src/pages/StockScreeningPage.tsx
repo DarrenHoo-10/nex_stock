@@ -43,7 +43,7 @@ import { formatParsedApiError, getParsedApiError, toApiErrorMessage, type Parsed
 import { AppPage, Button, InlineAlert, Select } from '../components/common';
 
 import { ScopeControls } from '../components/screening/ScopeControls';
-import { BOARD_LABELS, emptyScope, parseScope, scopeLabel, sameTopic } from '../components/screening/scope';
+import { BOARD_LABELS, emptyScope, parseScope, scopeLabel } from '../components/screening/scope';
 import type { ScreeningScope } from '../api/screening';
 
 const SCOPE_STORAGE_KEY = 'dsa.screening.scope.v1';
@@ -801,18 +801,6 @@ const formatHotspotUpdatedAt = (value: string | null) => {
   });
 };
 
-const getHotspotStrength = (item: ScreeningHotspot, index: number) => {
-  const heat = Number(item.heatScore ?? 0);
-  const changePct = Number(item.changePct ?? 0);
-  if (index === 0 || heat >= 90 || changePct >= 8) {
-    return { label: '强势领先', className: 'bg-red-500/10 text-red-500' };
-  }
-  if (heat >= 80 || changePct >= 5) {
-    return { label: '强势', className: 'bg-blue-500/10 text-blue-500' };
-  }
-  return { label: '较强', className: 'bg-cyan/10 text-cyan' };
-};
-
 const HOTSPOT_ICON_RULES: Array<{
   pattern: RegExp;
   icon: React.ComponentType<{ className?: string }>;
@@ -837,17 +825,6 @@ const getHotspotIcon = (topic: string) => {
   return match || { icon: Activity, className: 'bg-cyan/10 text-cyan' };
 };
 
-const MiniSparkline: React.FC<{ score?: number | null; selected?: boolean }> = ({ score, selected }) => {
-  const normalizedScore = Number.isFinite(Number(score)) ? Math.max(0, Math.min(100, Number(score))) : 65;
-  const lift = Math.max(0, Math.min(16, normalizedScore / 7));
-  const path = `M2 35 C12 ${32 - lift / 4}, 16 ${34 - lift / 2}, 24 ${28 - lift / 3} S38 ${29 - lift}, 46 ${23 - lift / 2} S62 ${24 - lift}, 72 ${16 - lift / 3} S86 ${15 - lift}, 94 ${7}`;
-  return (
-    <svg className="h-8 w-20" viewBox="0 0 96 40" aria-hidden="true">
-      <path d={`${path} L94 40 L2 40 Z`} fill={selected ? 'rgba(249,115,22,0.14)' : 'rgba(59,130,246,0.12)'} />
-      <path d={path} fill="none" stroke={selected ? '#f97316' : '#3b82f6'} strokeLinecap="round" strokeWidth="2" />
-    </svg>
-  );
-};
 
 const StockScreeningPage: React.FC = () => {
   const navigate = useNavigate();
@@ -859,7 +836,6 @@ const StockScreeningPage: React.FC = () => {
   const [available, setAvailable] = useState(false);
   const [scope, setScope] = useState<ScreeningScope>(() => restoredTask?.scope || readScope());
   const [topicQuery, setTopicQuery] = useState('');
-  const [addingHotspot, setAddingHotspot] = useState(false);
   useEffect(() => {
     try { window.localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify(scope)); } catch { /* Storage is optional. */ }
   }, [scope]);
@@ -1099,8 +1075,8 @@ const StockScreeningPage: React.FC = () => {
     setLoadingHotspots(true);
     setHotspotError('');
     try {
-      const result = await screeningApi.getHotspots({ provider: 'akshare', top: 12, refresh });
-      const nextHotspots = result.hotspots || [];
+      const result = await screeningApi.getHotspots({ provider: 'akshare', top: 12, refresh, sortBy: 'limit_up_count' });
+      const nextHotspots = [...(result.hotspots || [])].sort((a, b) => (b.limitUpCount ?? -1) - (a.limitUpCount ?? -1));
       const nextDetails = stripHotspotSearchAugmentationByTopic(result.details || {});
       hotspotDetailsByTopicRef.current = {
         ...hotspotDetailsByTopicRef.current,
@@ -1125,6 +1101,7 @@ const StockScreeningPage: React.FC = () => {
         // so explicitly bypass the detail cache for the retained topic.
         await loadHotspotDetail(nextTopic, { refresh: true });
       }
+      if (nextHotspots.length > 0 && result.sourceErrors?.length) setHotspotError(result.sourceErrors.join(' '));
       if (nextHotspots.length === 0) {
         setHotspotError(formatHotspotEmptyMessage(result));
       }
@@ -1430,28 +1407,10 @@ const StockScreeningPage: React.FC = () => {
   const handleMarketChange = (nextMarket: string) => setMarket(nextMarket);
   const handleMaxResultsChange = (nextMaxResults: number) => setMaxResults(nextMaxResults);
 
-  const handleHotspotFilter = async (name: string) => {
-    if (scope.topics.some(topic => topic.name === name)) {
-      setScope(current => ({ ...current, topics: current.topics.filter(topic => topic.name !== name) }));
-      return;
-    }
-    const historyContext = historyRunRequestIdRef.current;
-    setAddingHotspot(true);
-    setError('');
-    try {
-      const data = await screeningApi.searchTopics(name);
-      if (historyContext !== historyRunRequestIdRef.current) return;
-      const exact = data.items.filter(topic => topic.name === name);
-      if (exact.length === 1 && !data.warnings.length) {
-        setScope(current => current.topics.length >= 5 || current.topics.some(topic => sameTopic(topic, exact[0]))
-          ? current : { ...current, topics: [...current.topics, exact[0]] });
-      } else {
-        setTopicQuery(name);
-        setError('请在顶部题材搜索结果中选择对应的标准题材。');
-      }
-    } catch (err) {
-      setError(toApiErrorMessage(err, '题材搜索失败，请重试。'));
-    } finally { setAddingHotspot(false); }
+  const handleHotspotFilter = (name: string) => {
+    if (loading || !isScreeningEnabled) return;
+    setScope(current => current.topics.length >= 5 || current.topics.some(topic => topic.name === name)
+      ? current : { ...current, topics: [...current.topics, { name, source: 'custom' }] });
   };
 
   const handleSubmit = async () => {
@@ -1544,111 +1503,13 @@ const StockScreeningPage: React.FC = () => {
 
       {error ? <InlineAlert variant="danger" title="调用失败" message={error} /> : null}
 
-      <section className="rounded-2xl border border-cyan/35 bg-card/95 p-4 shadow-soft-card">
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            <SlidersHorizontal className="h-4 w-4 text-cyan" />
-            运行选股
-          </div>
-          <span className="rounded-full border border-cyan/30 bg-cyan/10 px-3 py-1 text-xs font-semibold text-cyan">
-            {selectedStrategyTag}
-          </span>
-        </div>
-
-        <ScopeControls value={scope} onChange={setScope} query={topicQuery} onQueryChange={setTopicQuery} disabled={loading || addingHotspot || !isScreeningEnabled} />
-        <p className="mb-4 text-sm text-secondary-text">本次范围：{scopeLabel(scope)} · {displayedStrategy}</p>
-        <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr_180px_auto] lg:items-end">
-          <label className="space-y-2 text-xs font-medium text-secondary-text">
-            市场
-            <select
-              className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
-              value={market}
-              disabled={loading}
-              onChange={(event) => handleMarketChange(event.target.value)}
-            >
-              {MARKETS.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div className="space-y-2 text-xs font-medium text-secondary-text">
-            <label htmlFor="screening-strategy">策略</label>
-            <Select
-              id="screening-strategy"
-              value={selectedStrategy ? strategy : CUSTOM_STRATEGY_OPTION_VALUE}
-              disabled={loading || loadingStrategies}
-              placeholder=""
-              options={[
-                ...strategies.map((item) => ({
-                  value: item.id,
-                  label: item.name || item.title || item.id,
-                })),
-                { value: CUSTOM_STRATEGY_OPTION_VALUE, label: '自定义策略…' },
-              ]}
-              onChange={(value) =>
-                handleStrategyChange(
-                  value === CUSTOM_STRATEGY_OPTION_VALUE ? '' : value,
-                )
-              }
-            />
-          </div>
-
-          {!selectedStrategy && !loadingStrategies ? (
-            <label className="space-y-2 text-xs font-medium text-secondary-text lg:col-start-2">
-              自定义策略 ID
-              <input
-                aria-label="自定义策略 ID"
-                className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
-                value={strategy}
-                disabled={loading}
-                placeholder="输入策略 ID"
-                onChange={(event) => handleStrategyChange(event.target.value)}
-              />
-            </label>
-          ) : null}
-
-          <label className="space-y-2 text-xs font-medium text-secondary-text">
-            返回数量
-            <input
-              className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
-              type="number"
-              min={1}
-              max={100}
-              value={maxResults}
-              disabled={loading}
-              onChange={(event) => handleMaxResultsChange(Number(event.target.value))}
-            />
-          </label>
-
-          <Button
-            className="h-11 min-w-40"
-            isLoading={loading}
-            loadingText="筛选中..."
-            disabled={!isScreeningEnabled || loading || addingHotspot || !strategy.trim() || !Number.isInteger(maxResults) || maxResults < 1 || maxResults > 100}
-            onClick={() => void handleSubmit()}
-          >
-            <Play className="h-4 w-4" />
-            运行选股
-          </Button>
-        </div>
-
-        <div className="mt-3 rounded-xl border border-border/75 bg-surface/55 px-3 py-2 text-xs leading-5 text-secondary-text">
-          {strategyLoadError
-            ? strategyLoadError
-            : selectedStrategy?.description || '策略会先执行硬过滤和因子评分，再进行风险与组合约束。'}
-        </div>
-      </section>
-
       <section className="rounded-2xl border border-border/80 bg-card/95 p-4 shadow-soft-card">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-3">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-orange-500/10 text-orange-500 shadow-[0_10px_30px_rgba(249,115,22,0.16)]">
               <Flame className="h-5 w-5" />
             </span>
-            <h2 className="text-lg font-bold tracking-normal text-foreground">热点题材</h2>
+            <h2 className="text-lg font-bold tracking-normal text-foreground">热门题材推荐</h2>
           </div>
           <div className="flex flex-col items-start gap-2 lg:items-end">
             <div className="flex flex-wrap items-center gap-2">
@@ -1682,15 +1543,17 @@ const StockScreeningPage: React.FC = () => {
           </div>
         </div>
 
+        <p className="mb-3 text-xs text-secondary-text">按涨停股票数推荐，点击即可加入筛选。统计以来源涨停池及可用题材映射为限，非全市场完整覆盖。</p>
         {!hotspotsExpanded && hotspots.length > 0 && <div className="flex flex-wrap gap-2">
           {hotspots.slice(0, 4).map(item => <button key={item.topic} type="button"
             className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground hover:border-cyan"
-            onClick={() => { setHotspotsExpanded(true); handleHotspotSelect(item.topic); }}>
-            {item.name || item.topic} <span className="ml-2 text-orange-500">{formatNumber(item.heatScore, 0)}</span>
+            disabled={loading || !isScreeningEnabled || scope.topics.length >= 5}
+            onClick={() => handleHotspotFilter(item.topic)}>
+            {item.name || item.topic} <span className="ml-2 text-orange-500">{item.limitUpCount == null ? '待统计' : `${item.limitUpCount} 只涨停`}</span>
           </button>)}
         </div>}
 
-        {hotspotsExpanded && hotspotError ? (
+        {hotspotError ? (
           <p className="mb-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
             {hotspotError}
           </p>
@@ -1703,8 +1566,8 @@ const StockScreeningPage: React.FC = () => {
         ) : (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {hotspots.map((item, index) => {
-              const selected = selectedHotspotTopic === item.topic;
-              const strength = getHotspotStrength(item, index);
+              const selected = scope.topics.some(topic => topic.name === item.topic);
+              const strength = { label: selected ? '已加入筛选' : '点击加入筛选', className: 'bg-cyan/10 text-cyan' };
               const iconMeta = getHotspotIcon(item.name || item.topic);
               const Icon = iconMeta.icon;
               return (
@@ -1716,8 +1579,10 @@ const StockScreeningPage: React.FC = () => {
                     : 'border-border/80 bg-card hover:-translate-y-0.5 hover:border-orange-300/70 hover:shadow-soft-card'
                 }`}
                 type="button"
-                aria-label={`查看题材 ${item.name || item.topic}`}
-                onClick={() => handleHotspotSelect(item.topic)}
+                aria-label={`加入筛选 ${item.name || item.topic}`}
+                aria-pressed={selected}
+                disabled={loading || !isScreeningEnabled || (!selected && scope.topics.length >= 5)}
+                onClick={() => handleHotspotFilter(item.topic)}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-start gap-3">
@@ -1738,26 +1603,20 @@ const StockScreeningPage: React.FC = () => {
                       </span>
                     </div>
                   </div>
-                  <span className="shrink-0 text-2xl font-black leading-none text-orange-500">
-                    {formatNumber(item.heatScore, 0)}
+                  <span className="shrink-0 text-lg font-bold leading-none text-orange-500">
+                    {item.limitUpCount == null ? '待统计' : `${item.limitUpCount} 只涨停`}
                   </span>
                 </div>
                 <div className="mt-4 grid max-w-[72%] gap-1 text-[11px] text-secondary-text">
                   <span>涨跌幅 <strong className="font-semibold text-foreground">{formatHotspotMetric(item.changePct)}%</strong></span>
-                  <span>趋势 <strong className="font-semibold text-foreground">{formatHotspotMetric(item.trendScore)}</strong> · 持续 <strong className="font-semibold text-foreground">{formatHotspotMetric(item.persistenceScore)}</strong></span>
+                  <span>统计日期 {item.tradeDate || '未知'}</span>
+                  <span>{item.countCoverage === 'mapped_pool' ? '已知题材映射覆盖范围内统计' : '来源涨停池内统计'}</span>
                   <span>{getHotspotSampleText(item)} · 龙头 {getHotspotLeadersText(item)}</span>
                 </div>
-                <div className="absolute bottom-3 right-3 opacity-95 transition-transform group-hover:scale-105">
-                  <MiniSparkline score={item.heatScore} selected={selected} />
-                </div>
               </button>
-              <button type="button" disabled={loading || addingHotspot || !isScreeningEnabled || (scope.topics.length >= 5 && !scope.topics.some(topic => topic.name === item.topic))}
-                aria-label={`${scope.topics.some(topic => topic.name === item.topic) ? '移除筛选' : '加入筛选'} ${item.topic}`}
-                aria-pressed={scope.topics.some(topic => topic.name === item.topic)}
-                className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-cyan hover:bg-cyan/10 disabled:opacity-50"
-                onClick={() => void handleHotspotFilter(item.topic)}>
-                {scope.topics.some(topic => topic.name === item.topic) ? '已加入筛选 ✓' : '加入筛选'}
-              </button>
+              <button type="button" aria-label={`查看题材 ${item.name || item.topic}`}
+                className="rounded-lg border border-border px-3 py-2 text-xs text-secondary-text hover:text-cyan"
+                onClick={() => handleHotspotSelect(item.topic)}>查看题材详情</button>
               </div>
               );
             })}
@@ -1907,6 +1766,106 @@ const StockScreeningPage: React.FC = () => {
         ) : null}
       </section>
 
+      <section className="rounded-2xl border border-cyan/35 bg-card/95 p-4 shadow-soft-card">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <SlidersHorizontal className="h-4 w-4 text-cyan" />
+            运行选股
+          </div>
+          <span className="rounded-full border border-cyan/30 bg-cyan/10 px-3 py-1 text-xs font-semibold text-cyan">
+            {selectedStrategyTag}
+          </span>
+        </div>
+
+        <ScopeControls value={scope} onChange={setScope} query={topicQuery} onQueryChange={setTopicQuery} disabled={loading || !isScreeningEnabled} />
+        <p className="mb-4 text-sm text-secondary-text">本次范围：{scopeLabel(scope)} · {displayedStrategy}</p>
+        <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr_180px_auto] lg:items-end">
+          <label className="space-y-2 text-xs font-medium text-secondary-text">
+            市场
+            <select
+              className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
+              value={market}
+              disabled={loading}
+              onChange={(event) => handleMarketChange(event.target.value)}
+            >
+              {MARKETS.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="space-y-2 text-xs font-medium text-secondary-text">
+            <label htmlFor="screening-strategy">策略</label>
+            <Select
+              id="screening-strategy"
+              value={selectedStrategy ? strategy : CUSTOM_STRATEGY_OPTION_VALUE}
+              disabled={loading || loadingStrategies}
+              placeholder=""
+              options={[
+                ...strategies.map((item) => ({
+                  value: item.id,
+                  label: item.name || item.title || item.id,
+                })),
+                { value: CUSTOM_STRATEGY_OPTION_VALUE, label: '自定义策略…' },
+              ]}
+              onChange={(value) =>
+                handleStrategyChange(
+                  value === CUSTOM_STRATEGY_OPTION_VALUE ? '' : value,
+                )
+              }
+            />
+          </div>
+
+          {!selectedStrategy && !loadingStrategies ? (
+            <label className="space-y-2 text-xs font-medium text-secondary-text lg:col-start-2">
+              自定义策略 ID
+              <input
+                aria-label="自定义策略 ID"
+                className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
+                value={strategy}
+                disabled={loading}
+                placeholder="输入策略 ID"
+                onChange={(event) => handleStrategyChange(event.target.value)}
+              />
+            </label>
+          ) : null}
+
+          <label className="space-y-2 text-xs font-medium text-secondary-text">
+            返回数量
+            <input
+              className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
+              type="number"
+              min={1}
+              max={100}
+              value={maxResults}
+              disabled={loading}
+              onChange={(event) => handleMaxResultsChange(Number(event.target.value))}
+            />
+          </label>
+
+          <Button
+            className="h-11 min-w-40"
+            isLoading={loading}
+            loadingText="筛选中..."
+            disabled={!isScreeningEnabled || loading || !strategy.trim() || !Number.isInteger(maxResults) || maxResults < 1 || maxResults > 100}
+            onClick={() => void handleSubmit()}
+          >
+            <Play className="h-4 w-4" />
+            运行选股
+          </Button>
+        </div>
+
+        <div className="mt-3 rounded-xl border border-border/75 bg-surface/55 px-3 py-2 text-xs leading-5 text-secondary-text">
+          {strategyLoadError
+            ? strategyLoadError
+            : selectedStrategy?.description || '策略会先执行硬过滤和因子评分，再进行风险与组合约束。'}
+        </div>
+      </section>
+
+
+
 
 
       {loading || screenMeta ? (
@@ -1930,8 +1889,10 @@ const StockScreeningPage: React.FC = () => {
           {screenMeta && !loading && <div className="mt-3 space-y-2 text-xs text-secondary-text">
             <p>运行范围：{scopeLabel(screenMeta.scope)}</p>
             <p>运行时间：{formatRunCreatedAt(screenMeta.createdAt)} · 策略版本：{screenMeta.strategyVersion || '未记录'}</p>
-            {screenMeta.scopeCounts && <p>板块范围 {screenMeta.scopeCounts.boardCount} 只 → 题材匹配 {screenMeta.scopeCounts.topicCount} 只 → 策略过滤后 {screenMeta.afterFilterCount ?? '-'} 只 → 返回 {candidates.length} 只</p>}
-            {screenMeta.topicEvidence?.map(topic => <p key={`${topic.source}:${topic.name}`}>{topic.name}：来源 {topic.provider === 'ths' ? '同花顺' : topic.provider === 'eastmoney' ? '东方财富' : topic.provider} · 获取于 {formatRunCreatedAt(topic.retrievedAt)} · 来源返回 {topic.memberCount} 只（{topic.coverage === 'partial' ? '仅当前页，覆盖不完整' : '不保证覆盖所有相关股票'}）</p>)}
+            {screenMeta.scopeCounts && !screenMeta.topicFilterMode && <p>板块范围 {screenMeta.scopeCounts.boardCount} 只 → 题材匹配 {screenMeta.scopeCounts.topicCount ?? '-'} 只 → 策略过滤后 {screenMeta.afterFilterCount ?? '-'} 只 → 返回 {candidates.length} 只</p>}
+            {screenMeta.topicFilterMode === 'none' && <p>板块范围 {screenMeta.scopeCounts?.boardCount ?? '-'} 只 → 策略过滤后 {screenMeta.afterFilterCount ?? '-'} 只 → 返回 {candidates.length} 只（不限制题材）</p>}
+            {screenMeta.topicFilterMode === 'model' && <p>板块范围 {screenMeta.scopeCounts?.boardCount ?? '-'} 只 → 策略过滤后 {screenMeta.afterFilterCount ?? '-'} 只 → 模型评估 {screenMeta.scopeCounts?.modelReviewedCount ?? 0} 只 → 题材匹配 {screenMeta.scopeCounts?.topicCount ?? 0} 只 → 返回 {candidates.length} 只。模型仅评估候选池中按策略评分选取的有限候选。</p>}
+            {screenMeta.topicFilterMode !== 'model' && screenMeta.topicEvidence?.map(topic => <p key={`${topic.source}:${topic.name}`}>{topic.name}：来源 {topic.provider === 'ths' ? '同花顺' : topic.provider === 'eastmoney' ? '东方财富' : topic.provider} · 获取于 {formatRunCreatedAt(topic.retrievedAt)} · 来源返回 {topic.memberCount} 只（{topic.coverage === 'partial' ? '仅当前页，覆盖不完整' : '不保证覆盖所有相关股票'}）</p>)}
             {(JSON.stringify(scope) !== JSON.stringify(parseScope(screenMeta.scope)) || strategy !== screenMeta.strategy || market !== screenMeta.market || (screenMeta.maxResults != null && maxResults !== screenMeta.maxResults)) && <p className="text-warning">条件已修改，重新运行后生效；下方仍是上次结果。</p>}
             <button type="button" className="font-semibold text-cyan" onClick={() => { setScope(parseScope(screenMeta.scope)); setStrategy(screenMeta.strategy || strategy); setMarket(screenMeta.market || market); setMaxResults(screenMeta.maxResults || maxResults); }}>使用这些条件重新选股</button>
           </div>}
@@ -2051,6 +2012,7 @@ const StockScreeningPage: React.FC = () => {
                                   <div className="rounded-xl border border-cyan/25 bg-cyan/5 px-3 py-2.5">
                                     <p className="text-xs font-semibold text-cyan">为什么入选</p>
                                     {item.board && <p className="mt-2 text-xs text-secondary-text">交易板块：{BOARD_LABELS[item.board] || item.board}</p>}
+                                    {item.topicReason && <p className="mt-2 text-xs text-secondary-text">模型题材判断：{item.topicReason}</p>}
                                     {!!item.matchedTopics?.length && <p className="mt-2 text-xs text-cyan">命中题材：{item.matchedTopics.map(topic => topic.name).join('、')}</p>}
                                     <ExplanationItems items={selectionExplanations} emptyText="暂无可验证的入选解释" />
                                     {selectionExplanations.length > 0 ? (
