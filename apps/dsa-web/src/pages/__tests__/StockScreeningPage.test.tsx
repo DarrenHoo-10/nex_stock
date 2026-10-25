@@ -305,7 +305,7 @@ describe('StockScreeningPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /刷新热点题材/ }));
 
     await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: true }));
-    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
     await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledWith({ topic: 'AI算力', provider: 'akshare', refresh: false }));
     await waitFor(() => expect(screen.getAllByText('AI算力').length).toBeGreaterThan(0));
     expect(screen.getByText('强势领先')).toBeInTheDocument();
@@ -372,7 +372,7 @@ describe('StockScreeningPage', () => {
 
     await screen.findByText('选股已开启');
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
     await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledTimes(1));
 
     fireEvent.click(await screen.findByRole('button', { name: '搜索最新消息' }));
@@ -419,7 +419,7 @@ describe('StockScreeningPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /收起热点题材/ }));
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
 
     await waitFor(() => expect(screen.queryByRole('link', { name: '查看消息' })).not.toBeInTheDocument());
     expect(screen.getByText('盘中发酵')).toBeInTheDocument();
@@ -475,7 +475,7 @@ describe('StockScreeningPage', () => {
 
     expect(await screen.findByRole('heading', { name: '选股' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /文字媒体/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 文字媒体/ }));
 
     expect(await screen.findByText('文字媒体：热度 100.0，阶段 初次异动，核心股 中文在线。')).toBeInTheDocument();
     expect(screen.getByText('质量 可用')).toBeInTheDocument();
@@ -514,7 +514,7 @@ describe('StockScreeningPage', () => {
 
     await waitFor(() => expect(getHotspots).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /机器人/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 机器人/ }));
 
     expect(await screen.findByText('机器人：热度 92.0，阶段 加速主升，核心股 拓斯达。')).toBeInTheDocument();
     expect(screen.getByText('正在补充详情')).toBeInTheDocument();
@@ -610,7 +610,7 @@ describe('StockScreeningPage', () => {
 
     await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false }));
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
 
     expect(await screen.findByText('route-summary')).toBeInTheDocument();
     expect(screen.getByText('compact route summary')).toBeInTheDocument();
@@ -647,7 +647,7 @@ describe('StockScreeningPage', () => {
 
     await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false }));
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /Moly/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 Moly/ }));
 
     expect(await screen.findByText('prefetched catalyst')).toBeInTheDocument();
     expect(screen.getByText('substitution drove the theme')).toBeInTheDocument();
@@ -687,11 +687,11 @@ describe('StockScreeningPage', () => {
     await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: false }));
     expect(getHotspotDetail).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(screen.getByRole('button', { name: /AI算力/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^查看题材 AI算力/ }));
     await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledWith({ topic: 'AI算力', provider: 'akshare', refresh: false }));
     expect(getHotspotDetail).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole('button', { name: /机器人执行器/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^查看题材 机器人执行器/ }));
 
     await waitFor(() =>
       expect(getHotspotDetail).toHaveBeenLastCalledWith({ topic: '机器人执行器', provider: 'akshare', refresh: false }),
@@ -749,11 +749,11 @@ describe('StockScreeningPage', () => {
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
     expect(await screen.findByText('盘中发酵')).toBeInTheDocument();
     expect(screen.getByText('中际旭创')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /机器人执行器/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^查看题材 机器人执行器/ }));
 
     await waitFor(() =>
       expect(getHotspotDetail).toHaveBeenLastCalledWith({ topic: '机器人执行器', provider: 'akshare', refresh: false }),
@@ -823,10 +823,10 @@ describe('StockScreeningPage', () => {
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
     await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledWith({ topic: 'AI算力', provider: 'akshare', refresh: false }));
 
-    fireEvent.click(screen.getByRole('button', { name: /机器人执行器/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^查看题材 机器人执行器/ }));
 
     await waitFor(() =>
       expect(getHotspotDetail).toHaveBeenLastCalledWith({ topic: '机器人执行器', provider: 'akshare', refresh: false }),
@@ -931,7 +931,7 @@ describe('StockScreeningPage', () => {
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^查看题材 AI算力/ }));
     await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: /刷新热点题材/ }));
@@ -1069,10 +1069,11 @@ describe('StockScreeningPage', () => {
       market: 'cn',
       strategy: 'shrink_pullback',
       maxResults: 3,
+      scope: { boards: [], topics: [], topicMatch: 'any' },
     });
   });
 
-  it('clears previous screening candidates when strategy changes', async () => {
+  it('preserves the previous result and marks edited strategy as pending', async () => {
     getStrategies.mockResolvedValueOnce({
       enabled: true,
       strategies: [
@@ -1109,8 +1110,9 @@ describe('StockScreeningPage', () => {
 
     fireEvent.change(screen.getByLabelText('策略'), { target: { value: 'capital_heat' } });
 
-    expect(screen.queryByText('旧策略股票')).not.toBeInTheDocument();
-    expect(screen.queryByText('选股完成')).not.toBeInTheDocument();
+    expect(screen.getByText('旧策略股票')).toBeInTheDocument();
+    expect(screen.getByText(/条件已修改/)).toBeInTheDocument();
+    expect(screen.getByText('选股完成')).toBeInTheDocument();
     expect(screen.getByLabelText('策略')).toHaveValue('capital_heat');
   });
 
@@ -1318,9 +1320,10 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('旧筛选条件下的候选')).toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('run-1');
 
-    // 修改筛选条件（返回数量 3 -> 5）：当前结果视图清空，但持久化恢复状态必须保留
+    // 修改筛选条件（返回数量 3 -> 5）：当前结果与持久化恢复状态必须保留
     fireEvent.change(screen.getByRole('spinbutton', { name: /返回数量/ }), { target: { value: '5' } });
-    expect(screen.queryByText('旧筛选条件下的候选')).not.toBeInTheDocument();
+    expect(screen.getByText('旧筛选条件下的候选')).toBeInTheDocument();
+    expect(screen.getByText(/条件已修改/)).toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('run-1');
 
     // 历史记录区块仍然可见（筛选条件切换不影响历史可获取性）
@@ -1709,12 +1712,12 @@ describe('StockScreeningPage', () => {
 
     // 任务仍在轮询时，点击历史记录 run（策略 capital_heat）
     fireEvent.click(await screen.findByText('capital_heat'));
-    expect(await screen.findByText(/自定义策略 \(capital_heat\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/自定义策略 \(capital_heat\) · A 股/)).toBeInTheDocument();
     expect(screen.getByText('历史候选')).toBeInTheDocument();
 
     // 后台任务随后完成，也不得把任务候选回写到历史上下文中
     expect(screen.queryByText('任务候选')).not.toBeInTheDocument();
-    expect(screen.getByText(/自定义策略 \(capital_heat\)/)).toBeInTheDocument();
+    expect(screen.getByText(/自定义策略 \(capital_heat\) · A 股/)).toBeInTheDocument();
   });
 
   it('surfaces Screening LLM fallback instead of showing empty LLM fields as normal', async () => {

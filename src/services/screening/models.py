@@ -48,6 +48,12 @@ class HardFilterConfig:
     max_drawdown_20d_pct_max: float | None = None
     atr_20_pct_min: float | None = None
     atr_20_pct_max: float | None = None
+    # 板块白名单（可选）：main_board=沪深主板, chinext=创业板, star_market=科创板, bse=北交所
+    # 也接受中文别名（主板/创业板/科创板/北交所）；按代码前缀判定，无法识别的代码视为不匹配
+    board_whitelist: list[str] | None = None
+    # 概念题材关键词（可选）：快照概念文本包含任一关键词即通过；
+    # 快照不含概念列时 fail-open 放行（部分数据源如 Tushare 不提供概念字段）
+    concept_keywords: list[str] | None = None
 
 
 @dataclass
@@ -207,6 +213,7 @@ class ScreenResult:
     strategy_version: str = ""
     strategy_category: str = ""
     effective_factor_weights: dict[str, float] = field(default_factory=dict)
+    scope_counts: dict[str, int] = field(default_factory=dict)
     snapshot_count: int = 0
     after_filter_count: int = 0
     picks: list[Pick] = field(default_factory=list)

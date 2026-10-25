@@ -42,6 +42,15 @@ import {
 import { formatParsedApiError, getParsedApiError, toApiErrorMessage, type ParsedApiError } from '../api/error';
 import { AppPage, Button, InlineAlert, Select } from '../components/common';
 
+import { ScopeControls } from '../components/screening/ScopeControls';
+import { BOARD_LABELS, emptyScope, parseScope, scopeLabel, sameTopic } from '../components/screening/scope';
+import type { ScreeningScope } from '../api/screening';
+
+const SCOPE_STORAGE_KEY = 'dsa.screening.scope.v1';
+const readScope = (): ScreeningScope => {
+  try { return parseScope(JSON.parse(window.localStorage.getItem(SCOPE_STORAGE_KEY) || 'null')); } catch { return emptyScope(); }
+};
+
 const MARKETS = [{ id: 'cn', label: 'A 股' }];
 const SCREEN_TASK_STORAGE_KEY = 'dsa.screening.activeScreenTask.v1';
 const SCREEN_TASK_POLL_INTERVAL_MS = 2000;
@@ -66,6 +75,7 @@ const formatStrategyCategory = (value?: string) => {
 
 type PersistedScreenTask = {
   taskId: string;
+  scope?: ScreeningScope;
   runId?: string;
   market: string;
   strategy: string;
@@ -97,7 +107,7 @@ const formatHistoryStrategyName = (strategyId: string, strategies: ScreeningStra
 
 // 历史条目里展示筛选条件：市场 ID → 中文标签
 const formatHistoryMarketLabel = (marketId: string | null | undefined): string =>
-  MARKETS.find((item) => item.id === marketId)?.label || marketId || 'cn';
+  MARKETS.find((item) => item.id === (marketId || 'cn'))?.label || marketId || 'A 股';
 
 const readPersistedScreenTask = (): PersistedScreenTask | null => {
   if (typeof window === 'undefined') {
@@ -115,6 +125,7 @@ const readPersistedScreenTask = (): PersistedScreenTask | null => {
     const restoredMaxResults = Number(parsed.maxResults);
     return {
       taskId: parsed.taskId,
+      scope: parseScope(parsed.scope),
       runId: typeof parsed.runId === 'string' && parsed.runId.trim() ? parsed.runId : undefined,
       market: typeof parsed.market === 'string' && parsed.market.trim() ? parsed.market : 'cn',
       strategy: typeof parsed.strategy === 'string' && parsed.strategy.trim() ? parsed.strategy : 'dual_low',
@@ -846,6 +857,12 @@ const StockScreeningPage: React.FC = () => {
   const [statusAttempt, setStatusAttempt] = useState(0);
   const [enabled, setEnabled] = useState(false);
   const [available, setAvailable] = useState(false);
+  const [scope, setScope] = useState<ScreeningScope>(() => restoredTask?.scope || readScope());
+  const [topicQuery, setTopicQuery] = useState('');
+  const [addingHotspot, setAddingHotspot] = useState(false);
+  useEffect(() => {
+    try { window.localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify(scope)); } catch { /* Storage is optional. */ }
+  }, [scope]);
   const [market, setMarket] = useState(restoredTask?.market || 'cn');
   const [strategy, setStrategy] = useState(restoredTask?.strategy || 'dual_low');
   const [strategies, setStrategies] = useState<ScreeningStrategy[]>([]);
@@ -947,7 +964,9 @@ const StockScreeningPage: React.FC = () => {
         return;
       }
       if (detail?.result) {
-        applyScreenResult(detail.result);
+        applyScreenResult({ ...detail.result, strategy: detail.result.strategy || detail.strategy, market: detail.result.market || detail.market });
+        setScope(parseScope(detail.result.scope));
+        if (detail.result.maxResults) setMaxResults(detail.result.maxResults);
         historyContextStrategyRef.current = true;
         // 同步持久化恢复指针：刷新后应恢复用户刚选中的历史 run，
         // 而不是停留在更早的 task/run。历史详情不携带 taskId，以 runId
@@ -955,10 +974,11 @@ const StockScreeningPage: React.FC = () => {
         // 若该 run 恢复失败，占位轮询会命中不可恢复错误并清理过期指针。
         persistScreenTask({
           taskId: runId,
+          scope: parseScope(detail.result.scope),
           runId,
           market: detail.market || market,
           strategy: detail.strategy || strategy,
-          maxResults,
+          maxResults: detail.result.maxResults || maxResults,
         });
         // 同步历史 run 的策略与市场上下文，确保结果区文案和后续深度分析
         // 使用该历史 run 对应的 strategy/market，而不是当前表单的选择
@@ -986,11 +1006,6 @@ const StockScreeningPage: React.FC = () => {
     }
   }, [applyScreenResult, market, maxResults, strategy]);
 
-  const clearScreeningResults = () => {
-    setCandidates([]);
-    setScreenMeta(null);
-    setExpandedCode(null);
-  };
 
   const loadHotspotDetail = useCallback(async (
     topic: string,
@@ -1172,7 +1187,8 @@ const StockScreeningPage: React.FC = () => {
       return;
     }
     const stockName = String(candidate.name || stockCode).trim();
-    const analysisSkills = (selectedStrategy?.analysisSkills || []).filter(Boolean);
+    const resultStrategy = strategies.find(item => item.id === (screenMeta?.strategy || strategy));
+    const analysisSkills = (resultStrategy?.analysisSkills || []).filter(Boolean);
     navigate('/', {
       state: {
         stockCode,
@@ -1182,7 +1198,7 @@ const StockScreeningPage: React.FC = () => {
         ...(analysisSkills.length > 0 ? { skills: analysisSkills } : {}),
       },
     });
-  }, [navigate, selectedStrategy]);
+  }, [navigate, strategies, screenMeta?.strategy, strategy]);
 
   useEffect(() => {
     selectedHotspotTopicRef.current = selectedHotspotTopic;
@@ -1243,7 +1259,9 @@ const StockScreeningPage: React.FC = () => {
           return;
         }
         if (detail?.result) {
-          applyScreenResult(detail.result);
+          applyScreenResult({ ...detail.result, strategy: detail.result.strategy || detail.strategy, market: detail.result.market || detail.market });
+          setScope(parseScope(detail.result.scope));
+          if (detail.result.maxResults) setMaxResults(detail.result.maxResults);
           historyContextStrategyRef.current = true;
           // 同步恢复该历史 run 的策略与市场上下文，避免结果区展示和
           // 深度分析沿用当前表单策略（与 handleHistoryRunSelect 一致）
@@ -1288,6 +1306,7 @@ const StockScreeningPage: React.FC = () => {
     }
 
     const pollingTaskId = activeTaskId;
+    const pollingContext = readPersistedScreenTask();
     let active = true;
     let timer: ReturnType<typeof window.setTimeout> | undefined;
 
@@ -1303,17 +1322,18 @@ const StockScreeningPage: React.FC = () => {
 
       if (task.status === 'completed') {
         if (task.result) {
-          applyScreenResult(task.result);
+          applyScreenResult({ ...task.result, strategy: task.result.strategy || pollingContext?.strategy, market: task.result.market || pollingContext?.market, maxResults: task.result.maxResults ?? pollingContext?.maxResults });
           setError('');
           // 持久化 runId：刷新后优先从 history API 恢复结果，而非依赖内存 task
-          const completedRunId = task.result.runId || screenMeta?.runId;
+          const completedRunId = task.result.runId;
           if (completedRunId) {
             persistScreenTask({
               taskId: pollingTaskId,
               runId: completedRunId,
-              market,
-              strategy,
-              maxResults,
+              scope: parseScope(task.result.scope),
+              market: task.result.market || pollingContext?.market || 'cn',
+              strategy: task.result.strategy || pollingContext?.strategy || 'dual_low',
+              maxResults: task.result.maxResults || pollingContext?.maxResults || 3,
             });
           }
         } else {
@@ -1406,25 +1426,32 @@ const StockScreeningPage: React.FC = () => {
     }
   };
 
-  const handleStrategyChange = (nextStrategy: string) => {
-    if (nextStrategy !== strategy) {
-      clearScreeningResults();
-    }
-    setStrategy(nextStrategy);
-  };
+  const handleStrategyChange = (nextStrategy: string) => setStrategy(nextStrategy);
+  const handleMarketChange = (nextMarket: string) => setMarket(nextMarket);
+  const handleMaxResultsChange = (nextMaxResults: number) => setMaxResults(nextMaxResults);
 
-  const handleMarketChange = (nextMarket: string) => {
-    if (nextMarket !== market) {
-      clearScreeningResults();
+  const handleHotspotFilter = async (name: string) => {
+    if (scope.topics.some(topic => topic.name === name)) {
+      setScope(current => ({ ...current, topics: current.topics.filter(topic => topic.name !== name) }));
+      return;
     }
-    setMarket(nextMarket);
-  };
-
-  const handleMaxResultsChange = (nextMaxResults: number) => {
-    if (nextMaxResults !== maxResults) {
-      clearScreeningResults();
-    }
-    setMaxResults(nextMaxResults);
+    const historyContext = historyRunRequestIdRef.current;
+    setAddingHotspot(true);
+    setError('');
+    try {
+      const data = await screeningApi.searchTopics(name);
+      if (historyContext !== historyRunRequestIdRef.current) return;
+      const exact = data.items.filter(topic => topic.name === name);
+      if (exact.length === 1 && !data.warnings.length) {
+        setScope(current => current.topics.length >= 5 || current.topics.some(topic => sameTopic(topic, exact[0]))
+          ? current : { ...current, topics: [...current.topics, exact[0]] });
+      } else {
+        setTopicQuery(name);
+        setError('请在顶部题材搜索结果中选择对应的标准题材。');
+      }
+    } catch (err) {
+      setError(toApiErrorMessage(err, '题材搜索失败，请重试。'));
+    } finally { setAddingHotspot(false); }
   };
 
   const handleSubmit = async () => {
@@ -1439,9 +1466,10 @@ const StockScreeningPage: React.FC = () => {
     setTaskProgress(0);
     setTaskMessage('正在提交选股任务...');
     try {
-      const task = await screeningApi.startScreen({ market, strategy, maxResults });
+      const task = await screeningApi.startScreen({ market, strategy, maxResults, scope });
       persistScreenTask({
         taskId: task.taskId,
+        scope,
         market,
         strategy,
         maxResults,
@@ -1516,6 +1544,104 @@ const StockScreeningPage: React.FC = () => {
 
       {error ? <InlineAlert variant="danger" title="调用失败" message={error} /> : null}
 
+      <section className="rounded-2xl border border-cyan/35 bg-card/95 p-4 shadow-soft-card">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <SlidersHorizontal className="h-4 w-4 text-cyan" />
+            运行选股
+          </div>
+          <span className="rounded-full border border-cyan/30 bg-cyan/10 px-3 py-1 text-xs font-semibold text-cyan">
+            {selectedStrategyTag}
+          </span>
+        </div>
+
+        <ScopeControls value={scope} onChange={setScope} query={topicQuery} onQueryChange={setTopicQuery} disabled={loading || addingHotspot || !isScreeningEnabled} />
+        <p className="mb-4 text-sm text-secondary-text">本次范围：{scopeLabel(scope)} · {displayedStrategy}</p>
+        <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr_180px_auto] lg:items-end">
+          <label className="space-y-2 text-xs font-medium text-secondary-text">
+            市场
+            <select
+              className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
+              value={market}
+              disabled={loading}
+              onChange={(event) => handleMarketChange(event.target.value)}
+            >
+              {MARKETS.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="space-y-2 text-xs font-medium text-secondary-text">
+            <label htmlFor="screening-strategy">策略</label>
+            <Select
+              id="screening-strategy"
+              value={selectedStrategy ? strategy : CUSTOM_STRATEGY_OPTION_VALUE}
+              disabled={loading || loadingStrategies}
+              placeholder=""
+              options={[
+                ...strategies.map((item) => ({
+                  value: item.id,
+                  label: item.name || item.title || item.id,
+                })),
+                { value: CUSTOM_STRATEGY_OPTION_VALUE, label: '自定义策略…' },
+              ]}
+              onChange={(value) =>
+                handleStrategyChange(
+                  value === CUSTOM_STRATEGY_OPTION_VALUE ? '' : value,
+                )
+              }
+            />
+          </div>
+
+          {!selectedStrategy && !loadingStrategies ? (
+            <label className="space-y-2 text-xs font-medium text-secondary-text lg:col-start-2">
+              自定义策略 ID
+              <input
+                aria-label="自定义策略 ID"
+                className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
+                value={strategy}
+                disabled={loading}
+                placeholder="输入策略 ID"
+                onChange={(event) => handleStrategyChange(event.target.value)}
+              />
+            </label>
+          ) : null}
+
+          <label className="space-y-2 text-xs font-medium text-secondary-text">
+            返回数量
+            <input
+              className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
+              type="number"
+              min={1}
+              max={100}
+              value={maxResults}
+              disabled={loading}
+              onChange={(event) => handleMaxResultsChange(Number(event.target.value))}
+            />
+          </label>
+
+          <Button
+            className="h-11 min-w-40"
+            isLoading={loading}
+            loadingText="筛选中..."
+            disabled={!isScreeningEnabled || loading || addingHotspot || !strategy.trim() || !Number.isInteger(maxResults) || maxResults < 1 || maxResults > 100}
+            onClick={() => void handleSubmit()}
+          >
+            <Play className="h-4 w-4" />
+            运行选股
+          </Button>
+        </div>
+
+        <div className="mt-3 rounded-xl border border-border/75 bg-surface/55 px-3 py-2 text-xs leading-5 text-secondary-text">
+          {strategyLoadError
+            ? strategyLoadError
+            : selectedStrategy?.description || '策略会先执行硬过滤和因子评分，再进行风险与组合约束。'}
+        </div>
+      </section>
+
       <section className="rounded-2xl border border-border/80 bg-card/95 p-4 shadow-soft-card">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-3">
@@ -1556,6 +1682,14 @@ const StockScreeningPage: React.FC = () => {
           </div>
         </div>
 
+        {!hotspotsExpanded && hotspots.length > 0 && <div className="flex flex-wrap gap-2">
+          {hotspots.slice(0, 4).map(item => <button key={item.topic} type="button"
+            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground hover:border-cyan"
+            onClick={() => { setHotspotsExpanded(true); handleHotspotSelect(item.topic); }}>
+            {item.name || item.topic} <span className="ml-2 text-orange-500">{formatNumber(item.heatScore, 0)}</span>
+          </button>)}
+        </div>}
+
         {hotspotsExpanded && hotspotError ? (
           <p className="mb-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
             {hotspotError}
@@ -1574,14 +1708,15 @@ const StockScreeningPage: React.FC = () => {
               const iconMeta = getHotspotIcon(item.name || item.topic);
               const Icon = iconMeta.icon;
               return (
+              <div key={`${item.topic}-${item.rank ?? ''}`} className="flex flex-col gap-2">
               <button
-                key={`${item.topic}-${item.rank ?? ''}`}
                 className={`group relative min-h-[116px] overflow-hidden rounded-xl border px-3 py-3 text-left transition-all ${
                   selected
                     ? 'border-orange-400 bg-gradient-to-br from-orange-500/10 via-card to-card shadow-[0_0_0_1px_rgba(249,115,22,0.16),0_18px_44px_rgba(249,115,22,0.14)]'
                     : 'border-border/80 bg-card hover:-translate-y-0.5 hover:border-orange-300/70 hover:shadow-soft-card'
                 }`}
                 type="button"
+                aria-label={`查看题材 ${item.name || item.topic}`}
                 onClick={() => handleHotspotSelect(item.topic)}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -1616,6 +1751,14 @@ const StockScreeningPage: React.FC = () => {
                   <MiniSparkline score={item.heatScore} selected={selected} />
                 </div>
               </button>
+              <button type="button" disabled={loading || addingHotspot || !isScreeningEnabled || (scope.topics.length >= 5 && !scope.topics.some(topic => topic.name === item.topic))}
+                aria-label={`${scope.topics.some(topic => topic.name === item.topic) ? '移除筛选' : '加入筛选'} ${item.topic}`}
+                aria-pressed={scope.topics.some(topic => topic.name === item.topic)}
+                className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-cyan hover:bg-cyan/10 disabled:opacity-50"
+                onClick={() => void handleHotspotFilter(item.topic)}>
+                {scope.topics.some(topic => topic.name === item.topic) ? '已加入筛选 ✓' : '加入筛选'}
+              </button>
+              </div>
               );
             })}
           </div>
@@ -1764,101 +1907,7 @@ const StockScreeningPage: React.FC = () => {
         ) : null}
       </section>
 
-      <section className="rounded-2xl border border-cyan/35 bg-card/95 p-4 shadow-soft-card">
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            <SlidersHorizontal className="h-4 w-4 text-cyan" />
-            运行选股
-          </div>
-          <span className="rounded-full border border-cyan/30 bg-cyan/10 px-3 py-1 text-xs font-semibold text-cyan">
-            {selectedStrategyTag}
-          </span>
-        </div>
 
-        <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr_180px_auto] lg:items-end">
-          <label className="space-y-2 text-xs font-medium text-secondary-text">
-            市场
-            <select
-              className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
-              value={market}
-              disabled={loading}
-              onChange={(event) => handleMarketChange(event.target.value)}
-            >
-              {MARKETS.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div className="space-y-2 text-xs font-medium text-secondary-text">
-            <label htmlFor="screening-strategy">策略</label>
-            <Select
-              id="screening-strategy"
-              value={selectedStrategy ? strategy : CUSTOM_STRATEGY_OPTION_VALUE}
-              disabled={loading || loadingStrategies}
-              placeholder=""
-              options={[
-                ...strategies.map((item) => ({
-                  value: item.id,
-                  label: item.name || item.title || item.id,
-                })),
-                { value: CUSTOM_STRATEGY_OPTION_VALUE, label: '自定义策略…' },
-              ]}
-              onChange={(value) =>
-                handleStrategyChange(
-                  value === CUSTOM_STRATEGY_OPTION_VALUE ? '' : value,
-                )
-              }
-            />
-          </div>
-
-          {!selectedStrategy && !loadingStrategies ? (
-            <label className="space-y-2 text-xs font-medium text-secondary-text lg:col-start-2">
-              自定义策略 ID
-              <input
-                aria-label="自定义策略 ID"
-                className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
-                value={strategy}
-                disabled={loading}
-                placeholder="输入策略 ID"
-                onChange={(event) => handleStrategyChange(event.target.value)}
-              />
-            </label>
-          ) : null}
-
-          <label className="space-y-2 text-xs font-medium text-secondary-text">
-            返回数量
-            <input
-              className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-foreground outline-none transition-colors focus:border-cyan"
-              type="number"
-              min={1}
-              max={100}
-              value={maxResults}
-              disabled={loading}
-              onChange={(event) => handleMaxResultsChange(Number(event.target.value))}
-            />
-          </label>
-
-          <Button
-            className="h-11 min-w-40"
-            isLoading={loading}
-            loadingText="筛选中..."
-            disabled={!isScreeningEnabled || loading || !strategy.trim()}
-            onClick={() => void handleSubmit()}
-          >
-            <Play className="h-4 w-4" />
-            运行选股
-          </Button>
-        </div>
-
-        <div className="mt-3 rounded-xl border border-border/75 bg-surface/55 px-3 py-2 text-xs leading-5 text-secondary-text">
-          {strategyLoadError
-            ? strategyLoadError
-            : selectedStrategy?.description || '策略会先执行硬过滤和因子评分，再进行风险与组合约束。'}
-        </div>
-      </section>
 
       {loading || screenMeta ? (
         <section className="rounded-2xl border border-border bg-card/95 p-4 shadow-soft-card">
@@ -1872,11 +1921,20 @@ const StockScreeningPage: React.FC = () => {
                 <p className="mt-1 text-xs text-secondary-text">
                   {loading
                     ? `${taskMessage || '正在执行选股'} · ${taskProgress}%`
-                    : `${displayedStrategy} · ${MARKETS.find((item) => item.id === market)?.label}`}
+                    : `${(strategies.find(item => item.id === screenMeta?.strategy)?.name || (screenMeta?.strategy ? `自定义策略 (${screenMeta.strategy})` : displayedStrategy))} · ${formatHistoryMarketLabel(screenMeta?.market)}`}
                 </p>
               </div>
             </div>
           </div>
+
+          {screenMeta && !loading && <div className="mt-3 space-y-2 text-xs text-secondary-text">
+            <p>运行范围：{scopeLabel(screenMeta.scope)}</p>
+            <p>运行时间：{formatRunCreatedAt(screenMeta.createdAt)} · 策略版本：{screenMeta.strategyVersion || '未记录'}</p>
+            {screenMeta.scopeCounts && <p>板块范围 {screenMeta.scopeCounts.boardCount} 只 → 题材匹配 {screenMeta.scopeCounts.topicCount} 只 → 策略过滤后 {screenMeta.afterFilterCount ?? '-'} 只 → 返回 {candidates.length} 只</p>}
+            {screenMeta.topicEvidence?.map(topic => <p key={`${topic.source}:${topic.name}`}>{topic.name}：来源 {topic.provider === 'ths' ? '同花顺' : topic.provider === 'eastmoney' ? '东方财富' : topic.provider} · 获取于 {formatRunCreatedAt(topic.retrievedAt)} · 来源返回 {topic.memberCount} 只（{topic.coverage === 'partial' ? '仅当前页，覆盖不完整' : '不保证覆盖所有相关股票'}）</p>)}
+            {(JSON.stringify(scope) !== JSON.stringify(parseScope(screenMeta.scope)) || strategy !== screenMeta.strategy || market !== screenMeta.market || (screenMeta.maxResults != null && maxResults !== screenMeta.maxResults)) && <p className="text-warning">条件已修改，重新运行后生效；下方仍是上次结果。</p>}
+            <button type="button" className="font-semibold text-cyan" onClick={() => { setScope(parseScope(screenMeta.scope)); setStrategy(screenMeta.strategy || strategy); setMarket(screenMeta.market || market); setMaxResults(screenMeta.maxResults || maxResults); }}>使用这些条件重新选股</button>
+          </div>}
 
           <details className="mt-3 border-t border-border/70 pt-3 text-xs text-secondary-text">
             <summary className="w-fit cursor-pointer font-medium text-secondary-text">运行详情</summary>
@@ -1930,7 +1988,7 @@ const StockScreeningPage: React.FC = () => {
             <p className="text-sm font-medium text-foreground">暂无符合条件的候选</p>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-xl border border-border">
+          <div className="overflow-x-auto rounded-xl border border-border">
             <table className="w-full min-w-[860px] border-collapse text-sm">
               <thead className="bg-surface text-left text-xs text-secondary-text">
                 <tr>
@@ -1992,6 +2050,8 @@ const StockScreeningPage: React.FC = () => {
                                 <div className="grid gap-3 md:grid-cols-2">
                                   <div className="rounded-xl border border-cyan/25 bg-cyan/5 px-3 py-2.5">
                                     <p className="text-xs font-semibold text-cyan">为什么入选</p>
+                                    {item.board && <p className="mt-2 text-xs text-secondary-text">交易板块：{BOARD_LABELS[item.board] || item.board}</p>}
+                                    {!!item.matchedTopics?.length && <p className="mt-2 text-xs text-cyan">命中题材：{item.matchedTopics.map(topic => topic.name).join('、')}</p>}
                                     <ExplanationItems items={selectionExplanations} emptyText="暂无可验证的入选解释" />
                                     {selectionExplanations.length > 0 ? (
                                       <p className="mt-2 text-xs text-secondary-text">综合质量：{selectionQuality}</p>
@@ -2168,7 +2228,7 @@ const StockScreeningPage: React.FC = () => {
                   <span className="block truncate text-sm font-semibold text-foreground">
                     {formatHistoryStrategyName(run.strategy, strategies)}
                     <span className="ml-2 text-xs font-normal text-secondary-text">
-                      {formatHistoryMarketLabel(run.market)}
+                      {formatHistoryMarketLabel(run.market)} · {scopeLabel(run.scope)}
                     </span>
                   </span>
                   <span className="mt-0.5 block text-xs text-secondary-text">

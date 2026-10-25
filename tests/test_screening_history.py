@@ -407,7 +407,7 @@ class ScreeningHistoryTestCase(unittest.TestCase):
                         "name": "empty_demo", "version": "9.0", "category": "growth",
                         "factor_weights": {"value": 1},
                     }]) as catalog_loader,
-                    patch.object(screening_pipeline, "load_all_strategies", return_value={"empty_demo": strategy}),
+                    patch.object(screening_pipeline, "load_all_strategies_with_extra", return_value={"empty_demo": strategy}),
                     patch.object(screening_pipeline, "fetch_snapshot_with_fallback", return_value=snapshot),
                     patch.object(screening_pipeline, "enrich_daily_features",
                                  side_effect=lambda df, **kwargs: df.assign(change_60d=-10)),

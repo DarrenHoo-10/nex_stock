@@ -12,6 +12,19 @@ import pandas as pd
 from src.services.screening.models import HardFilterConfig
 
 logger = logging.getLogger(__name__)
+
+_BOARD_TOKEN_ALIASES = {
+    "main_board": "main_board",
+    "主板": "main_board",
+    "沪深主板": "main_board",
+    "chinext": "chinext",
+    "创业板": "chinext",
+    "star_market": "star_market",
+    "科创板": "star_market",
+    "bse": "bse",
+    "北交所": "bse",
+}
+
 _DAILY_FILTER_DEFAULTS = {
     "change_60d_min": None,
     "change_60d_max": None,
@@ -59,6 +72,13 @@ def apply_hard_filters(df: pd.DataFrame, filters: HardFilterConfig) -> pd.DataFr
                 "Missing required snapshot column for exclude_st filter: name"
             )
         mask &= ~result[name_col].str.contains(r"ST|退", na=False)
+
+    mask = _filter_board(
+        result, mask, ["code", "代码", "symbol"], filters.board_whitelist
+    )
+    mask = _filter_concept_keywords(
+        result, mask, ["concepts", "概念", "概念题材"], filters.concept_keywords
+    )
 
     # Numeric filters — each is optional
     mask = _filter_min(result, mask, ["amount", "成交额"], filters.amount_min)
@@ -142,6 +162,8 @@ def check_hard_filters(snapshot: dict[str, object], filters: HardFilterConfig) -
         "volume_ratio": ["volume_ratio", "量比"],
         "turnover_rate": ["turnover_rate", "换手率"],
         "change_pct": ["change_pct", "涨跌幅"],
+        "board": ["board", "code", "代码", "symbol"],
+        "concept_keywords": ["concepts", "概念", "概念题材"],
     }
     for item in fields(filters):
         name = item.name
@@ -218,6 +240,15 @@ def hard_filter_rejection_summary(
                 "Missing required snapshot column for exclude_st filter: name"
             )
         record("exclude_st", mask & ~df[name_col].str.contains(r"ST|退", na=False))
+
+    record(
+        "board_whitelist",
+        _filter_board(df, mask, ["code", "代码", "symbol"], filters.board_whitelist),
+    )
+    record(
+        "concept_keywords",
+        _filter_concept_keywords(df, mask, ["concepts", "概念", "概念题材"], filters.concept_keywords),
+    )
 
     def record_min(label: str, columns: list[str], value: float | None) -> None:
         if value is not None:
@@ -490,6 +521,72 @@ def _filter_in(
     allowed_set = {str(item) for item in allowed}
     return mask & df[col_name].astype(str).isin(allowed_set)
 
+
+def _board_of(code: object) -> str | None:
+    """Classify an A-share code into a board token; None when unrecognizable."""
+    digits = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(digits) < 6:
+        return None
+    prefix3 = digits[:3]
+    if prefix3 in {"600", "601", "603", "605", "000", "001", "002", "003"}:
+        return "main_board"
+    if prefix3 in {"300", "301", "302"}:
+        return "chinext"
+    if prefix3 in {"688", "689"}:
+        return "star_market"
+    if digits[:2] in {"43", "83", "87", "88"} or prefix3 == "920":
+        return "bse"
+    return None
+
+
+def _filter_board(
+    df: pd.DataFrame,
+    mask: pd.Series,
+    code_cols: list[str],
+    whitelist: list[str] | None,
+) -> pd.Series:
+    if not whitelist:
+        return mask
+    if not mask.any():
+        return mask
+    col = _find_col(df, code_cols)
+    if not col:
+        raise SnapshotFieldMissingError(
+            f"Missing required snapshot column for board whitelist filter {code_cols}"
+        )
+    allowed = {
+        _BOARD_TOKEN_ALIASES.get(str(item).strip(), str(item).strip())
+        for item in whitelist
+    }
+    return mask & df[col].map(_board_of).isin(allowed)
+
+
+def _filter_concept_keywords(
+    df: pd.DataFrame,
+    mask: pd.Series,
+    concept_cols: list[str],
+    keywords: list[str] | None,
+) -> pd.Series:
+    """Match any keyword inside the snapshot concepts text.
+
+    Fail-open: snapshots from sources that do not carry a concepts column
+    (e.g. Tushare fallback) skip this condition instead of rejecting rows.
+    Rows whose concepts value exists but matches no keyword are excluded.
+    """
+    if not keywords:
+        return mask
+    if not mask.any():
+        return mask
+    col = _find_col(df, concept_cols)
+    if not col:
+        return mask
+    series = df[col].fillna("").astype(str)
+    hit = pd.Series(False, index=df.index)
+    for keyword in keywords:
+        token = str(keyword).strip()
+        if token:
+            hit |= series.str.contains(token, regex=False)
+    return mask & hit
 
 
 def _rejection_samples(

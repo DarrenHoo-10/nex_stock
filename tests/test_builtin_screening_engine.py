@@ -21,7 +21,7 @@ from src.services.screening.config import Config as ScreeningRuntimeConfig
 from src.services.screening.models import HardFilterConfig, Pick, ScreeningConfig, Strategy
 from src.services.screening.scorer import compute_screen_scores
 from src.services.screening import snapshot as screening_snapshot
-from src.services.screening.strategy import list_strategies, load_all_strategies
+from src.services.screening.strategy import list_strategies, load_all_strategies, load_all_strategies_with_extra
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +107,56 @@ def test_bundled_strategies_are_loaded_from_the_internal_package() -> None:
     assert strategies["dual_low"].screening.factor_weights["value"] < 0.40
 
 
+def test_extra_strategies_dir_merges_and_overrides_bundled(tmp_path: Path) -> None:
+    """User strategies dir merges over the bundled dir; extra wins on name conflict."""
+    bundled = load_all_strategies(SCREENING_ROOT / "strategies")
+    assert "volume_breakout" in bundled
+
+    override_dir = tmp_path / "user_strategies"
+    override_dir.mkdir()
+    (override_dir / "volume_breakout.yaml").write_text(
+        "\n".join(
+            [
+                "name: volume_breakout",
+                "display_name: 放量突破（用户覆盖）",
+                "description: user override",
+                "version: '9.9'",
+                "category: trend",
+                "screening:",
+                "  enabled: true",
+                "  max_output: 3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (override_dir / "user_only_strategy.yaml").write_text(
+        "\n".join(
+            [
+                "name: user_only_strategy",
+                "display_name: 用户专属策略",
+                "description: user only",
+                "version: '1.0'",
+                "category: trend",
+                "screening:",
+                "  enabled: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = ScreeningRuntimeConfig(
+        strategies_dir=SCREENING_ROOT / "strategies",
+        extra_strategies_dir=override_dir,
+    )
+    merged = load_all_strategies_with_extra(config)
+    assert "user_only_strategy" in merged
+    assert merged["volume_breakout"].version == "9.9"
+    assert merged["volume_breakout"].screening.max_output == 3
+
+    infos = {item.name: item for item in list_strategies(override_dir)}
+    assert "user_only_strategy" in infos
+
+
 def test_list_strategies_preserves_legacy_strategies_dir_override() -> None:
     strategy_yaml = """
 name: custom_demo
@@ -125,7 +175,11 @@ screening:
         strategy_path = Path(temp_dir) / "custom_demo.yaml"
         strategy_path.write_text(strategy_yaml, encoding="utf-8")
 
-        with patch.dict(os.environ, {"STRATEGIES_DIR": temp_dir}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"STRATEGIES_DIR": temp_dir, "SCREENING_EXTRA_STRATEGIES_DIR": ""},
+            clear=False,
+        ):
             config = ScreeningRuntimeConfig.from_env()
             strategies = list_strategies()
 
@@ -196,7 +250,7 @@ def test_pipeline_passes_daily_history_cache_settings_to_enrichment(monkeypatch)
         enriched.attrs["daily_source_health"] = {}
         return enriched
 
-    monkeypatch.setattr(screening_pipeline, "load_all_strategies", lambda _path: {"demo": strategy})
+    monkeypatch.setattr(screening_pipeline, "load_all_strategies_with_extra", lambda _config: {"demo": strategy})
     monkeypatch.setattr(screening_pipeline, "fetch_snapshot_with_fallback", lambda *args, **kwargs: snapshot_df.copy())
     monkeypatch.setattr(screening_pipeline, "apply_hard_filters", lambda df, _filters: df.copy())
     monkeypatch.setattr(
@@ -433,7 +487,7 @@ def test_pipeline_uses_ranker_success_flag_instead_of_partial_llm_scores(monkeyp
             errors=["coverage below threshold"],
         )
 
-    monkeypatch.setattr(screening_pipeline, "load_all_strategies", lambda _path: {"demo": strategy})
+    monkeypatch.setattr(screening_pipeline, "load_all_strategies_with_extra", lambda _config: {"demo": strategy})
     monkeypatch.setattr(screening_pipeline, "fetch_snapshot_with_fallback", lambda *args, **kwargs: snapshot_df.copy())
     monkeypatch.setattr(screening_pipeline, "apply_hard_filters", lambda df, _filters: df.copy())
     monkeypatch.setattr(
@@ -503,7 +557,7 @@ def test_default_scorecard_scores_full_pool_before_seeded_rotation(monkeypatch) 
         return original_variant(picks, **kwargs)
 
     run_ids = iter(f"{index:012d}" for index in range(20))
-    monkeypatch.setattr(screening_pipeline, "load_all_strategies", lambda _path: {"demo": strategy})
+    monkeypatch.setattr(screening_pipeline, "load_all_strategies_with_extra", lambda _config: {"demo": strategy})
     monkeypatch.setattr(screening_pipeline, "fetch_snapshot_with_fallback", lambda *args, **kwargs: snapshot_df.copy())
     monkeypatch.setattr(screening_pipeline, "apply_hard_filters", lambda df, _filters: df.copy())
     monkeypatch.setattr(

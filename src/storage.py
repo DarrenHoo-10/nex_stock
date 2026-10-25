@@ -2852,12 +2852,14 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             "warnings": cls._screening_json_list(row.warnings_json),
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }
+        try:
+            result = json.loads(row.result_json or "{}")
+        except (TypeError, ValueError):
+            result = {}
+        result = result if isinstance(result, dict) else {}
+        payload["scope"] = result.get("scope")
         if include_result:
-            try:
-                result = json.loads(row.result_json or "{}")
-            except (TypeError, ValueError):
-                result = {}
-            payload["result"] = result if isinstance(result, dict) else {}
+            payload["result"] = result
         return payload
 
     def get_recent_news(self, code: str, days: int = 7, limit: int = 20) -> List[NewsIntel]:

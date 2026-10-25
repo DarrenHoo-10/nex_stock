@@ -7,6 +7,7 @@ import hashlib
 import logging
 from dataclasses import asdict, fields
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -284,15 +285,29 @@ def _strategy_dir_signature(strategies_dir: Path) -> tuple[tuple[str, int, int, 
     return tuple(signature)
 
 
+def load_all_strategies_with_extra(config: Any) -> dict[str, Strategy]:
+    """Load bundled strategies plus the optional user strategies dir.
+
+    Extra-directory strategies override bundled ones on name conflict, mirroring
+    the agent-skill builtin + custom directory convention.
+    """
+    strategies = load_all_strategies(Path(config.strategies_dir))
+    extra_dir = getattr(config, "extra_strategies_dir", None)
+    if extra_dir:
+        strategies.update(load_all_strategies(Path(extra_dir)))
+    return strategies
+
+
 def list_strategies(strategies_dir: Path | None = None) -> list[StrategyInfo]:
     """List available screening strategies."""
     from src.services.screening.config import Config
     from src.services.screening.filter import requires_daily_features
 
     if strategies_dir is None:
-        strategies_dir = Config.from_env().strategies_dir
-
-    strategies = load_all_strategies(strategies_dir)
+        config = Config.from_env()
+        strategies = load_all_strategies_with_extra(config)
+    else:
+        strategies = load_all_strategies(strategies_dir)
     infos: list[StrategyInfo] = []
     for s in strategies.values():
         daily_required = requires_daily_features(s.screening.hard_filters)
@@ -808,6 +823,10 @@ def _required_snapshot_fields(filters_config: HardFilterConfig) -> list[str]:
         fields.append("turnover_rate")
     if filters_config.change_pct_min is not None or filters_config.change_pct_max is not None:
         fields.append("change_pct")
+    if filters_config.board_whitelist:
+        fields.append("code")
+    if filters_config.concept_keywords:
+        fields.append("concepts")
     return list(dict.fromkeys(fields))
 
 

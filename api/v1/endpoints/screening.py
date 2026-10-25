@@ -7,18 +7,20 @@ import uuid
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from api.deps import get_config_dep, get_database_manager
 from api.v1.errors import api_error
 from src.config import Config
 from src.services.screening.config import Config as ScreeningRuntimeConfig
 from src.services.screening.filter import check_hard_filters, validate_check_snapshot
-from src.services.screening.strategy import load_all_strategies
+from src.services.screening.strategy import load_all_strategies_with_extra
 from src.services.screening_service import ScreeningService, _ensure_screening_enabled
 from src.services.task_queue import TaskStatus as QueueTaskStatus
 from src.services.task_queue import get_task_queue
 from src.storage import DatabaseManager
+
+from src.services.screening.scope import ScreeningScope
 
 router = APIRouter()
 
@@ -28,6 +30,13 @@ class ScreeningScreenRequest(BaseModel):
     strategy: str = Field("dual_low", min_length=1, max_length=64)
     max_results: int = Field(20, ge=1, le=100)
     variant_seed: str = Field("", max_length=128)
+    scope: ScreeningScope = Field(default_factory=ScreeningScope)
+
+    @model_validator(mode="after")
+    def validate_scope_market(self):
+        if self.market != "cn" and (self.scope.boards or self.scope.topics):
+            raise ValueError("交易板块和题材筛选仅支持 A 股")
+        return self
 
 
 class ScreeningCheckRequest(BaseModel):
@@ -123,6 +132,14 @@ def screening_strategies(
     return _service(config).strategies()
 
 
+@router.get("/topics")
+def screening_topics(
+    q: str = Query("", max_length=80),
+    config: Config = Depends(get_config_dep),
+) -> Dict[str, Any]:
+    return _service(config).search_topics(q)
+
+
 @router.get("/hotspots")
 def screening_hotspots(
     provider: str = Query("", max_length=32),
@@ -174,7 +191,7 @@ def screening_check(
 ) -> ScreeningCheckResponse:
     """Check supplied values against all strategy hard filters, without fetching."""
     _ensure_screening_enabled(config)
-    strategies = load_all_strategies(ScreeningRuntimeConfig.from_env().strategies_dir)
+    strategies = load_all_strategies_with_extra(ScreeningRuntimeConfig.from_env())
     # Lookup catalog IDs only; never interpolate caller input into a file path.
     strategy = strategies.get(request.strategy)
     if strategy is None:
@@ -216,6 +233,7 @@ def screening_start_screen_task(
             market=request.market,
             max_results=request.max_results,
             selection_seed=request.variant_seed,
+            scope=request.scope,
             progress_callback=report_progress,
         )
         task_queue.update_task_progress(
@@ -275,6 +293,7 @@ def screening_screen(
         market=request.market,
         max_results=request.max_results,
         selection_seed=request.variant_seed,
+        scope=request.scope,
     )
 
 

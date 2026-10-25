@@ -35,6 +35,9 @@ from src.services.screening import REFERENCE_PROJECT, REFERENCE_REVISION, __vers
 from src.services.screening import hotspot as screening_hotspot
 from src.services.screening.config import Config as ScreeningPipelineConfig
 from src.services.screening.pipeline import screen as run_screening_pipeline
+from src.services.screening.scope import ScreeningScope
+from src.services.screening.normalize import normalize_code
+from src.services.screening.filter import _board_of
 from src.services.screening.source_guard import parse_source_timeout_seconds
 from src.services.screening.strategy import list_strategies as load_screening_strategies
 from src.storage import DatabaseManager
@@ -1209,6 +1212,69 @@ class ScreeningService:
             return _with_hotspot_search_augmentation(base_detail, topic=topic_text)
         return base_detail
 
+    def search_topics(self, query: str) -> Dict[str, Any]:
+        _ensure_screening_enabled(self.config)
+        _ensure_screening_available_for_use()
+        provider = DsaEastMoneyHotspotProvider()
+        items, errors = [], []
+        for source in ("concept", "industry"):
+            try:
+                items.extend(provider.screening_topic_catalog(source))
+            except Exception:
+                errors.append(f"{'概念' if source == 'concept' else '行业'}题材目录暂不可用，请稍后重试。")
+        if len(errors) == 2:
+            raise HTTPException(424, detail={"error": "screening_topics_unavailable", "message": "题材目录暂不可用，请稍后重试。"})
+        query = query.strip().casefold()
+        matches = [item for item in items if query in item["name"].casefold()]
+        matches.sort(key=lambda item: (item["name"].casefold() != query, item["name"], item["source"]))
+        return {"items": matches[:50], "warnings": errors}
+
+    def _resolve_scope(self, scope: ScreeningScope) -> tuple[list[set[str]], list[dict]]:
+        provider = DsaEastMoneyHotspotProvider() if scope.topics else None
+        memberships, evidence = [], []
+
+        def member_codes(frame) -> set[str]:
+            if frame is None or frame.empty:
+                raise ValueError("未取得可核验的成分股名单")
+            column = next((key for key in ("代码", "code", "symbol") if key in frame.columns), None)
+            if column is None:
+                raise ValueError("成分股名单缺少股票代码")
+            codes = {normalize_code(value) for value in frame[column]}
+            codes = {code for code in codes if _board_of(code)}
+            if not codes:
+                raise ValueError("成分股名单没有有效 A 股代码")
+            return codes
+
+        for topic in scope.topics:
+            try:
+                catalog = provider.screening_topic_catalog(topic.source)
+                if not any(item["name"] == topic.name for item in catalog):
+                    raise ValueError("题材不在当前目录中，请重新搜索并选择")
+                # Deliberately exclude detail previews, fuzzy matches and leader-stock fallbacks.
+                provider_name = "eastmoney"
+                coverage = "provider_returned"
+                try:
+                    with provider._source_call_budget():
+                        frame = provider._fetch_eastmoney_constituents(topic.name, source=topic.source)
+                    codes = member_codes(frame)
+                except Exception:
+                    if topic.source != "concept":
+                        raise
+                    with provider._source_call_budget():
+                        frame = provider._fetch_ths_constituents(topic.name, exact=True)
+                    codes = member_codes(frame)
+                    provider_name = "ths"
+                    coverage = "partial"
+            except Exception as exc:
+                raise HTTPException(424, detail={
+                    "error": "screening_topic_membership_unavailable",
+                    "message": f"无法核验题材“{topic.name}”的成分股，请重试或移除此题材；筛选范围未扩大。",
+                }) from exc
+            memberships.append(codes)
+            evidence.append({**topic.model_dump(), "provider": provider_name, "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                             "member_count": len(codes), "coverage": coverage, "stale": False})
+        return memberships, evidence
+
     def screen(
         self,
         *,
@@ -1216,6 +1282,7 @@ class ScreeningService:
         market: str,
         max_results: int,
         selection_seed: str = "",
+        scope: ScreeningScope | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> Dict[str, Any]:
         _ensure_screening_enabled(self.config)
@@ -1223,6 +1290,11 @@ class ScreeningService:
         _ensure_supported_market(market)
         _ensure_supported_strategy(strategy)
 
+        scope = scope or ScreeningScope()
+        if market != "cn" and (scope.boards or scope.topics):
+            raise HTTPException(422, detail={"error": "screening_scope_market", "message": "交易板块和题材筛选仅支持 A 股"})
+        _emit_screening_progress(progress_callback, 22, "正在核验选股范围")
+        memberships, topic_evidence = self._resolve_scope(scope)
         candidate_context_cache: Dict[str, Dict[str, Any]] = {}
         try:
             raw = _call_screening_screen(
@@ -1233,6 +1305,8 @@ class ScreeningService:
                 selection_seed=selection_seed,
                 progress_callback=progress_callback,
                 candidate_context_cache=candidate_context_cache,
+                scope=scope,
+                topic_memberships=memberships,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -1279,9 +1353,22 @@ class ScreeningService:
             )
             for candidate in selected
         ]
+        for candidate in selected:
+            code = normalize_code(candidate.get("code"))
+            candidate["board"] = _board_of(code) if market == "cn" else None
+            candidate["matched_topics"] = [topic.model_dump() for topic, members in zip(scope.topics, memberships) if code in members]
         warnings = _collect_screening_warning_messages(raw_data)
+        warnings.extend(
+            f"题材“{item['name']}”使用同花顺当前页的 {item['member_count']} 只已核验成分股，覆盖不完整，可能遗漏其他符合条件的股票。"
+            for item in topic_evidence if item["coverage"] == "partial"
+        )
         response = {
             "enabled": True,
+            "scope": scope.model_dump(),
+            "scope_counts": raw_data.get("scope_counts") or {},
+            "topic_evidence": topic_evidence,
+            "max_results": max_results,
+            "created_at": raw_data.get("created_at") or datetime.now(timezone.utc).isoformat(),
             "candidates": selected,
             "candidate_count": len(selected),
             "run_id": raw_data.get("run_id") or uuid.uuid4().hex,
@@ -1752,6 +1839,8 @@ def _call_screening_screen(
     max_results: int,
     config: Config,
     *,
+    scope: ScreeningScope | None = None,
+    topic_memberships: list[set[str]] | None = None,
     selection_seed: str = "",
     progress_callback: Callable[[int, str], None] | None = None,
     candidate_context_cache: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -1776,6 +1865,8 @@ def _call_screening_screen(
             max_output=max_results,
             use_llm=True,
             selection_seed=selection_seed,
+            scope=scope,
+            topic_memberships=topic_memberships,
             context=pipeline_context,
             config=pipeline_config,
             progress_callback=progress_callback,
@@ -2125,6 +2216,51 @@ class DsaEastMoneyHotspotProvider:
     _THS_TOPIC_ALIASES = {
         "文字媒体": ("文化传媒概念", "文化传媒"),
     }
+
+    _screening_catalog_cache: Dict[str, tuple[float, List[Dict[str, str]]]] = {}
+    _screening_catalog_lock = threading.Lock()
+    _screening_catalog_failures: Dict[str, float] = {}
+    _CATALOG_TTL_SECONDS = 300
+    _CATALOG_FAILURE_COOLDOWN_SECONDS = 30
+    _ths_names_cache: Optional[Tuple[float, Any]] = None
+    _ths_names_failure_at: Optional[float] = None
+    _ths_names_lock = threading.Lock()
+
+    def screening_topic_catalog(self, source: str) -> List[Dict[str, str]]:
+        """All provider topics, not the hot-list sample; short TTL with request coalescing."""
+        import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
+
+        with self._screening_catalog_lock:
+            cached = self._screening_catalog_cache.get(source)
+            if cached and time.monotonic() - cached[0] < self._CATALOG_TTL_SECONDS:
+                return [dict(item) for item in cached[1]]
+            failed_at = self._screening_catalog_failures.get(source)
+            if failed_at is not None and time.monotonic() - failed_at < self._CATALOG_FAILURE_COOLDOWN_SECONDS:
+                raise ValueError("题材目录暂不可用，请稍后重试")
+            try:
+                try:
+                    with self._source_call_budget():
+                        fetch = ak.stock_board_industry_name_em if source == "industry" else ak.stock_board_concept_name_em
+                        frame = _akshare_call_with_timeout(fetch, timeout=self._akshare_timeout_seconds(), call_name=f"screening.catalog.{source}")
+                    if frame is None or frame.empty or "板块名称" not in frame.columns:
+                        raise ValueError("题材目录不可用")
+                    names = [str(name).strip() for name in frame["板块名称"].dropna().unique() if str(name).strip()]
+                    if not names:
+                        raise ValueError("题材目录没有有效名称")
+                except Exception:
+                    if source != "concept":
+                        raise
+                    with self._source_call_budget():
+                        frame = self._fetch_ths_concept_names()
+                    names = frame["name"].tolist()
+                items = [{"name": name, "source": source} for name in dict.fromkeys(names)]
+            except Exception:
+                self._screening_catalog_failures[source] = time.monotonic()
+                raise
+            self._screening_catalog_failures.pop(source, None)
+            self._screening_catalog_cache[source] = (time.monotonic(), items)
+            return [dict(item) for item in items]
 
     def __init__(self) -> None:
         import requests
@@ -2807,11 +2943,11 @@ class DsaEastMoneyHotspotProvider:
             call_name=f"screening.{fetch.__name__}",
         )
 
-    def _fetch_ths_constituents(self, topic: str) -> Any:
+    def _fetch_ths_constituents(self, topic: str, *, exact: bool = False) -> Any:
         import pandas as pd
         import requests
 
-        code = self._resolve_ths_concept_code(topic)
+        code = self._resolve_ths_concept_code(topic, exact=True) if exact else self._resolve_ths_concept_code(topic)
         if not code:
             return pd.DataFrame()
         response = requests.get(
@@ -2821,6 +2957,19 @@ class DsaEastMoneyHotspotProvider:
         )
         response.raise_for_status()
         html = response.content.decode("gbk", "ignore")
+        if exact:
+            # Scope membership must come from the constituent table, never sidebars or news links.
+            from bs4 import BeautifulSoup
+            table = BeautifulSoup(html, "html.parser").select_one("table.m-table")
+            rows = []
+            if table is not None:
+                for row in table.select("tbody tr"):
+                    cells = row.select("td")
+                    if len(cells) >= 3:
+                        code_text = cells[1].get_text(strip=True)
+                        if re.fullmatch(r"\d{6}", code_text):
+                            rows.append({"code": code_text, "name": cells[2].get_text(strip=True)})
+            return pd.DataFrame(rows)
         rows = []
         seen = set()
         for match in re.finditer(r">(\d{6})<.*?>([^<>\n]{2,12})<", html, re.S):
@@ -2834,16 +2983,18 @@ class DsaEastMoneyHotspotProvider:
                 break
         return pd.DataFrame(rows)
 
-    def _resolve_ths_concept_code(self, topic: str) -> str:
+    def _resolve_ths_concept_code(self, topic: str, *, exact: bool = False) -> str:
         df = self._fetch_ths_concept_names()
         if df is None or df.empty:
             return ""
         names = df["name"].map(_env_text)
-        candidates = _dedupe_strings([topic, *self._THS_TOPIC_ALIASES.get(topic, ())])
+        candidates = [topic] if exact else _dedupe_strings([topic, *self._THS_TOPIC_ALIASES.get(topic, ())])
         for candidate in candidates:
             rows = df[names == candidate]
             if not rows.empty:
                 return _env_text(rows.iloc[0].get("code"))
+        if exact:
+            return ""
         for candidate in candidates:
             rows = df[names.str.contains(re.escape(candidate), case=False, na=False)]
             if not rows.empty:
@@ -2858,11 +3009,36 @@ class DsaEastMoneyHotspotProvider:
         import akshare as ak
         from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
-        return _akshare_call_with_timeout(
-            ak.stock_board_concept_name_ths,
-            timeout=self._akshare_timeout_seconds(),
-            call_name="screening.stock_board_concept_name_ths",
-        )
+        # Search and membership resolution share this directory across provider instances.
+        # AkShare may paginate internally, so never fetch it once per search/selected topic.
+        cls = type(self)
+        with cls._ths_names_lock:
+            cached = cls._ths_names_cache
+            if cached and time.monotonic() - cached[0] < self._CATALOG_TTL_SECONDS:
+                return cached[1].copy(deep=True)
+            failed_at = cls._ths_names_failure_at
+            if failed_at is not None and time.monotonic() - failed_at < self._CATALOG_FAILURE_COOLDOWN_SECONDS:
+                raise ValueError("同花顺题材目录暂不可用，请稍后重试")
+            try:
+                frame = _akshare_call_with_timeout(
+                    ak.stock_board_concept_name_ths,
+                    timeout=self._akshare_timeout_seconds(),
+                    call_name="screening.stock_board_concept_name_ths",
+                )
+                if frame is None or frame.empty or not {"name", "code"}.issubset(frame.columns):
+                    raise ValueError("同花顺题材目录缺少名称或代码")
+                frame = frame.dropna(subset=["name", "code"]).copy()
+                for column in ("name", "code"):
+                    frame[column] = frame[column].astype(str).str.strip()
+                frame = frame[(frame["name"] != "") & (frame["code"] != "")].drop_duplicates()
+                if frame.empty:
+                    raise ValueError("同花顺题材目录没有有效名称或代码")
+            except Exception:
+                cls._ths_names_failure_at = time.monotonic()
+                raise
+            cls._ths_names_failure_at = None
+            cls._ths_names_cache = (time.monotonic(), frame)
+            return frame.copy(deep=True)
 
     def _fallback_constituents(self, topic: str) -> Any:
         import pandas as pd

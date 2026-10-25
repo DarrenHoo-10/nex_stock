@@ -23,6 +23,8 @@ export type ScreeningStatus = {
 };
 
 export type ScreeningCandidate = {
+  board?: string;
+  matchedTopics?: ScreeningTopic[];
   rank: number;
   code: string;
   name: string;
@@ -217,7 +219,21 @@ export type ScreeningHotspotsResponse = {
   details?: Record<string, ScreeningHotspotDetail>;
 };
 
+export type ScreeningTopic = { name: string; source: 'concept' | 'industry' };
+export type ScreeningScope = {
+  boards: string[];
+  topics: ScreeningTopic[];
+  topicMatch: 'any' | 'all';
+};
+export type ScreeningRequest = { market: string; strategy: string; maxResults: number; scope?: ScreeningScope };
+
 export type ScreeningScreenResponse = {
+  scope?: ScreeningScope;
+  scopeCounts?: { boardCount: number; topicCount: number };
+  topicEvidence?: (ScreeningTopic & { provider: string; retrievedAt: string; memberCount: number; coverage: string })[];
+  maxResults?: number;
+  createdAt?: string;
+  strategyVersion?: string;
   enabled: boolean;
   candidates: ScreeningCandidate[];
   candidateCount: number;
@@ -278,6 +294,7 @@ export type ScreeningScreenTaskStatus = {
 };
 
 export type ScreeningRunSummary = {
+  scope?: ScreeningScope;
   runId: string;
   strategy: string;
   market: string;
@@ -366,27 +383,33 @@ async function setScreeningEnabled(value: 'true' | 'false'): Promise<void> {
 }
 
 export const screeningApi = {
+  async searchTopics(q: string): Promise<{ items: ScreeningTopic[]; warnings: string[] }> {
+    const response = await apiClient.get('/api/v1/screening/topics', { params: { q } });
+    return toCamelCase(response.data);
+  },
   async getStatus(): Promise<ScreeningStatus> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/screening/status');
     return toCamelCase<ScreeningStatus>(response.data);
   },
 
-  async screen(payload: { market: string; strategy: string; maxResults: number }): Promise<ScreeningScreenResponse> {
+  async screen(payload: ScreeningRequest): Promise<ScreeningScreenResponse> {
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/screening/screen', {
       market: payload.market,
       strategy: payload.strategy,
       max_results: payload.maxResults,
       variant_seed: getScreeningVariantSeed(),
+      ...(payload.scope ? { scope: { boards: payload.scope.boards, topics: payload.scope.topics, topic_match: payload.scope.topicMatch } } : {}),
     }, { timeout: SCREENING_SCREEN_TIMEOUT_MS });
     return toCamelCase<ScreeningScreenResponse>(response.data);
   },
 
-  async startScreen(payload: { market: string; strategy: string; maxResults: number }): Promise<ScreeningScreenAccepted> {
+  async startScreen(payload: ScreeningRequest): Promise<ScreeningScreenAccepted> {
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/screening/screen/tasks', {
       market: payload.market,
       strategy: payload.strategy,
       max_results: payload.maxResults,
       variant_seed: getScreeningVariantSeed(),
+      ...(payload.scope ? { scope: { boards: payload.scope.boards, topics: payload.scope.topics, topic_match: payload.scope.topicMatch } } : {}),
     });
     return toCamelCase<ScreeningScreenAccepted>(response.data);
   },

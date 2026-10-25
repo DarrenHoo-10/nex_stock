@@ -26,14 +26,14 @@ SNAPSHOT = {
     "total_mv": 10000000000, "pe_ratio": 8, "pb_ratio": 1, "change_pct": 0,
 }
 ALL_FIELDS = {
-    "name": "Example", "price": 5, "amount": 5, "total_mv": 5,
-    "pe_ratio": 5, "pb_ratio": 5, "volume_ratio": 5, "turnover_rate": 5,
-    "change_pct": 5, "change_60d": 5, "ma_bullish": True,
+    "name": "Example", "code": "600000", "price": 5, "amount": 5,
+    "total_mv": 5, "pe_ratio": 5, "pb_ratio": 5, "volume_ratio": 5,
+    "turnover_rate": 5, "change_pct": 5, "change_60d": 5, "ma_bullish": True,
     "price_above_ma20": True, "signal_score": 5, "macd_status": "bullish",
     "rsi_status": "bullish", "breakout_20d_pct": 5, "range_20d_pct": 5,
     "volume_ratio_20d": 5, "body_pct": 5, "pullback_to_ma20_pct": 5,
     "consolidation_days_20d": 5, "volatility_20d_pct": 5,
-    "max_drawdown_20d_pct": 5, "atr_20_pct": 5,
+    "max_drawdown_20d_pct": 5, "atr_20_pct": 5, "concepts": "alpha;beta",
 }
 
 
@@ -51,7 +51,11 @@ def client(monkeypatch):
 def test_all_conditions_reuse_pipeline_predicates_without_short_circuit():
     thresholds = {}
     for field in fields(HardFilterConfig):
-        if field.name.endswith("_min"):
+        if field.name == "board_whitelist":
+            thresholds[field.name] = ["main_board"]
+        elif field.name == "concept_keywords":
+            thresholds[field.name] = ["alpha"]
+        elif field.name.endswith("_min"):
             thresholds[field.name] = 0
         elif field.name.endswith("_max"):
             thresholds[field.name] = 10
@@ -65,11 +69,16 @@ def test_all_conditions_reuse_pipeline_predicates_without_short_circuit():
     assert all(item["status"] == "pass" for item in checks)
     assert [item["filter"] for item in checks] == list(thresholds)
     assert not apply_hard_filters(pd.DataFrame([ALL_FIELDS]), filters).empty
-    rejected = {**ALL_FIELDS, "name": "ST Example", "atr_20_pct": 20}
+    rejected = {
+        **ALL_FIELDS, "name": "ST Example", "atr_20_pct": 20,
+        "concepts": "unrelated",
+    }
     checks = check_hard_filters(rejected, filters)
     assert checks[0]["status"] == "fail"
     assert checks[-1]["status"] == "fail"
-    assert checks[-1]["current_value"] == 20
+    by_name = {item["filter"]: item for item in checks}
+    assert by_name["atr_20_pct_max"]["status"] == "fail"
+    assert by_name["atr_20_pct_max"]["current_value"] == 20
     assert len(checks) == len(thresholds)
     assert apply_hard_filters(pd.DataFrame([rejected]), filters).empty
     for item in checks:

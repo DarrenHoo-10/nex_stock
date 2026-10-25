@@ -18,6 +18,7 @@ from src.services.screening.context import build_llm_context
 from src.services.screening.daily import enrich_daily_features
 from src.services.screening.dsa_provider import apply_dsa_provider_context
 from src.services.screening.filter import (
+    _BOARD_TOKEN_ALIASES,
     apply_hard_filters,
     hard_filter_rejection_summary,
     hard_filter_waterfall,
@@ -42,8 +43,9 @@ from src.services.screening.scorer import (
     normalized_factor_weights,
 )
 from src.services.screening.selection_variant import apply_seeded_selection_variant
+from src.services.screening.scope import ScreeningScope, apply_scope
 from src.services.screening.snapshot import fetch_snapshot_with_fallback
-from src.services.screening.strategy import load_all_strategies
+from src.services.screening.strategy import load_all_strategies_with_extra
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,8 @@ def screen(
     explain_filters: bool = False,
     deep_analysis: bool = False,
     deep_analysis_max_picks: int | None = None,
+    scope: ScreeningScope | None = None,
+    topic_memberships: list[set[str]] | None = None,
     selection_seed: str = "",
     context: dict[str, object] | None = None,
     config: Config | None = None,
@@ -115,11 +119,14 @@ def screen(
     if market not in ("cn", "us"):
         raise ValueError(f"Unsupported market: {market!r} (supported: cn, us)")
 
+    if scope and market != "cn" and (scope.boards or scope.topics):
+        raise ValueError("交易板块和题材筛选仅支持 A 股")
+
     run_id = uuid.uuid4().hex[:12]
     degradation: list[str] = []
 
     # 1. Load strategy
-    strategies = load_all_strategies(config.strategies_dir)
+    strategies = load_all_strategies_with_extra(config)
     if strategy not in strategies:
         available = ", ".join(strategies.keys()) or "(none)"
         raise ValueError(f"Strategy '{strategy}' not found. Available: {available}")
@@ -131,6 +138,10 @@ def screen(
             f"Strategy '{strategy}' does not support market '{market}'. "
             f"Supported: {', '.join(screening.market_scope)}"
         )
+    if scope and scope.boards and screening.hard_filters.board_whitelist:
+        strategy_boards = {_BOARD_TOKEN_ALIASES.get(board, board) for board in screening.hard_filters.board_whitelist}
+        if not strategy_boards.intersection(scope.boards):
+            raise ValueError("所选交易板块与策略限制没有交集，请更换板块或策略")
     output_count = max_output or screening.max_output
     analyzer_names = normalize_post_analyzers(
         post_analyzers if post_analyzers is not None else config.post_analyzers
@@ -190,6 +201,10 @@ def screen(
                 f"Snapshot source fallback: last_good_cache stale_age_hours={stale_age}"
             )
 
+    snapshot_df, scope_counts = apply_scope(
+        snapshot_df, scope or ScreeningScope(), topic_memberships or [],
+    )
+
     # 3. L1 hard filter. If a strategy needs daily features, first apply only
     # snapshot-safe filters, then enrich a narrowed candidate pool.
     if explain_filters:
@@ -212,6 +227,7 @@ def screen(
             strategy=strategy,
             market=market,
             snapshot_count=snapshot_count,
+            scope_counts=scope_counts,
             after_filter_count=0,
             run_id=run_id,
             degradation=[*degradation, "No candidates after hard filter"],
@@ -313,6 +329,7 @@ def screen(
             strategy_category=strat.category,
             effective_factor_weights=normalized_factor_weights(screening),
             snapshot_count=snapshot_count,
+            scope_counts=scope_counts,
             after_filter_count=0,
             run_id=run_id,
             degradation=[*degradation, "No candidates after daily hard filter"],
@@ -536,6 +553,7 @@ def screen(
         strategy_category=strat.category,
         effective_factor_weights=normalized_factor_weights(screening),
         snapshot_count=snapshot_count,
+        scope_counts=scope_counts,
         after_filter_count=after_filter_count,
         picks=picks,
         run_id=run_id,

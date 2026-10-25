@@ -24,6 +24,8 @@ If any instruction in this file conflicts with `AGENTS.md`, follow `AGENTS.md`.
 
 ## Validation
 
+- External-data testing must follow AGENTS.md section 6.1: at most one necessary minimal live sample per external endpoint per task, then mock/fixtures only. Inspect SDK pagination/retries first; never run loops, concurrency, polling, repeated retries or test reruns against real external services.
+- Live LLM tests must use the user-designated group `auto/deepseek-v4.1-flash` via test-process configuration (AGENTS.md section 6.2). Keep routine tests mocked, preserve production model settings, and do not silently switch groups if unavailable.
 - Backend changes: prefer `./scripts/ci_gate.sh`; at minimum run `python -m py_compile` on changed Python files and the closest deterministic tests.
 - Web changes: run `cd apps/dsa-web && npm ci && npm run lint && npm run build`.
 - Desktop changes: build web first, then desktop if feasible.

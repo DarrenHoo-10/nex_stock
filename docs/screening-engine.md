@@ -36,16 +36,66 @@ SCREENING_SNAPSHOT_CALL_TIMEOUT_SEC=60
 SCREENING_DAILY_CALL_TIMEOUT_SEC=20
 SCREENING_EASTMONEY_MIN_INTERVAL_SEC=1.0
 SCREENING_EASTMONEY_JITTER_SEC=0.3
+SCREENING_EXTRA_STRATEGIES_DIR=
 ```
+
+`SCREENING_EXTRA_STRATEGIES_DIR` 指定用户自定义选股策略目录（可选）：目录下的 YAML 会与内置策略合并，同名时覆盖内置策略。目录格式与内置 `strategies` 目录一致（策略 YAM schema 相同），且不受 AlphaSift 派生出处声明约束，适合放置用户自建策略。
+
+硬过滤 DSL 支持板块与题材维度的可选字段（写入策略 YAML 的 `screening.hard_filters`）：
+
+- `board_whitelist`：板块白名单，取值 `main_board`（沪深主板）/ `chinext`（创业板）/ `star_market`（科创板）/ `bse`（北交所），也接受中文别名（主板/创业板/科创板/北交所）；按证券代码前缀判定，无法识别的代码视为不匹配。
+- `concept_keywords`：概念题材关键词列表，快照概念文本包含任一关键词即通过。快照不含概念列时（如部分数据源 fallback）该条件自动放行（fail-open）；概念列存在但匹配不到关键词的个股会被排除。
+
+两个字段均可选，不配置时不改变任何现有策略行为。
 
 路径、缓存、超时和限流项只影响选股链路。`SCREENING_SNAPSHOT_CACHE_TTL_SEC` 默认 300 秒，设为 `0` 可关闭新鲜快照复用。`SCREENING_HOTSPOT_CALL_TIMEOUT_SEC` 的正数值是默认热点 provider 单次板块、成分股或直接详情 fallback 调用的总预算，后续 fallback 和并行成分股源共用同一截止时间，并把剩余时间传入可终止的 AkShare 子进程与 HTTP socket；设为 `0/off/disabled` 只关闭这层总预算，各真实数据源仍保留自身硬超时。`SCREENING_HOTSPOT_SEARCH_TIMEOUT_SEC` 是用户主动新闻搜索的端到端截止时间，缓存 owner 等待、重新竞争和 provider 子进程共享同一个绝对 deadline；`0/off/disabled` 会回退到安全默认值 12 秒，而不是无限等待。完整示例以 `.env.example` 为准。
 
 ## API 契约
 
+### 页面选股范围
+
+选股页顶部可多选沪深主板、创业板、科创板、北交所；“全部 A 股”表示不额外限制交易板块。题材搜索覆盖数据源概念与行业目录，不限于热点榜，最多选择 5 个，支持“任一”（并集）或“全部”（交集）。热点卡片点击查看详情，“加入筛选”单独添加条件；同名题材有歧义或目录只部分可用时，需在搜索结果中明确选择。加入题材不会自动运行。
+
+同步与后台选股接口均接受可选 `scope`，示例：
+
+```json
+{
+  "market": "cn",
+  "strategy": "volume_breakout",
+  "max_results": 10,
+  "scope": {
+    "boards": ["main_board"],
+    "topics": [{"name": "机器人概念", "source": "concept"}],
+    "topic_match": "any"
+  }
+}
+```
+
+- `boards` 取值与策略 `board_whitelist` 相同，但 API 只接受英文枚举；空数组表示全部。`topics` 使用目录返回的精确名称与 `source`（`concept` / `industry`），空数组表示全部题材。未知字段、重复题材、超过 5 个题材和非法枚举返回 `422`；非 A 股请求不能附带板块或题材限制。
+- 执行顺序为交易板块 → 题材成分股 → 原策略硬过滤与排序；请求条件与策略条件共同生效，不修改策略文件或共享配置。`max_results` 是返回上限，不保证补足数量，无匹配时正常返回并保存空结果。
+- 成分股优先复用有超时边界的东方财富数据源；概念目录或成分股不可用时，允许同花顺精确名称备用源，只接受精确目录题材，不使用热点详情的前 30 只、新闻推断、模糊关联或核心股回退。题材目录/成分股失败或无法识别时返回 `424`（后台任务记录失败），不扩大到全市场，也不忽略失败的某一个题材。成分股按来源返回名单执行，不能保证覆盖所有相关股票；结果记录 `coverage=provider_returned`、来源、获取时间和数量，获取时间不表示题材归属在该时刻发生变化。同花顺备用路径只读取成分股表格当前页，明确记录 `provider=ths`、`coverage=partial` 并返回覆盖不完整警告；不从侧栏股票、模糊题材或新闻链接提取归属。所有来源失败时暂不使用旧成分股缓存。
+- 策略 DSL 的 `concept_keywords` 仍保留旧的缺列放行语义；页面显式题材范围使用独立、严格的成分股集合，不受该放行行为影响。
+- 结果追加 `scope`、`scope_counts`（`board_count` / `topic_count`）、`topic_evidence`、`max_results`、`created_at`；候选追加 `board`、`matched_topics`。范围计数发生在策略过滤前，板块数不包含策略自带过滤，题材数仅统计行情快照中实际存在的成分股。原有 `after_filter_count` 保留策略过滤后的口径。
+- 新运行完整保存条件与归属证据，历史列表追加 `scope`，不需要数据库迁移；旧记录未保存范围时页面明确标注未知，不反推或回填。页面记住板块/题材选择并恢复活动任务条件；修改表单不改变已有结果，单股深度分析仍沿用结果对应策略。点击“使用这些条件重新选股”只填入历史条件，再点击运行按新数据筛选。
+- 不传 `scope` 的旧 API 客户端行为不变；Web 与 Desktop 共用 Web 页面，无新增环境变量或通知、交易动作。
+
+#### Tushare 题材接口评估
+
+第一版确定使用东方财富优先、同花顺备用，不要求新增账号。概念题材的东财请求超时、返回空表、缺少股票代码或全部代码无效时，均尝试同花顺精确名称备用源；备用数据仍须通过代码校验。行业题材暂仅使用东财，不能将概念目录当作行业目录降级。两者均无法核验时失败，不保存全市场替代结果。同花顺当前页覆盖限制在条件区及结果中同时提示。
+
+目录成功结果在进程内共享缓存 5 分钟，同花顺名称/代码映射由搜索和成分股核验复用，避免每次选题材重复抓取整个目录。相同目录并发请求合并，失败后冷却 30 秒再尝试真实请求；过期目录失败时不静默复用旧映射。页面搜索失败或目录部分可用时提供“重试题材搜索”，冷却期间重试仍返回暂不可用，不会绕过频控保护。部署多个服务进程时各进程独立缓存。
+
+Tushare 的接口能力能够覆盖“题材 ∩ 沪深主板 ∩ 策略”：[`stock_basic`](https://tushare.pro/document/2?doc_id=25) 提供 `market`、`exchange` 和上市状态；[`ths_index`](https://tushare.pro/document/2?doc_id=259) 与 [`ths_member`](https://tushare.pro/document/2?doc_id=261) 提供概念/行业目录及最新成分股；[`dc_index`](https://tushare.pro/document/2?doc_id=362) 与 [`dc_member`](https://tushare.pro/document/2?doc_id=363) 支持按交易日期查询板块及成分。题材接口在官方文档中标注需要 6000 积分，基础信息接口可用不代表题材接口也有权限。
+
+当前页面范围链路尚未接入 Tushare 题材接口，行情快照已有的 Tushare 优先级不等于题材来源优先级。启用前必须分别验证目录和成分股权限；有权限时应优先采用同一套目录与成分接口，并保存题材代码、来源和数据日期。不得仅凭同名跨来源替换题材，也不得把权限拒绝或空成分解释为“全部股票”。
+
+#### API 路径
+
 | 路径 | 方法 | 行为 |
 | --- | --- | --- |
 | `/api/v1/screening/status` | GET | 返回开关、引擎状态、契约版本、参考项目和数据源健康信息 |
 | `/api/v1/screening/strategies` | GET | 返回选股策略 |
+| `/api/v1/screening/topics?q=关键词` | GET | 搜索概念/行业目录，最多返回 50 项；`warnings` 标识部分目录失败，全部失败返回 `424` |
 | `/api/v1/screening/hotspots` | GET | 读取缓存或显式刷新热点题材 |
 | `/api/v1/screening/hotspots/{topic}` | GET | 返回题材路线、成分股与核心股；`include_search=true` 时按需搜索近期消息 |
 | `/api/v1/screening/screen/check` | POST | 用调用方提供的单条快照，逐项检查策略硬过滤条件；不抓取行情 |

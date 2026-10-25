@@ -157,6 +157,11 @@ def _resolve_strategies_dir() -> Path:
     return _parse_optional_path_env("STRATEGIES_DIR") or _default_strategies_dir()
 
 
+def _resolve_extra_strategies_dir() -> Path | None:
+    """Optional user strategies directory, merged over the bundled dir (extra wins on name conflict)."""
+    return _parse_optional_path_env("SCREENING_EXTRA_STRATEGIES_DIR")
+
+
 @dataclass
 class Config:
     """Runtime configuration, loaded from env vars."""
@@ -199,6 +204,7 @@ class Config:
 
     # Strategy directory
     strategies_dir: Path = field(default_factory=_default_strategies_dir)
+    extra_strategies_dir: Path | None = field(default_factory=_resolve_extra_strategies_dir)
 
     # Optional deterministic industry/concept enrichment.
     industry_map_files: list[Path] = field(default_factory=list)
@@ -332,6 +338,7 @@ class Config:
                 "SNAPSHOT_FALLBACK_MAX_AGE_HOURS"
             ),
             strategies_dir=_resolve_strategies_dir(),
+            extra_strategies_dir=_resolve_extra_strategies_dir(),
             industry_map_files=[
                 Path(item)
                 for item in _parse_csv_env("INDUSTRY_MAP_FILES", [])

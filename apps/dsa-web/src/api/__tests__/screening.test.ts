@@ -400,3 +400,14 @@ describe('screeningApi', () => {
     expect(result.result?.postAnalyzers).toEqual(['scorecard']);
   });
 });
+
+
+describe('explicit screening scope', () => {
+  it.each(['screen', 'startScreen'] as const)('sends identical snake-case scope via %s', async method => {
+    post.mockResolvedValueOnce({ data: {} });
+    await screeningApi[method]({ market: 'cn', strategy: 'dual_low', maxResults: 5,
+      scope: { boards: ['main_board'], topics: [{ name: '机器人', source: 'concept' }], topicMatch: 'all' },
+    });
+    expect(post.mock.lastCall?.[1].scope).toEqual({ boards: ['main_board'], topics: [{ name: '机器人', source: 'concept' }], topic_match: 'all' });
+  });
+});
