@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 新增[个股研究报告交互设计稿](design/stock-research/stock-research-report.html)，附财务证据展示、交易图示与内部分析快照设计说明。
+
 - [改进] 选股支持直接添加自定义题材与点击热门推荐，按板块/策略收集候选后由模型过滤题材并排序，保存匹配理由；推荐按来源涨停池内去重股票数排序并标注日期和覆盖范围。
 
 - [文档] 明确外部数据接口测试频控规则：最多一次必要的真实采样，后续使用 mock / fixture，禁止测试脚本高频调用真实接口。
