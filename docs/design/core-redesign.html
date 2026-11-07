@@ -1,0 +1,1346 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>次日计划 · 核心流程设计稿</title>
+<meta name="description" content="A 股收盘后的次日计划：板块异动、机会选股、我的股票与助手的可点击设计稿（visionOS 玻璃风格，演示数据）。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%235B67A0'/%3E%3Cpath d='M9 22l5-6 4 3 6-8' stroke='%23fff' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root{
+  color-scheme:dark;
+  --t1:#FFFFFF;--t2:rgba(255,255,255,.84);--t3:rgba(255,255,255,.7);--t4:rgba(255,255,255,.5);
+  --line:rgba(255,255,255,.14);--fill:rgba(255,255,255,.07);--fill2:rgba(255,255,255,.13);--fill3:rgba(255,255,255,.2);
+  --accent:#A9CAFF;--up:#FFB3AB;--down:#7FE0D2;--up-mark:#FF7468;--down-mark:#3CC3B4;--risk:#FFCF6E;
+  --glass:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.04)),rgba(30,36,74,.5);
+  --glass-edge:inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 0 1px rgba(255,255,255,.1);
+  --glass-shadow:0 30px 70px -20px rgba(12,16,44,.55);
+  --blur:blur(36px) saturate(160%);
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","PingFang SC","Segoe UI Variable Text","HarmonyOS Sans SC","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+  --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Segoe UI Variable Display","HarmonyOS Sans SC","Microsoft YaHei UI",sans-serif;
+  --r-win:30px;--r-in:20px;--r-row:16px;
+  --spring:cubic-bezier(.2,.9,.25,1);
+  --z-orn:20;--z-drawer:40;--z-toast:60;
+}
+@supports (transition-timing-function:linear(0,1)){
+  :root{--spring:linear(0,.06 2.5%,.24 6%,.5 11%,.74 17%,.9 23%,.99 30%,1.03 37%,1.035 43%,1.02 52%,1.005 64%,1)}
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;min-height:100dvh;color:var(--t1);font:14px/1.6 var(--sans);-webkit-font-smoothing:antialiased;background:#414E80}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;-webkit-tap-highlight-color:transparent}
+p{margin:0}
+h1,h2,h3{margin:0;font-family:var(--display);letter-spacing:-.01em}
+.num{font-variant-numeric:tabular-nums;letter-spacing:-.005em}
+.up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--t3)}
+:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.skiplink{position:absolute;left:12px;top:-60px;background:#fff;color:#2B3260;padding:8px 14px;border-radius:999px;z-index:99}
+.skiplink:focus{top:10px}
+.vh{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* 环境背景：模糊的冷色光斑 + 细颗粒 */
+.bg{position:fixed;inset:0;z-index:-1;overflow:hidden;background:linear-gradient(165deg,#56639C 0%,#465487 45%,#3A4675 100%)}
+.bg i{position:absolute;border-radius:50%;filter:blur(90px);opacity:.75}
+.bg i:nth-child(1){width:52vw;height:52vw;left:-12vw;top:-18vw;background:#8EA2DA}
+.bg i:nth-child(2){width:44vw;height:44vw;right:-10vw;top:-6vw;background:#A496D2}
+.bg i:nth-child(3){width:50vw;height:40vw;left:30vw;bottom:-22vw;background:#6F93C2}
+.bg i:nth-child(4){width:26vw;height:26vw;right:14vw;bottom:8vw;background:#B5A7D8;opacity:.4}
+.bg::after{content:"";position:absolute;inset:0;opacity:.06;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+/* 玻璃材质 */
+.glass,.win{background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);box-shadow:var(--glass-edge),var(--glass-shadow)}
+.win{position:relative;border-radius:var(--r-win);min-width:0}
+.win::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;transition:opacity .4s;background:radial-gradient(520px circle at var(--mx,50%) var(--my,0%),rgba(255,255,255,.07),transparent 60%)}
+.win:hover::before{opacity:1}
+
+/* 悬浮导航（visionOS 侧边装饰条） */
+.ornament{position:fixed;left:22px;top:50%;transform:translateY(-50%);z-index:var(--z-orn);display:flex;flex-direction:column;gap:4px;padding:8px;border-radius:40px;width:78px}
+.orn-btn{position:relative;isolation:isolate;border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:2px;padding:11px 0 9px;border-radius:26px;color:var(--t3);font-size:11px;transition:color .25s}
+.orn-btn:hover{color:#fff}
+.orn-btn[aria-current=page]{color:#fff;font-weight:600}
+.orn-btn .pill{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3);box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
+.orn-sep{height:1px;background:var(--line);margin:4px 10px}
+
+/* 页面 */
+.app{max-width:1560px;margin:0 auto;padding:30px 32px 48px 128px}
+main:focus{outline:none}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.head h1{font-size:34px;line-height:1.15;font-weight:700;letter-spacing:-.025em;text-shadow:0 2px 18px rgba(20,24,60,.25)}
+.sub{color:var(--t3);font-size:13px;margin-top:3px;text-wrap:pretty}
+.head .sub{color:var(--t2)}
+.head-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.cap{display:inline-flex;align-items:center;gap:8px;border:0;border-radius:999px;padding:8px 15px;font-size:13px;color:var(--t2);background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);box-shadow:var(--glass-edge);transition:transform .3s var(--spring),background .2s}
+.cap:hover{background:linear-gradient(180deg,rgba(255,255,255,.18),rgba(255,255,255,.08)),rgba(30,36,74,.5)}
+.cap:active{transform:scale(.97)}
+.dot{width:8px;height:8px;border-radius:50%;background:#7BE3B0;box-shadow:0 0 10px #7BE3B0;flex:none}
+
+/* 按钮与分段控件 */
+.btn{position:relative;border:0;border-radius:999px;padding:8px 17px;font-size:14px;display:inline-flex;gap:7px;align-items:center;justify-content:center;background:var(--fill2);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.18);transition:background .2s,transform .3s var(--spring)}
+.btn:hover{background:var(--fill3)}
+.btn:active{transform:scale(.96)}
+.btn.primary{background:#fff;color:#2B3266;font-weight:600;box-shadow:0 8px 24px -8px rgba(10,14,40,.5)}
+.btn.primary:hover{background:#EEF1FF}
+.btn.quiet{background:none;box-shadow:none;color:var(--accent);padding-left:10px;padding-right:10px}
+.btn.quiet:hover{background:var(--fill)}
+.btn.sm{padding:6px 13px;font-size:13px}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.seg{display:inline-flex;padding:3px;border-radius:999px;background:rgba(10,14,40,.22);box-shadow:inset 0 1px 2px rgba(0,0,0,.15);max-width:100%}
+.seg button{position:relative;isolation:isolate;border:0;background:none;border-radius:999px;padding:6px 15px;font-size:13px;color:var(--t3);transition:color .25s;white-space:nowrap}
+.seg button[aria-pressed=true]{color:#fff;font-weight:600}
+.seg .thumb{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3);box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 4px 12px -4px rgba(0,0,0,.3)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:0;border-radius:999px;padding:4px 12px;font-size:13px;background:var(--fill);color:var(--t2);transition:background .2s,color .2s}
+.chip:hover{background:var(--fill2)}
+.chip[aria-pressed=true]{background:#fff;color:#2B3266;font-weight:600}
+.tag{display:inline-block;font-size:12px;line-height:22px;padding:0 9px;border-radius:999px;background:var(--fill2);color:#fff;white-space:nowrap;font-weight:500}
+.tag.buy{background:rgba(255,116,104,.3);color:#FFE0DC}
+.tag.wait{background:rgba(156,194,255,.26);color:#E3EEFF}
+.tag.skip{background:var(--fill);color:var(--t3)}
+.tag.hold{background:#fff;color:#2B3266}
+.tag.warn{background:rgba(255,207,110,.24);color:#FFEBC0}
+.tag.line{background:none;box-shadow:inset 0 0 0 1px var(--line);color:var(--t2)}
+
+/* 两窗布局：左列表窗 + 右详情窗 */
+.grid2{display:grid;grid-template-columns:340px minmax(0,1fr);gap:20px;align-items:start}
+.side{position:sticky;top:24px;max-height:calc(100dvh - 48px);display:flex;flex-direction:column;overflow:hidden}
+.list-scroll{overflow:auto;padding:6px 10px 14px;flex:1;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.25) transparent}
+.acct{padding:20px 20px 16px;border-bottom:1px solid var(--line)}
+.stats{display:grid;grid-template-columns:1.25fr 1fr .9fr;gap:8px}
+.stats .k{font-size:12px;color:var(--t3)}
+.stats .v{font-size:21px;font-weight:650;font-family:var(--display);line-height:1.25;white-space:nowrap}
+.stats .v small{font-size:14px;font-weight:500}
+.rules-line{font-size:12px;color:var(--t3);margin-top:10px}
+.acct-acts{display:flex;gap:4px;margin-top:10px;margin-left:-4px;flex-wrap:wrap}
+.group-label{display:flex;justify-content:space-between;font-size:12px;color:var(--t3);padding:14px 10px 6px}
+.rows{list-style:none;margin:0;padding:0}
+.row{position:relative;isolation:isolate;width:100%;border:0;background:none;text-align:left;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:11px 12px;border-radius:var(--r-row);transition:background .2s}
+.row:hover{background:var(--fill)}
+.row .ind{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3);box-shadow:inset 0 1px 0 rgba(255,255,255,.22)}
+.row .ind::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:3px;background:#fff}
+.r-top{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}
+.r-top .nm{font-weight:600;font-size:15px;white-space:nowrap}
+.cd{font-size:12px;color:var(--t4);font-variant-numeric:tabular-nums}
+.r-px{grid-row:1/3;grid-column:2;text-align:right;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;line-height:1.35}
+.r-px b{font-weight:600;font-size:15px}
+.r-px span{font-size:12px}
+.one{grid-column:1;color:var(--t3);font-size:12.5px;line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.add-row{padding:10px 4px 0}
+
+/* 详情窗 */
+.detail{padding:26px 32px 30px}
+.back{display:none}
+.d-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.d-head .id{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.d-head h2{font-size:24px;font-weight:700}
+.d-price{font-size:17px;font-weight:600;display:flex;gap:10px;align-items:baseline}
+.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px 40px;align-items:end;margin-top:12px}
+.verdict{font-family:var(--display);font-size:76px;line-height:1.05;font-weight:800;letter-spacing:-.035em;background:linear-gradient(180deg,#fff 30%,var(--vtint,#fff));-webkit-background-clip:text;background-clip:text;color:transparent;padding-bottom:4px;filter:drop-shadow(0 6px 24px rgba(20,24,64,.35));width:fit-content}
+.verdict.v-buy{--vtint:#FFD2CC}.verdict.v-wait{--vtint:#CFE0FF}.verdict.v-skip{opacity:.62}.verdict.v-state{font-size:56px}
+.summary{font-size:17px;line-height:1.65;margin-top:12px;max-width:40em;color:var(--t1);text-wrap:pretty}
+.meta{font-size:12px;color:var(--t3);margin-top:8px}
+.figs{display:grid;grid-template-columns:repeat(2,minmax(110px,auto));gap:14px 30px;margin:0;padding:16px 20px;border-radius:var(--r-in);background:var(--fill)}
+.figs.three{grid-template-columns:repeat(3,minmax(96px,auto))}
+.figs dt{font-size:12px;color:var(--t3)}
+.figs dd{margin:0;font-size:22px;font-weight:650;font-family:var(--display);line-height:1.3;white-space:nowrap}
+.figs dd small{font-size:13px;font-weight:500;color:var(--t2);margin-left:2px}
+.body{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:40px;margin-top:26px;padding-top:24px;border-top:1px solid var(--line);align-items:start}
+.body.single{grid-template-columns:minmax(0,1fr)}
+/* 按详情窗自身宽度排版，而不是按屏幕宽度 */
+.detail{container-type:inline-size}
+.plan{container-type:inline-size;min-width:0}
+@container (max-width:780px){
+  .detail .body{grid-template-columns:minmax(0,1fr)}
+  .detail .ladder{max-width:270px}
+}
+@container (max-width:500px){
+  .plan .ifthen li{grid-template-columns:1fr;gap:6px}
+  .plan .ifthen .arr{display:none}
+  .plan .cmp{grid-template-columns:1fr}
+}
+.plan>section+section,.plan>section+.actions{margin-top:26px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;margin-bottom:10px}
+.sec-head h3,.plan h3{font-size:15px;font-weight:650}
+.plan>section>h3{margin-bottom:8px}
+.ifthen{list-style:none;margin:0;padding:0}
+.ifthen li{display:grid;grid-template-columns:minmax(0,1fr) 22px minmax(0,1fr);align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line)}
+.ifthen li:last-child{border-bottom:0}
+.ifthen .if{color:var(--t2)}
+.ifthen .arr{color:var(--t4);text-align:center}
+.ifthen .then{justify-self:start;font-weight:600;padding:4px 12px;border-radius:12px;background:var(--fill2)}
+.then.a-sell{background:rgba(255,207,110,.2);color:#FFEBC0}
+.then.a-buy{background:rgba(156,194,255,.24);color:#E3EEFF}
+.note{font-size:12.5px;color:var(--t3);margin-top:10px;max-width:46em}
+.note a{color:var(--accent)}
+.situ{color:var(--t2);max-width:44em}
+.risk-list{margin:0;padding-left:18px;color:var(--t2)}
+.risk-list li+li{margin-top:4px}
+.inset{border-radius:var(--r-in);background:var(--fill);padding:18px 20px}
+.inset .big{font-family:var(--display);font-size:32px;font-weight:700;line-height:1.15}
+.inset .big small{font-family:var(--sans);font-size:14px;font-weight:400;color:var(--t2);margin-left:8px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:12px 18px;margin-top:14px}
+.facts .k{font-size:12px;color:var(--t3)}
+.facts .v{font-size:16px;font-weight:600}
+.calc{margin-top:12px;font-size:12.5px;color:var(--t3)}
+.calc summary{cursor:pointer;color:var(--accent);width:max-content;list-style:none}
+.calc summary::-webkit-details-marker{display:none}
+.calc summary::after{content:"›";display:inline-block;margin-left:4px;transition:transform .25s}
+.calc[open] summary::after{transform:rotate(90deg)}
+.calc ol{margin:8px 0 0;padding-left:18px}
+.notice{display:flex;gap:10px;align-items:flex-start;border-radius:var(--r-in);padding:12px 16px;font-size:13px;background:rgba(255,207,110,.14);color:#FFEBC0}
+.notice b{white-space:nowrap}
+.notice a{color:#fff}
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:4px}
+.cmp .k{font-size:12px;color:var(--t3)}
+.cond{list-style:none;margin:8px 0 0;padding:0}
+.cond li{display:flex;gap:10px;align-items:flex-start;padding:5px 0;color:var(--t2)}
+.cond .mark{flex:none;width:18px;height:18px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--t4);margin-top:3px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:26px}
+
+/* 价格梯子 */
+.ladder figure{margin:0}
+.ladder figcaption{font-size:12px;color:var(--t3);margin-bottom:8px}
+.ladder svg{display:block;width:100%;height:auto;overflow:visible}
+.ladder text{font-size:12px;fill:rgba(255,255,255,.72);font-family:var(--sans)}
+.ladder .p{font-size:14px;fill:#fff;font-weight:650;font-variant-numeric:tabular-nums}
+.ladder .lv-stop .p{fill:var(--risk)}
+
+/* 板块 */
+.market{display:flex;flex-wrap:wrap;align-items:center;gap:4px 20px;padding:10px 20px;border-radius:999px;font-size:13px;color:var(--t2);margin-bottom:18px;width:fit-content;max-width:100%}
+.market b{font-weight:650;margin-left:6px;color:#fff;font-variant-numeric:tabular-nums}
+.market b.up{color:var(--up)}
+.filters{display:flex;flex-direction:column;gap:10px;padding:18px 20px 14px;border-bottom:1px solid var(--line)}
+.meter{position:relative;height:5px;border-radius:3px;background:rgba(255,255,255,.14);width:72px;flex:none}
+.meter i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:rgba(255,255,255,.75)}
+.meter i.hot{background:var(--up-mark)}
+.meter b{position:absolute;top:-3px;bottom:-3px;width:1px;background:rgba(255,255,255,.4)}
+.b-one{grid-column:1/-1;display:flex;align-items:center;gap:9px;font-size:12px;color:var(--t3);margin-top:2px}
+.bars svg{display:block;width:100%;max-width:640px;height:auto}
+.bars text{font-size:11px;fill:rgba(255,255,255,.66);font-variant-numeric:tabular-nums}
+.bars rect{transition:opacity .2s}
+.bars rect:hover{opacity:.7}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--t3);margin-top:6px;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.reps{list-style:none;margin:0;padding:0}
+.reps li{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
+.reps li:last-child{border-bottom:0}
+
+/* 选股 */
+.toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:18px 24px 0}
+select.sel,label.f input,label.f select{border:0;border-radius:12px;padding:8px 12px;background:rgba(10,14,40,.22);box-shadow:inset 0 0 0 1px var(--line);color:#fff;min-width:0}
+select.sel{min-width:210px;max-width:100%;border-radius:999px;padding:7px 14px}
+option{background:#3A4372;color:#fff}
+.cond-line{font-size:13px;color:var(--t3);padding:12px 24px 14px;border-bottom:1px solid var(--line)}
+.cond-line b{color:#fff;font-weight:600}
+.cands{list-style:none;margin:0;padding:0 12px 8px}
+.cand{display:grid;grid-template-columns:210px minmax(0,1fr) 150px;gap:24px;padding:20px 12px;border-bottom:1px solid var(--line);border-radius:var(--r-row);transition:background .2s}
+.cand:hover{background:var(--fill)}
+.cand:last-child{border-bottom:0}
+.cand .nm{font-size:18px;font-weight:650;font-family:var(--display)}
+.cand .cd{margin-left:6px}
+.cand .px{margin-top:2px;font-size:15px;font-weight:600;display:flex;gap:10px}
+.cand .tags{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.cand dl{margin:0;display:grid;grid-template-columns:64px 1fr;gap:6px 12px}
+.cand dt{color:var(--t3);font-size:13px}
+.cand dd{margin:0;color:var(--t2)}
+.cand ul{margin:0;padding-left:16px}
+.cand .acts{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.empty{padding:56px 24px;max-width:32em}
+.empty.sm{padding:32px 12px}
+.empty h3{font-size:18px}
+.empty p{color:var(--t3);margin-top:6px}
+
+/* 设置 */
+.settings{display:grid;grid-template-columns:210px minmax(0,1fr)}
+.set-nav{display:flex;flex-direction:column;gap:2px;padding:16px;border-right:1px solid var(--line)}
+.set-nav button{position:relative;isolation:isolate;border:0;background:none;text-align:left;padding:9px 14px;border-radius:14px;color:var(--t2);transition:color .2s}
+.set-nav button:hover{color:#fff}
+.set-nav button[aria-current=true]{color:#fff;font-weight:600}
+.set-nav .thumb{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3)}
+.set-body{padding:24px 28px 28px;min-width:0}
+.set-body h2{font-size:20px}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px 16px;align-items:end}
+label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--t3);min-width:0}
+label.f input[aria-invalid=true]{box-shadow:inset 0 0 0 1.5px var(--up-mark)}
+.err{color:var(--up);font-size:12.5px;min-height:20px;margin-top:8px}
+.tbl{overflow:auto;margin-top:16px}
+table.t{width:100%;border-collapse:collapse;font-size:13px}
+table.t th{text-align:left;font-weight:500;color:var(--t3);padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.t td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--t2)}
+table.t td:first-child{color:#fff}
+.ev{white-space:nowrap}.ev.m{color:#fff!important}.ev.l{color:var(--risk)!important}.ev.i{color:var(--t3)!important}
+.ok-t{color:#9FF0C6!important}.warn-t{color:var(--risk)!important}
+.tag.ok{background:rgba(123,227,176,.22);color:#C9F7DF}
+
+/* 设置：模型 */
+.set-body{container-type:inline-size}
+.roles{list-style:none;padding:0;margin:0;border-radius:var(--r-in);background:var(--fill)}
+.roles>li{display:grid;grid-template-columns:minmax(0,1fr) minmax(200px,260px);gap:10px 24px;align-items:start;padding:16px 20px}
+.roles>li+li{border-top:1px solid var(--line)}
+.roles .rk{font-weight:600;font-size:14.5px}
+.roles .rd{font-size:12.5px;color:var(--t3);margin-top:3px;text-wrap:pretty}
+.roles label.f select,.roles label.f input{width:100%}
+.fb{list-style:none;padding:0;margin:0 0 8px;display:flex;flex-direction:column;gap:6px}
+.fb li{display:flex;align-items:center;gap:8px;padding:6px 6px 6px 10px;border-radius:12px;background:rgba(10,14,40,.22);box-shadow:inset 0 0 0 1px var(--line);font-size:13px;min-width:0}
+.fb-n{width:20px;height:20px;border-radius:50%;background:var(--fill2);display:grid;place-items:center;font-size:11px;flex:none}
+.fb-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fb-acts{display:flex;gap:2px;flex:none}
+.fb-acts .btn.sm{padding:4px 8px}
+.chs{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
+.ch{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 20px;padding:14px 18px;border-radius:var(--r-in);background:var(--fill)}
+.ch-name{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ch-meta{font-size:12.5px;color:var(--t3);margin-top:3px;overflow-wrap:anywhere}
+.ch-models{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.ch-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.ch-st{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--t2);white-space:nowrap}
+.sdot{width:7px;height:7px;border-radius:50%;background:var(--t3);flex:none}
+.st-ok .sdot{background:#7BE3B0;box-shadow:0 0 8px #7BE3B0}
+.st-down{color:var(--risk)}.st-down .sdot{background:var(--risk)}
+.st-testing .sdot{background:var(--accent);animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.3}}
+.ch-btns{display:flex;gap:6px}
+@container (max-width:560px){
+ .set-body .roles>li{grid-template-columns:minmax(0,1fr);padding:14px 16px}
+ .set-body .ch{grid-template-columns:minmax(0,1fr);padding:14px 16px}
+ .set-body .ch-side{flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap}
+}
+
+/* 助手抽屉 */
+.drawer{position:fixed;top:16px;right:16px;bottom:16px;width:min(410px,calc(100vw - 32px));z-index:var(--z-drawer);border-radius:var(--r-win);display:flex;flex-direction:column;overflow:hidden;transform:translateX(calc(100% + 32px));visibility:hidden;transition:transform .6s var(--spring),visibility 0s .6s;background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.04)),rgba(32,38,78,.78)}
+.drawer.open{transform:none;visibility:visible;transition:transform .6s var(--spring),visibility 0s}
+.drawer header{display:flex;align-items:center;gap:10px;padding:16px 18px 12px}
+.drawer header h2{font-size:18px;display:flex;align-items:center;gap:8px}
+.drawer .close{margin-left:auto;border:0;width:32px;height:32px;border-radius:50%;background:var(--fill2);display:grid;place-items:center;color:#fff}
+.drawer .close:hover{background:var(--fill3)}
+.ctx{margin:0 18px;padding:10px 14px;border-radius:16px;background:var(--fill);font-size:13px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--t2)}
+.ctx b{color:#fff}
+.msgs{flex:1;overflow:auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+.msg{width:fit-content;max-width:92%;line-height:1.65}
+.msg.me{align-self:flex-end;background:#fff;color:#2B3266;border-radius:18px 18px 6px 18px;padding:8px 14px}
+.msg.bot{align-self:flex-start;background:var(--fill);border-radius:18px 18px 18px 6px;padding:10px 14px;color:var(--t1)}
+.msg .src{font-size:11.5px;color:var(--t3);margin-top:4px}
+.quick{display:flex;flex-wrap:wrap;gap:6px;padding:0 18px 10px}
+.quick button{border:0;border-radius:999px;padding:5px 12px;font-size:13px;background:var(--fill2);color:#fff;transition:background .2s,transform .3s var(--spring)}
+.quick button:hover{background:var(--fill3)}
+.quick button:active{transform:scale(.95)}
+.bound{font-size:11.5px;color:var(--t4);padding:0 18px 8px}
+.compose{display:flex;gap:8px;padding:10px 14px calc(14px + env(safe-area-inset-bottom))}
+.compose input{flex:1;border:0;border-radius:999px;padding:10px 16px;background:rgba(10,14,40,.28);box-shadow:inset 0 0 0 1px var(--line);color:#fff;min-width:0}
+.compose input::placeholder{color:var(--t4)}
+.scrim{position:fixed;inset:0;z-index:calc(var(--z-drawer) - 1);background:rgba(20,24,56,.22);opacity:0;pointer-events:none;transition:opacity .3s}
+.scrim.on{opacity:1;pointer-events:auto}
+@media (min-width:1300px){.scrim{background:transparent}}
+
+/* 弹层（sheet） */
+dialog{border:0;padding:0;color:#fff;border-radius:var(--r-win);width:min(760px,calc(100vw - 24px));max-height:calc(100dvh - 40px);background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.04)),rgba(36,42,84,.86);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);box-shadow:var(--glass-edge),0 40px 90px -20px rgba(8,10,34,.7)}
+dialog[open]{animation:sheet .5s var(--spring)}
+dialog::backdrop{background:rgba(22,26,60,.35);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+@keyframes sheet{from{opacity:0;transform:translateY(24px) scale(.97)}}
+.dlg-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 24px 0}
+.dlg-head h2{font-size:20px}
+.x{border:0;width:32px;height:32px;border-radius:50%;background:var(--fill2);color:#fff;display:grid;place-items:center;flex:none}
+.x:hover{background:var(--fill3)}
+.dlg-body{padding:16px 24px 24px}
+.run-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.run-grid h3{font-size:15px}
+.steps{list-style:none;margin:12px 0 0;padding:0}
+.steps li{display:grid;grid-template-columns:20px 1fr auto;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px;color:var(--t2)}
+.steps .ok{color:#9FF0C6}.steps .part{color:var(--risk)}
+.lark{background:#fff;color:#1F2329;border-radius:12px;overflow:hidden;font-size:13px;margin-top:10px;box-shadow:0 12px 30px -10px rgba(0,0,0,.4)}
+.lark .lh{background:#3370FF;color:#fff;padding:10px 14px;font-weight:600}
+.lark .lb{padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.lark hr{border:0;border-top:1px solid #E8EAED;margin:0}
+.lark a{color:#3370FF;text-decoration:none}
+.lark .muted{color:#8F959E}
+.holding-edit{display:grid;grid-template-columns:1.5fr 1fr 1fr 1.25fr 1fr auto;gap:10px;align-items:end;padding:12px 0;border-bottom:1px solid var(--line)}
+.cash-field{max-width:260px}
+
+/* 提示 */
+.toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,16px) scale(.96);padding:10px 18px;border-radius:999px;font-size:14px;opacity:0;z-index:var(--z-toast);pointer-events:none;max-width:calc(100vw - 32px);transition:opacity .25s,transform .5s var(--spring);background:linear-gradient(180deg,rgba(255,255,255,.18),rgba(255,255,255,.08)),rgba(36,42,84,.85);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);box-shadow:var(--glass-edge),0 16px 40px -12px rgba(0,0,0,.5)}
+.toast.on{opacity:1;transform:translate(-50%,0) scale(1)}
+.proto{font-size:12px;color:var(--t4);margin-top:28px}
+
+@media (max-width:1240px){
+  .body{grid-template-columns:minmax(0,1fr) 220px;gap:28px}
+  .hero{grid-template-columns:1fr}
+  .figs{grid-template-columns:repeat(4,minmax(0,auto));justify-content:start}
+  .figs.three{grid-template-columns:repeat(3,minmax(0,auto))}
+  .cand{grid-template-columns:190px minmax(0,1fr)}
+  .cand .acts{grid-column:2;flex-direction:row;flex-wrap:wrap}
+}
+@media (max-width:980px){
+  .grid2{grid-template-columns:300px minmax(0,1fr)}
+  .verdict{font-size:62px}
+  .detail{padding:22px 24px 26px}
+}
+@media (max-width:860px){
+  .app{padding:18px 16px 120px}
+  .ornament{left:50%;top:auto;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);flex-direction:row;width:auto;padding:6px;border-radius:999px}
+  .orn-btn{width:66px;padding:7px 0 5px;border-radius:999px}
+  .orn-sep{width:1px;height:auto;margin:8px 2px}
+  .head h1{font-size:28px}
+  .hide-s{display:none}
+  .grid2{grid-template-columns:1fr}
+  .side{position:static;max-height:none;overflow:visible}
+  .list-scroll{overflow:visible}
+  .grid2.show-detail .side{display:none}
+  .grid2:not(.show-detail) .detail{display:none}
+  .back{display:inline-flex;margin:-6px 0 10px -10px}
+  .body{grid-template-columns:1fr}
+  .ladder{max-width:260px}
+  .verdict{font-size:56px}
+  .verdict.v-state{font-size:44px}
+  .figs,.figs.three{grid-template-columns:repeat(2,minmax(0,1fr));width:100%}
+  .cand{grid-template-columns:1fr;gap:12px}
+  .cand .acts{grid-column:1}
+  .settings{grid-template-columns:1fr}
+  .set-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line)}
+  .run-grid{grid-template-columns:1fr}
+  .holding-edit{grid-template-columns:1fr 1fr}
+  .holding-edit .btn{justify-self:start}
+  label.f input,label.f select{width:100%}
+  .cmp{grid-template-columns:1fr}
+  .ifthen li{grid-template-columns:1fr;gap:6px}
+  .ifthen .arr{display:none}
+  .drawer{top:0;right:0;bottom:0;width:100vw;border-radius:0}
+  .toast{bottom:96px}
+  .market{border-radius:22px}
+}
+@media (max-width:400px){
+  .app{padding-left:12px;padding-right:12px}
+  .detail{padding:18px 16px 22px}
+  .verdict{font-size:48px}
+  .orn-btn{width:58px}
+  .stats .v{font-size:17px}
+  .inset .big{font-size:26px}
+  .holding-edit{grid-template-columns:1fr}
+  .reps li{grid-template-columns:1fr auto}
+  .reps li .btn{grid-column:1/-1;justify-self:start}
+  .head-right .cap{padding:7px 12px}
+  .figs dd{font-size:19px}
+  .toolbar{padding:16px 16px 0}
+  .cond-line{padding:12px 16px 14px}
+  .cands{padding:0 4px 8px}
+  select.sel{min-width:0;width:100%}
+  .toolbar label{flex:1 1 100%}
+  .set-body{padding:20px 16px 22px}
+  .dlg-body{padding:14px 16px 20px}
+  .dlg-head{padding:18px 16px 0}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important;scroll-behavior:auto!important}
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  .glass,.win,.cap,dialog,.drawer,.toast{background:#3B4474}
+}
+</style>
+</head>
+<body>
+<div class="bg" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+<a class="skiplink" href="#main">跳到主要内容</a>
+<nav class="ornament glass" id="orn" aria-label="主导航"></nav>
+<div class="app"><main id="main" tabindex="-1"></main></div>
+
+<div class="scrim" data-action="close-assist"></div>
+<aside class="drawer glass" id="assistant" aria-label="助手" aria-hidden="true">
+  <header>
+    <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l1.9 5 5.1 1.9-5.1 1.9-1.9 5-1.9-5-5.1-1.9 5.1-1.9z"/></svg>助手</h2>
+    <button class="close" data-action="close-assist" aria-label="关闭助手">✕</button>
+  </header>
+  <div class="ctx" id="ctx"></div>
+  <div class="msgs" id="msgs" aria-live="polite"></div>
+  <div class="quick" id="quick"></div>
+  <p class="bound">回答只用 11-06 收盘后的同一份数据，不会改动计划，也不会下单。</p>
+  <form class="compose" id="compose">
+    <label class="vh" for="ask">输入问题</label>
+    <input id="ask" autocomplete="off" placeholder="问问这只股票或这个板块">
+    <button class="btn primary" type="submit">发送</button>
+  </form>
+</aside>
+
+<dialog id="dlg" aria-labelledby="dlgTitle"></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+/* ---------- 演示数据（全部为虚构样本，仅用于设计评审） ---------- */
+const TRADE_DATE='11-06', NEXT_DATE='11-09（周一）';
+const STOCKS={
+ '002475':{name:'立讯精密',mkt:'主板',limit:.10,close:41.25,chg:1.73,sector:'消费电子',pressure:43.10,tech:39.60,
+   situation:'收盘 41.25，涨 1.73%，成交额 31.6 亿，约为 5 日均值的 1.2 倍。重新站上 20 日线 40.10；消费电子板块跟涨，没有进入异动名单。',
+   verdict:'等待确认',one:'放量站上 43.10 前高再考虑',entry:43.2,zone:null,breakout:43.10,invalid:39.60,
+   short:[{if:'放量站上 43.10 并收在上方',then:'下一交易日 43.2 附近买入'},{if:'冲高 43.10 但量能不足 5 日均值',then:'不追'}],
+   swing:[{if:'回踩 40.10 不破并缩量',then:'40.3 附近分批买入'},{if:'收盘跌破 39.60',then:'放弃本次计划'}],
+   risks:['消费电子没有异动，上涨主要靠个股自身','前高 43.10 附近成交密集'],gaps:['主力资金流 16:00 时尚未发布，未参与判断']},
+ '000988':{name:'华工科技',mkt:'主板',limit:.10,close:48.35,chg:4.21,sector:'通信设备',
+   situation:'收盘 48.35，涨 4.21%，成交额是 5 日均值的 2.6 倍，突破 20 日整理平台 46.9。所在通信设备板块今天首次启动，涨幅不靠单只股票。',
+   verdict:'买入',one:'回踩 46.8–47.2 企稳就买',entry:47.0,zone:[46.8,47.2],breakout:49.6,invalid:45.6,tech:46.9,
+   short:[{if:'明天回踩 46.8–47.2 并企稳（15 分钟内不再创新低）',then:'47.0 附近买入'},{if:'直接高开站上 49.6，不回踩',then:'不追'},{if:'收盘跌破 45.6',then:'放弃本次计划'}],
+   swing:[{if:'回踩不破 46.9 平台',then:'47.0 附近买入，计划持有 2–4 周'},{if:'买入后涨到 52.0 附近量能不放大',then:'卖出一半'},{if:'收盘跌破止损价',then:'下一交易日全部卖出'}],
+   risks:['板块首日启动，第二天出现分歧很常见','收盘离买入区上沿 2.4%，可能整天不回踩'],gaps:[]},
+ '002463':{name:'沪电股份',mkt:'主板',limit:.10,close:38.92,chg:.86,sector:'元件',
+   situation:'收盘 38.92，涨 0.86%，量能和 5 日均值差不多，仍在 37.5–40.2 区间里。',
+   verdict:'等待确认',one:'需要放量站上 40.20',entry:40.3,zone:null,breakout:40.2,invalid:37.5,tech:37.5,
+   short:[{if:'放量站上 40.20',then:'40.3 附近买入'},{if:'继续在区间内',then:'不动'}],
+   swing:[{if:'连续 3 天收在 40.20 上方',then:'40.3 附近买入'},{if:'收盘跌破 37.50',then:'放弃本次计划'}],
+   risks:['区间震荡已 12 个交易日，突破可能失败'],gaps:[]},
+ '600900':{name:'长江电力',mkt:'主板',limit:.10,close:28.41,chg:-.21,sector:'电力',
+   situation:'收盘 28.41，跌 0.21%，缩量。走势平稳，短线波动太小，不给短线计划。',
+   verdict:'等待确认',one:'只做波段，回到 27.8 附近再看',entry:27.9,zone:[27.7,27.9],breakout:null,invalid:27.2,tech:27.7,
+   short:[{if:'任何情况',then:'不做短线，波动不够覆盖成本'}],
+   swing:[{if:'回落到 27.7–27.9 并缩量',then:'27.9 附近买入，计划持有 4 周'},{if:'收盘跌破 27.20',then:'放弃本次计划'}],
+   risks:['低波动股票按 10% 止损，止损价离得很远'],gaps:[]},
+ '300750':{name:'宁德时代',mkt:'创业板',limit:.20,close:268.50,chg:-.62,sector:'电池',
+   situation:'收盘 268.50，跌 0.62%，成交额是 5 日均值的 1.5 倍。电池板块高位分歧但有承接，个股回到 5 日线附近。',
+   verdict:'等待确认',one:'回踩 262 附近缩量再考虑',entry:262.0,zone:[260,263],breakout:276,invalid:255,tech:260,
+   short:[{if:'回踩 260–263 并缩量',then:'262 附近买入'},{if:'放量跌破 255',then:'放弃本次计划'}],
+   swing:[{if:'板块分歧结束、重新放量',then:'再评估'},{if:'收盘跌破 255',then:'放弃本次计划'}],
+   risks:['创业板单日最大跌幅 20%，止损可能被跳空击穿','板块高位分歧，方向未定'],gaps:[]},
+ '688072':{name:'拓荆科技',mkt:'科创板',limit:.20,close:152.40,chg:6.80,sector:'半导体设备',
+   situation:'收盘 152.40，涨 6.80%，量能 2.9 倍但尾盘回落 3%，放量滞涨。半导体设备板块持续走强第 4 天。',
+   verdict:'放弃',one:'放量滞涨，追高风险大',entry:null,zone:null,breakout:158,invalid:140,tech:140,
+   short:[{if:'任何情况',then:'不买'}],swing:[{if:'回调到 140 附近缩量企稳',then:'重新评估'}],
+   why:'放量滞涨，尾盘回落 3%。科创板一天可跌 20%，10% 止损挡不住一次跳空，赔率不划算。',
+   risks:['板块第 4 天上涨，后排开始补涨'],gaps:[]},
+ '300059':{name:'东方财富',mkt:'创业板',limit:.20,close:24.86,chg:1.10,sector:'证券',
+   situation:'收盘 24.86，涨 1.10%，缩量。证券板块没有异动，价格在区间中部。',
+   verdict:'放弃',one:'没有可用的买点',entry:null,zone:null,breakout:26.2,invalid:23.5,tech:23.5,
+   short:[{if:'任何情况',then:'不买'}],swing:[{if:'放量站上 26.20',then:'重新评估'}],
+   why:'价格在 23.5–26.2 区间中部，往上往下空间差不多，没有优势。',risks:[],gaps:[]},
+ '603019':{name:'中科曙光',mkt:'主板',limit:.10,close:null,chg:null,suspended:true,sector:'计算机设备',
+   situation:'11-05 起停牌，复牌时间未公布。',verdict:'停牌',one:'停牌中，复牌前不给计划',short:[],swing:[],risks:[],gaps:['停牌，无当日行情']},
+ '002281':{name:'光迅科技',mkt:'主板',limit:.10,close:41.72,chg:3.12,sector:'通信设备',
+   situation:'收盘 41.72，涨 3.12%，量能 2.1 倍，站上 60 日线。',verdict:'等待确认',one:'回踩 40.5 不破再考虑',entry:40.6,zone:[40.3,40.8],breakout:43.5,invalid:39.4,tech:40.3,
+   short:[{if:'回踩 40.3–40.8 企稳',then:'40.6 附近买入'}],swing:[{if:'站稳 60 日线 3 天',then:'40.6 附近买入'}],risks:['板块首日启动，分歧风险'],gaps:[]},
+ '603083':{name:'剑桥科技',mkt:'主板',limit:.10,close:67.30,chg:10.0,sector:'通信设备',
+   situation:'涨停收盘 67.30，封单一般，盘中开板两次。',verdict:'放弃',one:'涨停开板两次，次日溢价不确定',entry:null,zone:null,breakout:70,invalid:62,tech:62,
+   short:[{if:'任何情况',then:'不追涨停'}],swing:[{if:'回落到 62 附近缩量',then:'重新评估'}],why:'涨停当天开板两次，次日低开概率高，追高的止损空间不够。',risks:[],gaps:[]},
+ '300394':{name:'天孚通信',mkt:'创业板',limit:.20,close:118.60,chg:2.45,sector:'通信设备',
+   situation:'收盘 118.60，涨 2.45%，温和放量，走势是 3 周上升通道。',verdict:'等待确认',one:'通道下沿 114 附近买',entry:114.5,zone:[113.5,115],breakout:124,invalid:110,tech:113.5,
+   short:[{if:'不做短线',then:'波动大，短线止损空间不足'}],swing:[{if:'回踩通道下沿 113.5–115',then:'114.5 附近买入'}],risks:['创业板单日最大跌幅 20%'],gaps:[]},
+ '601179':{name:'中国西电',mkt:'主板',limit:.10,close:9.84,chg:5.24,sector:'电网设备',
+   situation:'收盘 9.84，涨 5.24%，放量突破 6 个月平台 9.40。',verdict:'等待确认',one:'回踩 9.45 附近确认突破',entry:9.5,zone:[9.4,9.55],breakout:10.3,invalid:9.2,tech:9.4,
+   short:[{if:'回踩 9.40–9.55 企稳',then:'9.5 附近买入'}],swing:[{if:'站稳 9.40 平台 3 天',then:'9.5 附近买入'}],risks:['电网设备板块没有异动，突破缺少板块配合'],gaps:[]},
+ '600031':{name:'三一重工',mkt:'主板',limit:.10,close:19.62,chg:-.41,sector:'工程机械',
+   situation:'连续 4 天缩量回调到 20 日线 19.5 附近，量能是 5 日均值的 0.6 倍。',verdict:'等待确认',one:'20 日线企稳再买',entry:19.6,zone:[19.45,19.65],breakout:20.8,invalid:19.0,tech:19.45,
+   short:[{if:'不做短线',then:'回踩形态适合波段'}],swing:[{if:'在 19.45–19.65 止跌放量',then:'19.6 附近买入'}],risks:['回调还没有止跌信号'],gaps:[]},
+ '601698':{name:'中国卫通',mkt:'主板',limit:.10,close:31.08,chg:10.0,sector:'商业航天',situation:'3 连板，换手率 18%。',verdict:'放弃',one:'3 连板，追高风险大',entry:null,zone:null,breakout:null,invalid:28,tech:28,short:[{if:'任何情况',then:'不追连板'}],swing:[],why:'已经 3 连板，次日一旦断板，10% 止损可能当天就被打到。',risks:[],gaps:[]},
+ '600118':{name:'中国卫星',mkt:'主板',limit:.10,close:45.66,chg:6.31,sector:'商业航天',situation:'放量上涨，未涨停。',verdict:'等待确认',one:'回踩 43.5 附近再看',entry:43.6,zone:[43.3,43.8],breakout:47.2,invalid:42,tech:43.3,short:[{if:'回踩 43.3–43.8 企稳',then:'43.6 附近买入'}],swing:[],risks:['板块持续第 6 天，位置偏高'],gaps:[]},
+};
+const BOARDS=[
+ {id:'b1',name:'通信设备',type:'行业',state:'首次启动',tags:[],day:3.86,d5:5.1,ex:3.48,vol:2.7,breadth:82,limitUp:null,reason:'光模块订单消息带动，龙头放量，不是单只股票拉动',
+  drivers:'海外云厂商上调资本开支的消息带动光模块方向；板块 82% 的股票上涨，前 5 只贡献不到一半涨幅。',persist:[-.4,.2,-.6,.3,-.1,.5,.9,3.48],reps:['000988','002281','603083','300394']},
+ {id:'b2',name:'商业航天',type:'概念',state:'持续走强',tags:['主线'],day:4.58,d5:14.2,ex:4.20,vol:2.6,breadth:76,limitUp:7,boom:22,reason:'连续 6 天强于大盘，涨停 7 家，最高 3 连板',
+  drivers:'卫星发射计划密集落地；连续 2 天涨停超过 5 家，最高 3 连板，已持续 6 个交易日。',persist:[.6,1.9,2.4,1.1,3.0,2.2,1.7,4.20],reps:['601698','600118']},
+ {id:'b3',name:'半导体设备',type:'行业',state:'持续走强',tags:[],day:2.41,d5:9.8,ex:2.03,vol:1.8,breadth:71,limitUp:null,reason:'第 4 天强于大盘，后排开始补涨',
+  drivers:'国产替代订单预期；龙头放量滞涨，后排小票补涨，持续性需要观察。',persist:[-.3,.1,.4,-.2,1.2,1.8,2.6,2.03],reps:['688072']},
+ {id:'b4',name:'固态电池',type:'概念',state:'高位分歧',tags:['有承接'],day:.84,d5:7.3,ex:.46,vol:2.1,breadth:48,limitUp:5,boom:55,reason:'炸板率 55%，资金分歧，但跌停只有 1 家',
+  drivers:'11 只触板，6 只没封住；炸板率 55% 超过 40% 警戒线。跌停只有 1 家，算有承接。',persist:[.8,2.1,3.3,1.6,2.8,.9,.4,.46],reps:['300750']},
+ {id:'b5',name:'白酒',type:'行业',state:'退潮',tags:[],day:-1.35,d5:-4.2,ex:-1.73,vol:.46,breadth:18,limitUp:null,reason:'成交额回落到高峰的 46%',
+  drivers:'成交额只剩高峰期的 46%，82% 的股票下跌。',persist:[1.4,.9,.2,-.5,-.8,-1.1,-.9,-1.73],reps:[]},
+ {id:'b6',name:'保险',type:'行业',state:'异常下跌',tags:[],day:-3.12,d5:-3.6,ex:-3.50,vol:1.9,breadth:8,limitUp:null,reason:'放量下跌，原因未明',
+  drivers:'原因未明：没有找到当天的公告或新闻。放量 1.9 倍，92% 的股票下跌。',persist:[.1,-.2,.3,0,-.1,.2,-.4,-3.50],reps:[]},
+ {id:'b7',name:'机器人执行器',type:'概念',state:'首次启动',tags:['单股驱动'],day:2.90,d5:3.4,ex:2.52,vol:1.6,breadth:41,limitUp:1,boom:0,reason:'一只股票贡献 63% 涨幅，板块本身偏弱',
+  drivers:'单只股票涨停贡献了板块 63% 的涨幅，其余股票上涨不到一半，不按板块机会处理。',persist:[-.2,.1,-.5,.3,-.1,.2,.1,2.52],reps:[]},
+ {id:'b8',name:'可控核聚变',type:'概念',state:'历史数据不足',tags:[],day:5.12,d5:null,ex:4.74,vol:null,breadth:88,limitUp:4,boom:20,reason:'新概念上线第 3 天，冷却期 10 天内不判定',
+  drivers:'概念上线不足 10 个交易日，缺少成交额基准，只展示数据，不做异动判断。',persist:[null,null,null,null,null,1.9,3.1,4.74],reps:[]},
+];
+const PICKS={
+ board:{b1:[{code:'000988',hz:'短线',why:['板块首次启动，个股放量 2.6 倍','突破 20 日平台 46.9']},
+            {code:'002281',hz:'波段',why:['板块首次启动','站上 60 日线，量能 2.1 倍']},
+            {code:'300394',hz:'波段',why:['3 周上升通道','板块启动时没有掉队']},
+            {code:'603083',hz:'短线',why:['板块内首个涨停'],note:'涨停开板两次，只列出不建议追'}],
+        b2:[{code:'600118',hz:'短线',why:['主线板块里还没涨停的强势股']},{code:'601698',hz:'短线',why:['板块最高 3 连板'],note:'连板股只列出不建议追'}],
+        b3:[{code:'688072',hz:'短线',why:['板块龙头，量能 2.9 倍'],note:'放量滞涨，不建议追'}],
+        b4:[{code:'300750',hz:'波段',why:['板块分歧中跌幅最小','回到 5 日线附近']}],
+        b7:[]},
+ strategy:{'放量突破':[{code:'601179',hz:'短线',why:['放量 3.1 倍突破 6 个月平台']},{code:'000988',hz:'短线',why:['放量 2.6 倍突破 20 日平台']}],
+           '缩量回踩':[{code:'600031',hz:'波段',why:['连续 4 天缩量回调到 20 日线']},{code:'600900',hz:'波段',why:['缩量回落，接近波段买点']}],
+           '超跌反弹':[]}
+};
+const STRATEGIES=['放量突破','缩量回踩','超跌反弹','动量质量','资金热度','均衡阿尔法','质量价值','低波质量','蓝筹红利','双低'];
+const THRESHOLDS=[
+ ['温和放量','成交额 ≥ 5 日均值 1.5 倍','m'],['明显放量','≥ 2.5 倍','m'],['强势排名','超额收益前 10%','m'],['弱势排名','后 10%','i'],
+ ['超额收益下限','行业 +1.5%，概念 +2.5%','i'],['比较基准','中证全指，并看相对板块中位数','i'],['上涨家数','≥ 70% 偏强，≤ 30% 偏弱','l'],
+ ['概念板块效应','涨停 ≥ 3 家','l'],['主线','连续 2 天涨停 ≥ 5 家、最高连板 ≥ 3、持续 ≥ 5 天','l'],['炸板率警示','≥ 40%（触板 ≥ 5 家时）','m'],
+ ['持续','连续 3 天强于基准','l'],['退潮','成交额 < 高峰的 50%','l'],['普涨保护','全 A 涨 ≥ 2% 时降低涨停和上涨家数的权重','l'],
+ ['最少成分股','10 只；成分股超过 800 只的概念按宽泛概念处理','i'],['单股驱动','一只股票贡献超过 50% 涨幅','i'],['新概念冷却期','10 个交易日','i'],['概念合并','成分股重合度 ≥ 0.6','i'],
+];
+const EV={m:'中',l:'低',i:'推断'};
+/* 模型配置演示：对应现有的 LLM_CHANNELS / LITELLM_MODEL / LITELLM_FALLBACK_MODELS / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE */
+const PROTOCOLS=['openai','anthropic','gemini','deepseek'];
+const MODEL_INIT={
+ channels:[
+  {id:'deepseek',name:'DeepSeek',protocol:'deepseek',host:'api.deepseek.com',key:true,models:['deepseek-v4-flash','deepseek-v4-pro'],status:'ok',latency:820},
+  {id:'gemini',name:'Gemini',protocol:'gemini',host:'generativelanguage.googleapis.com',key:true,models:['gemini-3.1-pro-preview','gemini-3-flash-preview'],status:'ok',latency:1340},
+  {id:'ollama',name:'本地 Ollama',protocol:'openai',host:'localhost:11434',key:false,models:['qwen3:8b'],status:'down',latency:null},
+ ],
+ primary:'deepseek/deepseek-v4-flash',fallbacks:['gemini/gemini-3-flash-preview'],agent:'',vision:'gemini/gemini-3-flash-preview',temp:0.7,
+};
+
+/* ---------- 状态 ---------- */
+const state={
+ page:'mine',sel:'002475',board:'b1',btype:'全部',bstate:'全部',
+ psrc:'board',pboard:'b1',pstrat:'放量突破',phz:'全部',hz:'短线',detail:false,setTab:'rules',
+ rules:{stop:10,total:100,maxHold:1,stopMode:'fixed'},
+ cash:1184,holdings:[{code:'002475',shares:2400,cost:40.20,date:'2026-10-28',hz:'波段'}],
+ watch:['000988','002463','600900','300750','688072','300059','603019'],
+ ctx:null,ctxCode:null,msgs:[],_draft:null,_record:null,
+ models:JSON.parse(JSON.stringify(MODEL_INIT)),_mdraft:null,_editCh:null,
+};
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const f2=n=>n==null?'—':n.toFixed(2);
+const money=n=>Math.round(n).toLocaleString('zh-CN');
+const pct=(n,d=1)=>(n*100).toFixed(d)+'%';
+const sgn=n=>n==null?'—':(n>0?'+':'')+n.toFixed(2)+'%';
+const cls=n=>n==null?'flat':n>0?'up':n<0?'down':'flat';
+const fmtN=(v,d)=>v.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+const VCLS={'买入':'buy','等待确认':'wait','放弃':'skip','停牌':'skip','持有':'hold'};
+const reduce=()=>matchMedia('(prefers-reduced-motion:reduce)').matches;
+const mobile=()=>matchMedia('(max-width:860px)').matches;
+/* 滚动数字：内容切换时从上一次的值滚到新值 */
+function cnt(v,dec,key,suf='',sign=false){
+ if(v==null||Number.isNaN(v)) return '—';
+ return `<span class="num" data-count="${v}" data-dec="${dec}" data-key="${esc(key)}" data-sign="${sign?1:''}">${(sign&&v>0?'+':'')+fmtN(v,dec)}</span>${suf?`<small>${suf}</small>`:''}`;
+}
+
+/* ---------- 仓位计算（规则来自 state.rules，不写死） ---------- */
+function held(code){return state.holdings.find(h=>h.code===code)}
+function account(){
+ const value=state.holdings.reduce((a,h)=>a+h.shares*(STOCKS[h.code].close||h.cost),0);
+ const capital=state.cash+value;return {value,capital,pos:capital?value/capital:0};
+}
+function singleCap(){return state.rules.total/state.rules.maxHold}
+function lotRound(code,raw){if(code.startsWith('688')) return raw>=200?Math.floor(raw):0;return Math.floor(raw/100)*100}
+function stopFor(base,tech){
+ const fixed=+(base*(1-state.rules.stop/100)).toFixed(2);
+ if(state.rules.stopMode==='nearer'&&tech&&tech<base&&tech>fixed) return {price:tech,how:'取较近者：技术支撑'};
+ return {price:fixed,how:`${f2(base)} × ${(1-state.rules.stop/100).toFixed(2)}`};
+}
+function sizing(code){
+ const s=STOCKS[code],price=s.entry;if(!price) return null;
+ const a=account(),h=held(code);
+ if(!h&&state.holdings.length>=state.rules.maxHold) return {blocked:'max'};
+ const heldShares=h?h.shares:0;
+ const byS=a.capital*singleCap()/100/price-heldShares;
+ const byT=(a.capital*state.rules.total/100-a.value)/price;
+ const byC=state.cash/price;
+ const raw=Math.min(byS,byT,byC),shares=lotRound(code,raw);
+ const lot=code.startsWith('688')?200:100;
+ if(shares<lot) return {blocked:'lot',raw,byS,byT,byC,price,lot};
+ const amount=shares*price,stop=stopFor(price,s.tech),loss=shares*(price-stop.price);
+ const worst=stop.price*(1-s.limit),worstLoss=shares*(price-worst);
+ return {shares,amount,price,stop,loss,worst,worstLoss,byS,byT,byC,raw,lot,pctCap:amount/a.capital,post:(a.value+amount)/a.capital,capital:a.capital};
+}
+function oddDown(n){return Math.max(100,Math.floor(n/100)*100)}
+function heldPlan(code){
+ const s=STOCKS[code],h=held(code),a=account();
+ const stop=stopFor(h.cost,s.tech),tp=+(h.cost*1.15).toFixed(2),pres=s.pressure||s.breakout||+(s.close*1.04).toFixed(2);
+ const third=oddDown(h.shares/3),half=oddDown(h.shares/2);
+ const full=a.pos>=state.rules.total/100-0.02;
+ const short=[
+  {if:`冲高到 ${f2(pres)} 附近，量能不到 5 日均值`,then:`卖出 1/3（${third.toLocaleString()} 股）`},
+  {if:`平开或小幅低开，守住 ${f2(s.tech)}`,then:full?'持有，不加仓（仓位已满）':'持有'},
+  {if:`收盘跌破 ${f2(s.tech)}`,then:`短线减半（${half.toLocaleString()} 股），波段不动`}];
+ const swing=[
+  {if:`收盘在止损价 ${f2(stop.price)} 上方`,then:`持有，涨到 ${f2(tp)}（成本 +15%）卖出一半`},
+  {if:`放量站上 ${f2(pres)}`,then:'继续持有'},
+  {if:`收盘跌破 ${f2(stop.price)}`,then:'下一交易日全部卖出'}];
+ const headline=(full?'仓位已满，明天只做卖出判断。':'')+`冲高到 ${f2(pres)} 量能不足先卖 1/3；收盘跌破 ${f2(stop.price)}，下一交易日清仓。`;
+ return {verdict:'持有',headline,short,swing,stop,tp,pres,limitDown:+(s.close*(1-s.limit)).toFixed(2)};
+}
+function verdictOf(code){return held(code)?'持有':STOCKS[code].verdict}
+
+/* ---------- 图标、导航、页头 ---------- */
+const ICON={boards:'<path d="M5 20v-7M12 20V5M19 20v-10"/>',picks:'<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+ mine:'<rect x="3.5" y="7.5" width="17" height="12" rx="3"/><path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5M3.5 13h17"/>',
+ settings:'<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+ assist:'<path d="M12 3.5l1.9 5 5.1 1.9-5.1 1.9-1.9 5-1.9-5-5.1-1.9 5.1-1.9z"/>'};
+const ic=(k,s=22)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k]}</svg>`;
+const PAGES=[['boards','板块异动','异动'],['picks','机会选股','选股'],['mine','我的股票','我的']];
+const ALL_PAGES=[...PAGES.map(x=>x[0]),'settings'];
+function ornament(){
+ const btn=([id,full,short])=>`<button class="orn-btn" data-nav="${id}" aria-label="${full}" ${state.page===id?'aria-current="page"':''}>${state.page===id?'<span class="pill" data-flip="nav"></span>':''}${ic(id)}<span aria-hidden="true">${short}</span></button>`;
+ return PAGES.map(btn).join('')+'<span class="orn-sep" aria-hidden="true"></span>'+btn(['settings','设置','设置']);
+}
+function head(title,sub){
+ const open=$('#assistant').classList.contains('open');
+ return `<header class="head"><div><h1>${title}</h1><p class="sub">${sub}</p></div><div class="head-right">
+  <button class="cap" data-action="run" aria-haspopup="dialog"><span class="dot" aria-hidden="true"></span><span class="num">${TRADE_DATE}</span><span class="hide-s">收盘计划已生成</span></button>
+  <button class="btn primary" data-action="assist" aria-controls="assistant" aria-expanded="${open}">${ic('assist',16)}助手</button></div></header>`;
+}
+function seg(group,opts,cur,label){
+ return `<div class="seg" role="group" aria-label="${label}">${opts.map(([v,l])=>`<button data-${group}="${v}" aria-pressed="${cur===v}">${cur===v?`<span class="thumb" data-flip="seg-${group}"></span>`:''}${l}</button>`).join('')}</div>`;
+}
+
+/* ---------- 价格梯子 ---------- */
+function ladder(levels,title){
+ const W=240,H=420,top=18,bot=18,xLine=30,GAP=36;
+ const ps=levels.flatMap(l=>l.band?l.band:[l.p]).filter(v=>v!=null);
+ let lo=Math.min(...ps),hi=Math.max(...ps);const pad=(hi-lo)*.06||1;lo-=pad;hi+=pad;
+ const y=p=>top+(hi-p)/(hi-lo)*(H-top-bot);
+ const items=levels.map(l=>({...l,y:l.band?y((l.band[0]+l.band[1])/2):y(l.p)})).sort((a,b)=>a.y-b.y);
+ let last=-99;items.forEach(it=>{it.ly=Math.max(it.y,last+GAP);last=it.ly});
+ const over=last-(H-bot);if(over>0){items.forEach(it=>it.ly-=over);for(let i=items.length-2;i>=0;i--){if(items[i].ly>items[i+1].ly-GAP) items[i].ly=items[i+1].ly-GAP}}
+ let g=`<defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.2"/></filter></defs>`;
+ g+=`<line class="axis" pathLength="1" x1="${xLine}" x2="${xLine}" y1="${top-8}" y2="${H-bot+8}" stroke="rgba(255,255,255,.32)" stroke-width="2" stroke-linecap="round"/>`;
+ items.forEach(it=>{
+  let mark='';
+  if(it.band){const y1=y(it.band[1]),y2=y(it.band[0]),h=Math.max(8,y2-y1);mark=`<rect x="${xLine-14}" y="${y1}" width="28" height="${h}" rx="8" fill="#9CC2FF" opacity=".35"/><rect x="${xLine-14}" y="${y1}" width="28" height="${h}" rx="8" fill="none" stroke="#9CC2FF" stroke-width="1.5"/>`}
+  else if(it.kind==='close') mark=`<circle cx="${xLine}" cy="${it.y}" r="11" fill="#fff" opacity=".25" filter="url(#glow)"/><circle cx="${xLine}" cy="${it.y}" r="6.5" fill="#fff"/>`;
+  else if(it.kind==='stop') mark=`<line x1="${xLine-16}" x2="${xLine+16}" y1="${it.y}" y2="${it.y}" stroke="#FFCF6E" stroke-width="6" opacity=".45" filter="url(#glow)"/><line x1="${xLine-16}" x2="${xLine+16}" y1="${it.y}" y2="${it.y}" stroke="#FFCF6E" stroke-width="3" stroke-linecap="round"/>`;
+  else if(it.kind==='worst') mark=`<line x1="${xLine-12}" x2="${xLine+12}" y1="${it.y}" y2="${it.y}" stroke="#FFCF6E" stroke-width="1.5" stroke-dasharray="2 4" stroke-linecap="round" opacity=".8"/>`;
+  else mark=`<circle cx="${xLine}" cy="${it.y}" r="4.5" fill="#414E80" stroke="rgba(255,255,255,${it.kind==='hint'?.55:.9})" stroke-width="1.8"/>`;
+  const price=it.band?`${f2(it.band[0])}–${f2(it.band[1])}`:f2(it.p);
+  g+=`<g class="lv ${it.kind==='stop'?'lv-stop':''}">${mark}<path d="M${xLine+18} ${it.y} C${xLine+28} ${it.y} ${xLine+26} ${it.ly} ${xLine+38} ${it.ly}" stroke="rgba(255,255,255,.22)" fill="none"/><text class="p" x="${xLine+44}" y="${it.ly-2}">${price}</text><text x="${xLine+44}" y="${it.ly+14}">${esc(it.label)}</text></g>`;
+ });
+ const desc=items.map(it=>`${it.label} ${it.band?it.band.join('到'):it.p}`).join('，');
+ return `<figure><figcaption>${esc(title)}</figcaption><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="价格梯子：${esc(desc)}">${g}</svg></figure>`;
+}
+
+/* ---------- 我的股票 ---------- */
+function mineList(){
+ const order={'持有':0,'买入':1,'等待确认':2,'放弃':3,'停牌':4};
+ const hc=state.holdings.map(h=>h.code);
+ const wc=state.watch.filter(c=>!hc.includes(c)).sort((a,b)=>order[verdictOf(a)]-order[verdictOf(b)]);
+ const row=c=>{const s=STOCKS[c],v=verdictOf(c),h=held(c),cur=state.sel===c;
+  const one=h?heldPlan(c).headline.replace('仓位已满，明天只做卖出判断。',''):s.one;
+  return `<li><button class="row" data-sel="${c}" ${cur?'aria-current="true"':''}>${cur?'<span class="ind" data-flip="sel-mine"></span>':''}
+   <span class="r-top"><span class="nm">${esc(s.name)}</span><span class="cd">${c}</span><span class="tag ${VCLS[v]}">${v}</span></span>
+   <span class="r-px">${s.suspended?'<b class="flat">停牌</b>':`<b class="num">${f2(s.close)}</b><span class="num ${cls(s.chg)}">${sgn(s.chg)}</span>`}</span>
+   <span class="one">${esc(one)}</span></button></li>`};
+ return `${hc.length?`<p class="group-label"><span>持仓</span><span>${hc.length}/${state.rules.maxHold} 只</span></p><ul class="rows">${hc.map(row).join('')}</ul>`:''}
+  <p class="group-label"><span>自选</span><span>${wc.length} 只，可买的在前</span></p>
+  <ul class="rows">${wc.map(row).join('')}</ul>
+  <div class="add-row"><button class="btn quiet sm" data-action="add-watch">+ 加自选</button></div>`;
+}
+function acctBlock(){
+ const a=account(),r=state.rules;
+ return `<div class="acct"><div class="stats">
+   <div><p class="k">总资金</p><p class="v">${cnt(a.capital,0,'总资金')}</p></div>
+   <div><p class="k">可用现金</p><p class="v">${cnt(state.cash,0,'现金')}</p></div>
+   <div><p class="k">仓位</p><p class="v">${cnt(a.pos*100,1,'仓位','%')}</p></div></div>
+  <p class="rules-line">规则：止损 ${r.stop}%，总仓位 ${r.total}%，最多 ${r.maxHold} 只</p>
+  <div class="acct-acts"><button class="btn sm" data-action="edit-acct" aria-haspopup="dialog">改持仓和资金</button><button class="btn quiet sm" data-nav="settings" data-tab="rules">改规则</button></div></div>`;
+}
+function actClass(t){return /卖|减|清/.test(t)?'a-sell':/买入/.test(t)&&!/不买/.test(t)?'a-buy':''}
+function ifthen(list){return list.length?`<ul class="ifthen">${list.map(x=>`<li><span class="if">${esc(x.if)}</span><span class="arr" aria-hidden="true">→</span><span class="then ${actClass(x.then)}"><span class="vh">就</span>${esc(x.then)}</span></li>`).join('')}</ul>`:'<p class="note">没有这个周期的计划。</p>'}
+function hzSeg(){return seg('hz',[['短线','短线 1–5 天'],['波段','波段 2–4 周']],state.hz,'周期')}
+function sizingBlock(code){
+ const z=sizing(code);if(!z) return '';
+ if(z.blocked==='max'){const h=STOCKS[state.holdings[0].code];
+  return `<div class="notice"><b>不新开仓</b><p>已持有 ${state.holdings.length}/${state.rules.maxHold} 只（${esc(h.name)}），按规则不再新开仓，买入改为看<a href="#switch" data-action="go-switch">换股判断</a>。</p></div>`}
+ if(z.blocked==='lot') return `<div class="notice"><b>不建议买入</b><p>按当前规则可买金额不够一手（${z.lot} 股 × ${f2(z.price)} = ${money(z.lot*z.price)} 元）。</p></div>`;
+ return `<div class="inset" aria-label="买入股数">
+  <div class="big">${cnt(z.shares,0,'股数')}<small>股，在 ${f2(z.price)} 买入</small></div>
+  <div class="facts">
+   <div><p class="k">金额</p><p class="v num">${money(z.amount)} 元</p></div>
+   <div><p class="k">占总资金</p><p class="v num">${pct(z.pctCap)}</p></div>
+   <div><p class="k">止损价</p><p class="v num">${f2(z.stop.price)}</p></div>
+   <div><p class="k">到止损亏损</p><p class="v num">${money(z.loss)} 元</p></div>
+   <div><p class="k">买后总仓位</p><p class="v num">${pct(z.post)}</p></div>
+  </div>
+  <p class="note">收盘跌破 ${f2(z.stop.price)}，下一交易日全部卖出。${STOCKS[code].mkt}单日最大跌幅 ${STOCKS[code].limit*100}%：如果卖出当天直接跌停，成交价约 ${f2(z.worst)}，亏损约 ${money(z.worstLoss)} 元（占总资金 ${pct(z.worstLoss/z.capital)}）。</p>
+  <details class="calc"><summary>怎么算的</summary><ol>
+   <li>按单只上限 ${singleCap().toFixed(0)}%：${money(z.capital)} × ${singleCap().toFixed(0)}% ÷ ${f2(z.price)} = ${Math.floor(z.byS).toLocaleString()} 股</li>
+   <li>按总仓位 ${state.rules.total}%：剩余额度 ÷ ${f2(z.price)} = ${Math.floor(z.byT).toLocaleString()} 股</li>
+   <li>按可用现金：${money(state.cash)} ÷ ${f2(z.price)} = ${Math.floor(z.byC).toLocaleString()} 股</li>
+   <li>取最小值 ${Math.floor(z.raw).toLocaleString()}，按${code.startsWith('688')?'科创板最少 200 股':'每手 100 股'}向下取整 = ${z.shares.toLocaleString()} 股</li>
+   <li>止损价 = ${z.stop.how} = ${f2(z.stop.price)}</li></ol></details>
+ </div>`;
+}
+function switchBlock(){
+ if(state.holdings.length<state.rules.maxHold) return '';
+ const hc=state.holdings[0].code,hs=STOCKS[hc],hp=heldPlan(hc);
+ const cand=state.watch.find(c=>!held(c)&&STOCKS[c].verdict==='买入'&&STOCKS[c].zone);
+ if(!cand) return `<section class="anim" id="switch"><h3>换股判断：不换</h3><p class="note">自选里今天没有「买入」结论的股票。</p></section>`;
+ const cs=STOCKS[cand],cstop=stopFor(cs.entry,cs.tech);
+ return `<section class="anim" id="switch"><div class="inset">
+  <div class="sec-head"><h3>换股判断：不换</h3><button class="btn quiet sm" data-action="ask" data-q="换股">问助手</button></div>
+  <div class="cmp">
+   <div><p class="k">当前持仓</p><p><b>${esc(hs.name)}</b> 持有，在 ${f2(hs.tech)} 上方走势没坏</p></div>
+   <div><p class="k">最好的换入候选</p><p><b>${esc(cs.name)}</b> ${esc(cs.one)}；所在的${esc(cs.sector)}板块今天首次启动</p></div>
+  </div>
+  <p class="note" style="margin-top:14px">两个条件同时满足才换：</p>
+  <ul class="cond">
+   <li><span class="mark" aria-hidden="true"></span><span>${esc(cs.name)} 回踩 ${f2(cs.zone[0])}–${f2(cs.zone[1])} 并企稳<span class="vh">（未满足）</span></span></li>
+   <li><span class="mark" aria-hidden="true"></span><span>${esc(hs.name)} 收盘跌破 ${f2(hs.tech)}，走势转弱<span class="vh">（未满足）</span></span></li>
+  </ul>
+  <p class="note">换股成本：T+1，卖出 ${esc(hs.name)} 当天就能用这笔钱买 ${esc(cs.name)}，但新买的当天不能卖。换后止损价变为 ${f2(cstop.price)}（原来是 ${f2(hp.stop.price)}）。目前两个条件都没满足，结论不换。</p>
+ </div></section>`;
+}
+function fig(k,v,c=''){return `<div><dt>${k}</dt><dd class="${c}">${v}</dd></div>`}
+function mineDetail(){
+ const c=state.sel,s=STOCKS[c],h=held(c),v=verdictOf(c);
+ const back=`<button class="btn quiet back" data-action="back">‹ 返回列表</button>`;
+ const dhead=`<header class="d-head anim"><div class="id"><h2>${esc(s.name)}</h2><span class="cd">${c}</span><span class="tag line">${s.mkt}</span></div>
+   ${s.suspended?'':`<div class="d-price"><span>${cnt(s.close,2,'现价')}</span><span class="num ${cls(s.chg)}">${sgn(s.chg)}</span></div>`}</header>`;
+ if(s.suspended) return back+dhead+`<div class="hero anim"><div><div class="verdict v-skip">停牌</div><p class="summary">${esc(s.situation)}复牌前不给计划，复牌后的第一个 16:00 会重新生成。</p></div></div>`;
+ let summary,figs,levels,cap,plan;
+ if(h){const p=heldPlan(c),pnl=(s.close-h.cost)*h.shares;
+  summary=p.headline;
+  figs=fig('持仓',cnt(h.shares,0,'持仓',' 股'))+fig('浮动盈亏',cnt(pnl,0,'浮动盈亏',' 元',true),cls(pnl))+fig('止损价',cnt(p.stop.price,2,'止损价'))+fig('明天跌停价',cnt(p.limitDown,2,'跌停价'));
+  levels=[{p:p.tp,label:'成本 +15% 卖出一半'},{p:p.pres,label:'前高压力'},{p:s.close,label:`${TRADE_DATE} 收盘`,kind:'close'},{p:s.tech,label:'技术支撑（仅提示）',kind:'hint'},{p:h.cost,label:'持仓成本',kind:'hint'},{p:p.stop.price,label:'止损，跌破次日清仓',kind:'stop'},{p:+(p.stop.price*(1-s.limit)).toFixed(2),label:'若再跌停',kind:'worst'}];
+  cap=`持仓 ${h.shares.toLocaleString()} 股，成本 ${f2(h.cost)}`;
+  plan=`<section class="anim"><div class="sec-head"><h3>明天怎么做</h3>${hzSeg()}</div>${ifthen(state.hz==='短线'?p.short:p.swing)}
+     <p class="note">买入日 ${h.date||'未填'}，计划周期 ${h.hz||'未填'}，T+1 已满足。止损价按「成本 × (1 − ${state.rules.stop}%)」计算，技术支撑只作提示。</p></section>
+   ${switchBlock()}`;
+ }else{
+  summary=s.why||s.one;
+  const stop=s.entry&&v!=='放弃'?stopFor(s.entry,s.tech):null;
+  figs=fig('收盘',cnt(s.close,2,'收盘'))+fig('计划买入价',v==='放弃'||!s.entry?'—':cnt(s.entry,2,'买入价'))+fig('止损价',stop?cnt(stop.price,2,'止损价'):'—')+fig('跌破就放弃',s.invalid?cnt(s.invalid,2,'失效价'):'—');
+  levels=[];
+  if(s.breakout) levels.push({p:s.breakout,label:v==='买入'?'站上不回踩就不追':'确认位'});
+  levels.push({p:s.close,label:`${TRADE_DATE} 收盘`,kind:'close'});
+  if(s.zone) levels.push({band:s.zone,label:'买入区'});else if(s.entry&&v!=='放弃') levels.push({p:s.entry,label:'计划买入价',kind:'hint'});
+  if(s.invalid) levels.push({p:s.invalid,label:'跌破就放弃',kind:'hint'});
+  if(stop){levels.push({p:stop.price,label:'买入后止损',kind:'stop'});levels.push({p:+(stop.price*(1-s.limit)).toFixed(2),label:'若再跌停',kind:'worst'})}
+  cap=v==='放弃'?'关键价位':`按 ${f2(s.entry)} 买入时的价位`;
+  plan=`<section class="anim"><div class="sec-head"><h3>明天怎么做</h3>${hzSeg()}</div>${ifthen(state.hz==='短线'?s.short:s.swing)}</section>
+   ${v!=='放弃'&&s.entry?`<section class="anim"><h3>买多少</h3>${sizingBlock(c)}</section>`:''}`;
+ }
+ return back+dhead+`<div class="hero anim"><div><div class="verdict v-${VCLS[v]}">${v}</div><p class="summary">${esc(summary)}</p><p class="meta">${NEXT_DATE}的计划，基于 ${TRADE_DATE} 收盘数据</p></div><dl class="figs">${figs}</dl></div>
+  <div class="body"><div class="plan">${plan}
+    <section class="anim"><h3>今天的情况</h3><p class="situ">${esc(s.situation)}</p></section>
+    ${s.risks&&s.risks.length?`<section class="anim"><h3>风险</h3><ul class="risk-list">${s.risks.map(r=>`<li>${esc(r)}</li>`).join('')}</ul></section>`:''}
+    ${s.gaps&&s.gaps.length?`<section class="anim"><div class="notice"><b>数据缺口</b><p>${s.gaps.map(esc).join('；')}</p></div></section>`:''}
+    <div class="actions anim"><button class="btn primary" data-action="ask" data-q="">${ic('assist',16)}问助手</button>${h?'':`<button class="btn" data-action="record" data-code="${c}">记录买入</button><button class="btn quiet" data-action="unwatch" data-code="${c}">移出自选</button>`}</div>
+   </div><aside class="ladder anim" aria-label="价格梯子">${ladder(levels,cap)}</aside></div>`;
+}
+function pageMine(){
+ if(!STOCKS[state.sel]||(!held(state.sel)&&!state.watch.includes(state.sel))) state.sel=state.holdings[0]?.code||state.watch[0];
+ return head('我的股票',`${NEXT_DATE}的计划，${TRADE_DATE} 16:00 生成，包含全部自选和持仓`)+
+  `<div class="grid2 ${state.detail?'show-detail':''}"><section class="win side" aria-label="账户和股票列表">${acctBlock()}<div class="list-scroll" data-keep-scroll="mine">${mineList()}</div></section>
+   <article class="win detail" aria-live="polite">${mineDetail()}</article></div>`;
+}
+
+/* ---------- 板块异动 ---------- */
+function boardRows(){
+ const list=BOARDS.filter(b=>(state.btype==='全部'||b.type===state.btype)&&(state.bstate==='全部'||b.state===state.bstate));
+ if(!list.length) return `<div class="empty sm"><h3>没有符合条件的板块</h3><p>换一个类型或状态试试。</p></div>`;
+ return `<ul class="rows">${list.map(b=>{const w=b.vol==null?0:Math.min(b.vol,3)/3*100,cur=state.board===b.id;
+  return `<li><button class="row" data-board="${b.id}" ${cur?'aria-current="true"':''}>${cur?'<span class="ind" data-flip="sel-board"></span>':''}
+   <span class="r-top"><span class="nm">${esc(b.name)}</span><span class="tag ${b.state==='历史数据不足'?'warn':'line'}">${b.state}</span>${b.tags.map(t=>`<span class="tag ${t==='单股驱动'?'warn':''}">${t}</span>`).join('')}</span>
+   <span class="r-px"><b class="num ${cls(b.day)}">${sgn(b.day)}</b><span class="num flat">${b.vol==null?'无基准':b.vol.toFixed(1)+'×'}</span></span>
+   <span class="b-one"><span class="meter" aria-hidden="true"><i class="${b.vol>=2.5?'hot':''}" style="width:${w}%"></i><b style="left:50%"></b><b style="left:83.3%"></b></span><span>${b.type}，5 日 <span class="num ${cls(b.d5)}">${sgn(b.d5)}</span></span></span>
+   <span class="one" style="grid-column:1/-1">${esc(b.reason)}</span></button></li>`}).join('')}</ul>`;
+}
+function bars(series){
+ const W=620,H=160,pad=22,n=series.length,bw=(W-pad*2)/n;
+ const vals=series.filter(v=>v!=null),m=Math.max(1,...vals.map(Math.abs)),mid=H/2-6;
+ const sc=v=>v/m*(H/2-pad-6);
+ const days=['10-28','10-29','10-30','10-31','11-03','11-04','11-05','11-06'];
+ let g=`<line x1="${pad}" x2="${W-pad}" y1="${mid}" y2="${mid}" stroke="rgba(255,255,255,.35)"/>`;
+ series.forEach((v,i)=>{const x=pad+i*bw+4,w=bw-8;
+  if(v==null) g+=`<text x="${x+w/2}" y="${mid-6}" text-anchor="middle">无</text>`;
+  else{const h=Math.max(2,Math.abs(sc(v))),yy=v>=0?mid-h:mid;
+   g+=`<rect class="bar" x="${x}" y="${yy}" width="${w}" height="${h}" rx="5" fill="${v>=0?'#FF7468':'#3CC3B4'}" style="transform-origin:${x+w/2}px ${mid}px"><title>${days[i]} 超额 ${sgn(v)}</title></rect>`;
+   if(i===n-1||Math.abs(v)===m) g+=`<text x="${x+w/2}" y="${v>=0?yy-6:yy+h+13}" text-anchor="middle" style="fill:#fff;font-weight:600">${sgn(v)}</text>`}
+  g+=`<text x="${x+w/2}" y="${H-2}" text-anchor="middle">${days[i]}</text>`});
+ return `<div class="bars"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="最近 8 个交易日相对中证全指的超额收益：${series.map((v,i)=>days[i]+' '+sgn(v)).join('，')}">${g}</svg>
+  <div class="legend"><span><i style="background:#FF7468"></i>强于中证全指（柱在上）</span><span><i style="background:#3CC3B4"></i>弱于（柱在下）</span></div></div>`;
+}
+function boardDetail(){
+ const b=BOARDS.find(x=>x.id===state.board)||BOARDS[0];
+ const canPick=PICKS.board[b.id]!==undefined&&b.state!=='历史数据不足';
+ const figs=fig('今日',cnt(b.day,2,'b今日','%',true),cls(b.day))+fig('5 日',b.d5==null?'—':cnt(b.d5,2,'b5日','%',true),cls(b.d5))+fig('超额收益',cnt(b.ex,2,'b超额','%',true),cls(b.ex))
+  +fig('成交额 / 5 日均',b.vol==null?'无基准':cnt(b.vol,1,'b放量','×'))+fig('上涨家数占比',cnt(b.breadth,0,'b上涨','%'))+fig('涨停 / 炸板率',b.limitUp==null?'行业不看':`${b.limitUp} / ${b.boom}%`);
+ return `<button class="btn quiet back" data-action="back">‹ 返回列表</button>
+  <header class="d-head anim"><div class="id"><h2>${esc(b.name)}</h2><span class="tag line">${b.type}</span>${b.tags.map(t=>`<span class="tag">${t}</span>`).join('')}</div></header>
+  <div class="hero anim"><div><div class="verdict v-state ${b.state==='异常下跌'||b.state==='退潮'?'v-skip':''}">${b.state}</div><p class="summary">${esc(b.drivers)}</p><p class="meta">${TRADE_DATE} 收盘，超额收益相对中证全指</p></div><dl class="figs three">${figs}</dl></div>
+  <div class="body single"><div class="plan">
+   <section class="anim"><h3>持续性：最近 8 个交易日的超额收益</h3>${bars(b.persist)}</section>
+   ${b.reps.length?`<section class="anim"><h3>代表股票</h3><ul class="reps">${b.reps.map(c=>{const s=STOCKS[c],inW=state.watch.includes(c)||held(c);
+    return `<li><span><b>${esc(s.name)}</b> <span class="cd">${c}</span></span><span class="num ${cls(s.chg)}">${f2(s.close)}  ${sgn(s.chg)}</span><button class="btn quiet sm" data-action="${inW?'open-stock':'watch'}" data-code="${c}">${inW?'看计划':'加入自选'}</button></li>`}).join('')}</ul></section>`:''}
+   <div class="actions anim">${canPick?`<button class="btn primary" data-action="pick-board" data-board="${b.id}">在此板块中选股</button>`:''}<button class="btn" data-action="ask" data-q="">${ic('assist',16)}问助手</button></div>
+  </div></div>`;
+}
+function pageBoards(){
+ const states=['全部','首次启动','持续走强','高位分歧','退潮','异常下跌'];
+ return head('板块异动',`${TRADE_DATE} 收盘，按成交额放大、相对中证全指的超额收益和板块内部强度判定`)+
+  `<div class="market glass"><span>中证全指<b class="up">+0.38%</b></span><span>上涨家数<b>3,126</b></span><span>涨停<b>61</b></span><span>跌停<b>9</b></span><span>炸板率<b>27%</b></span><span>普涨保护<b>未触发</b></span><button class="btn quiet sm" data-nav="settings" data-tab="thresholds" style="margin:-4px -8px">判定阈值</button></div>
+  <div class="grid2 ${state.detail?'show-detail':''}"><section class="win side" aria-label="板块列表">
+   <div class="filters">${seg('btype',[['全部','全部'],['行业','行业'],['概念','概念']],state.btype,'板块类型')}
+    <div class="chips" role="group" aria-label="状态">${states.map(t=>`<button class="chip" data-bstate="${t}" aria-pressed="${state.bstate===t}">${t}</button>`).join('')}</div></div>
+   <div class="list-scroll" data-keep-scroll="boards">${boardRows()}</div></section>
+   <article class="win detail" aria-live="polite">${boardDetail()}</article></div>`;
+}
+
+/* ---------- 机会选股 ---------- */
+function pagePicks(){
+ const anomaly=BOARDS.filter(b=>PICKS.board[b.id]!==undefined);
+ const b=BOARDS.find(x=>x.id===state.pboard);
+ let list=state.psrc==='board'?(PICKS.board[state.pboard]||[]):(PICKS.strategy[state.pstrat]||PICKS.strategy[STRATEGIES[STRATEGIES.indexOf(state.pstrat)%2]]);
+ if(state.phz!=='全部') list=list.filter(x=>x.hz===state.phz);
+ const condition=state.psrc==='board'?`来源 <b>${esc(b.name)}</b>（${b.state}），${TRADE_DATE} 收盘，排除 ST、停牌和一字涨停`:`策略 <b>${esc(state.pstrat)}</b>，全部 A 股，${TRADE_DATE} 收盘，排除 ST、停牌和上市不满 60 天`;
+ return head('机会选股','列出的是值得关注的股票，不是涨跌预测；每条都带买入条件和失效条件')+
+  `<section class="win" aria-label="选股结果"><div class="toolbar">
+   ${seg('psrc',[['board','来自异动板块'],['strategy','全市场按策略']],state.psrc,'选股来源')}
+   ${state.psrc==='board'?`<label><span class="vh">板块</span><select class="sel" id="pboard">${anomaly.map(x=>`<option value="${x.id}" ${x.id===state.pboard?'selected':''}>${x.name}（${x.state}）</option>`).join('')}</select></label>`
+    :`<label><span class="vh">策略</span><select class="sel" id="pstrat">${STRATEGIES.map(x=>`<option ${x===state.pstrat?'selected':''}>${x}</option>`).join('')}</select></label>`}
+   <div class="chips" role="group" aria-label="周期">${['全部','短线','波段'].map(x=>`<button class="chip" data-phz="${x}" aria-pressed="${state.phz===x}">${x}</button>`).join('')}</div>
+  </div>
+  <p class="cond-line">${condition}。共 ${list.length} 只。</p>
+  ${list.length?`<ul class="cands">${list.map(cand).join('')}</ul>`:`<div class="empty"><h3>今天没有满足条件的股票</h3><p>${state.psrc==='board'&&b&&b.tags.includes('单股驱动')?'这个板块的涨幅主要来自一只股票，不按板块机会选股。':'条件没有放宽，空结果也是一种结论。可以换个板块或策略，也可以明天 16:00 再看。'}</p></div>`}
+  </section>`;
+}
+function cand(x){
+ const s=STOCKS[x.code],inW=state.watch.includes(x.code)||held(x.code),skip=s.verdict==='放弃';
+ const buy=skip?'不建议买':s.zone?`回踩 ${f2(s.zone[0])}–${f2(s.zone[1])} 企稳，${f2(s.entry)} 附近买入`:`${esc(s.one)}，${f2(s.entry)} 附近买入`;
+ return `<li class="cand">
+  <div><span class="nm">${esc(s.name)}</span><span class="cd">${x.code}</span>
+   <p class="px num"><span>${f2(s.close)}</span><span class="${cls(s.chg)}">${sgn(s.chg)}</span></p>
+   <p class="tags"><span class="tag ${x.hz==='短线'?'wait':'line'}">${x.hz} ${x.hz==='短线'?'1–5 天':'2–4 周'}</span>${skip?'<span class="tag skip">放弃</span>':''}</p></div>
+  <dl>
+   <dt>入选理由</dt><dd><ul>${x.why.map(w=>`<li>${esc(w)}</li>`).join('')}</ul></dd>
+   <dt>买入条件</dt><dd>${buy}</dd>
+   <dt>失效条件</dt><dd>${s.invalid?`收盘跌破 ${f2(s.invalid)}`:'—'}</dd>
+   <dt>风险</dt><dd>${esc(x.note||s.why||(s.risks[0]||'—'))}</dd>
+  </dl>
+  <div class="acts">
+   <button class="btn sm" data-action="watch" data-code="${x.code}" ${inW?'disabled':''}>${inW?'已在自选':'加入自选'}</button>
+   <button class="btn sm" data-action="open-stock" data-code="${x.code}">查看计划</button>
+   <button class="btn quiet sm" data-action="ask" data-code="${x.code}" data-q="">问助手</button>
+  </div></li>`;
+}
+
+/* ---------- 设置 ---------- */
+function pageSettings(){
+ const tabs=[['rules','仓位规则'],['models','模型'],['thresholds','异动阈值'],['run','运行和推送'],['data','数据状态']];
+ const r=state.rules;let body='';
+ if(state.setTab==='models') body=modelsBody();
+ if(state.setTab==='rules') body=`<h2>仓位规则</h2><p class="sub">改完立刻用于「我的股票」里的股数和止损计算，不写死在代码里</p>
+  <form id="rulesForm" style="margin-top:20px" novalidate>
+   <div class="form-grid">
+    <label class="f">止损幅度（%）<input name="stop" inputmode="decimal" value="${r.stop}"></label>
+    <label class="f">总仓位上限（%）<input name="total" inputmode="decimal" value="${r.total}"></label>
+    <label class="f">最多持有（只）<input name="maxHold" inputmode="numeric" value="${r.maxHold}"></label>
+    <label class="f">止损方式<select name="stopMode"><option value="fixed" ${r.stopMode==='fixed'?'selected':''}>固定比例</option><option value="nearer" ${r.stopMode==='nearer'?'selected':''}>固定比例和技术支撑取较近者</option></select></label>
+   </div>
+   <p class="note">单只上限由总仓位 ÷ 最多持有只数得出，现在是 ${singleCap().toFixed(0)}%。单笔最大亏损不单独设置，由股数和止损幅度决定。</p>
+   <p class="err" id="rulesErr" role="alert"></p>
+   <div class="actions" style="margin-top:6px"><button class="btn primary" type="submit">保存规则</button><button class="btn quiet" type="button" data-action="reset-rules">恢复为 10% / 100% / 1 只</button></div>
+  </form>`;
+ if(state.setTab==='thresholds') body=`<h2>异动阈值</h2><p class="sub">默认值来自调研，「依据」一列说明可信程度；正式使用前要用历史数据回测校准</p>
+  <div class="tbl"><table class="t"><thead><tr><th>参数</th><th>默认值</th><th>依据</th></tr></thead><tbody>
+  ${THRESHOLDS.map(t=>`<tr><td>${t[0]}</td><td>${t[1]}</td><td class="ev ${t[2]}">${EV[t[2]]}</td></tr>`).join('')}</tbody></table></div>
+  <p class="note">行业板块不用涨停条件。主力资金流只展示，不参与判定。</p>`;
+ if(state.setTab==='run') body=`<h2>运行和推送</h2><p class="sub">每个 A 股交易日 16:00 自动运行，节假日和调休周末按交易所日历跳过</p>
+  <div class="form-grid" style="margin-top:20px;max-width:520px">
+   <label class="f">运行时间<input value="16:00" aria-describedby="runNote"></label>
+   <label class="f">运行范围<select><option>全部自选和持仓</option></select></label></div>
+  <p class="note" id="runNote">顺序：板块异动 → 选股 → 自选和持仓 → 换股判断 → 推送。一只股票失败不影响其他股票。</p>
+  <div class="inset" style="margin-top:22px"><div class="sec-head"><h3>飞书群机器人</h3><span class="tag ok">已配置</span></div>
+   <p class="note" style="margin-top:0">Webhook 地址和签名密钥只保存在本机配置文件里，这里不显示。签名校验已开启，关键词已设置。</p>
+   <div class="actions" style="margin-top:14px"><button class="btn" data-action="run">预览今天的推送</button><button class="btn quiet" data-action="test-push">发送测试消息</button></div></div>`;
+ if(state.setTab==='data') body=`<h2>数据状态</h2><p class="sub">${TRADE_DATE} 16:00 运行时各数据的可用情况</p>
+  <div class="tbl"><table class="t"><thead><tr><th>数据</th><th>状态</th><th>说明</th></tr></thead><tbody>
+   <tr><td>个股日线</td><td class="ok-t">正常</td><td>全部自选已更新到 ${TRADE_DATE}</td></tr>
+   <tr><td>板块成交额与涨跌</td><td class="ok-t">正常</td><td>行业 86 个，概念 412 个</td></tr>
+   <tr><td>板块历史</td><td class="warn-t">部分不足</td><td>3 个新概念不足 10 个交易日，只展示不判定</td></tr>
+   <tr><td>涨停池</td><td class="ok-t">正常</td><td>涨停 61，炸板 23</td></tr>
+   <tr><td>主力资金流</td><td class="warn-t">缺失</td><td>16:00 时尚未发布，只展示不参与判定</td></tr>
+  </tbody></table></div>`;
+ return head('设置','仓位规则、异动阈值、运行推送和数据状态')+
+  `<section class="win settings"><nav class="set-nav" aria-label="设置分类">${tabs.map(([id,l])=>`<button data-settab="${id}" ${state.setTab===id?'aria-current="true"':''}>${state.setTab===id?'<span class="thumb" data-flip="settab"></span>':''}${l}</button>`).join('')}</nav><div class="set-body anim">${body}</div></section>`;
+}
+
+/* ---------- 设置：模型 ---------- */
+const clone=o=>JSON.parse(JSON.stringify(o));
+function mdraft(){return state._mdraft||(state._mdraft=clone(state.models))}
+function chOf(id,m=mdraft()){return m.channels.find(c=>c.id===id.split('/')[0])}
+function mName(id){return id?id.split('/').slice(1).join('/'):''}
+function mLabel(id,m=mdraft()){if(!id) return '—';const c=chOf(id,m);return `${mName(id)}（${c?c.name:'渠道已删除'}）`}
+function modelOptions(cur,m,{inherit=false,exclude=[]}={}){
+ let o=inherit?`<option value="" ${!cur?'selected':''}>跟随次日计划模型</option>`:'';
+ m.channels.forEach(c=>{const opts=c.models.map(x=>c.id+'/'+x).filter(id=>!exclude.includes(id)||id===cur);if(!opts.length) return;
+  o+=`<optgroup label="${esc(c.name)}${c.status==='down'?'（连接失败）':''}">${opts.map(id=>`<option value="${esc(id)}" ${id===cur?'selected':''}>${esc(mName(id))}</option>`).join('')}</optgroup>`});
+ return o;
+}
+const ST_LABEL={ok:'正常',down:'连接失败',unknown:'未测试',testing:'测试中'};
+function modelsBody(){
+ const m=mdraft(),dirty=JSON.stringify(m)!==JSON.stringify(state.models);
+ const pc=chOf(m.primary,m);
+ const fb=m.fallbacks.map((id,i)=>`<li><span class="fb-n num">${i+1}</span><span class="fb-name">${esc(mLabel(id,m))}</span>
+   <span class="fb-acts">${i?`<button class="btn quiet sm" type="button" data-action="fb-up" data-i="${i}" aria-label="上移 ${esc(mName(id))}">上移</button>`:''}<button class="btn quiet sm" type="button" data-action="fb-del" data-i="${i}" aria-label="移除 ${esc(mName(id))}">移除</button></span></li>`).join('');
+ const canAdd=modelOptions('',m,{exclude:[m.primary,...m.fallbacks]}).includes('<option');
+ const chRows=m.channels.map(c=>`<li class="ch">
+   <div class="ch-main"><p class="ch-name"><b>${esc(c.name)}</b><span class="tag line">${c.protocol}</span></p>
+    <p class="ch-meta">${esc(c.host)}，${c.key?'密钥已配置':'无需密钥'}</p>
+    <p class="ch-models">${c.models.map(x=>`<span class="tag">${esc(x)}</span>`).join('')}</p></div>
+   <div class="ch-side"><p class="ch-st st-${c.status}"><span class="sdot" aria-hidden="true"></span>${ST_LABEL[c.status]}${c.status==='ok'&&c.latency?`<span class="num">，${(c.latency/1000).toFixed(1)} 秒</span>`:''}</p>
+    <p class="ch-btns"><button class="btn sm" type="button" data-action="test-channel" data-id="${c.id}" ${c.status==='testing'?'disabled':''}>测试连接</button><button class="btn quiet sm" type="button" data-action="edit-channel" data-id="${c.id}">编辑</button></p></div></li>`).join('');
+ return `<h2>模型</h2><p class="sub">每天 16:00 的分析和助手的回答用哪个模型。改完点保存，下一次运行生效</p>
+ <form id="modelForm" novalidate style="margin-top:20px">
+  <ul class="roles">
+   <li><div><p class="rk">次日计划</p><p class="rd">16:00 分析板块、选股、自选和持仓，生成计划和飞书消息</p></div>
+    <label class="f"><span class="vh">次日计划模型</span><select name="primary" data-m="primary">${modelOptions(m.primary,m)}</select></label></li>
+   <li><div><p class="rk">备用模型</p><p class="rd">主模型超时或报错时，按顺序换下一个；都失败时这只股票标为「分析失败」，不影响其他股票</p></div>
+    <div class="fb-box">${fb?`<ol class="fb">${fb}</ol>`:'<p class="note" style="margin:0 0 8px">没有备用模型，主模型失败时直接标为「分析失败」。</p>'}
+     ${canAdd?`<label class="f"><span class="vh">添加备用模型</span><select id="fbAdd"><option value="">+ 添加备用模型</option>${modelOptions('',m,{exclude:[m.primary,...m.fallbacks]})}</select></label>`:''}</div></li>
+   <li><div><p class="rk">助手</p><p class="rd">回答追问。不单独设置时和次日计划用同一个模型</p></div>
+    <label class="f"><span class="vh">助手模型</span><select name="agent" data-m="agent">${modelOptions(m.agent,m,{inherit:true})}</select></label></li>
+   <li><div><p class="rk">截图识别</p><p class="rd">从持仓截图或自选截图里识别股票代码，需要支持图片的模型</p></div>
+    <label class="f"><span class="vh">截图识别模型</span><select name="vision" data-m="vision">${modelOptions(m.vision,m)}</select></label></li>
+   <li><div><p class="rk">温度</p><p class="rd">0 到 2，越低回答越稳定。部分模型不支持时会自动改用模型默认值</p></div>
+    <label class="f"><span class="vh">温度</span><input name="temp" inputmode="decimal" value="${m.temp}"></label></li>
+  </ul>
+  ${pc&&pc.status==='down'?`<div class="notice" style="margin-top:14px"><b>主模型不可用</b><p>${esc(pc.name)} 渠道最近一次连接失败，先测试渠道，或换一个模型。</p></div>`:''}
+  <p class="err" id="modelErr" role="alert"></p>
+  <div class="actions" style="margin-top:6px"><button class="btn primary" type="submit" ${dirty?'':'disabled'}>保存模型设置</button>${dirty?'<button class="btn quiet" type="button" data-action="model-discard">放弃修改</button>':'<span class="note" style="margin:0;align-self:center">没有未保存的修改</span>'}</div>
+ </form>
+ <section style="margin-top:30px"><div class="sec-head"><h3>渠道</h3><button class="btn sm" type="button" data-action="edit-channel" data-id="">+ 添加渠道</button></div>
+  <p class="note" style="margin:-4px 0 10px">一个渠道是一个模型服务商或中转地址。密钥只保存在本机配置文件里，这里不显示。</p>
+  <ul class="chs">${chRows}</ul></section>
+ <section style="margin-top:30px"><h3>上次运行</h3>
+  <div class="tbl"><table class="t"><thead><tr><th>步骤</th><th>调用</th><th>模型</th><th>说明</th></tr></thead><tbody>
+   <tr><td>板块异动</td><td class="num">3 次</td><td>deepseek-v4-flash</td><td>正常</td></tr>
+   <tr><td>机会选股</td><td class="num">5 次</td><td>deepseek-v4-flash</td><td>正常</td></tr>
+   <tr><td>自选和持仓</td><td class="num">16 次</td><td>deepseek-v4-flash</td><td class="warn-t">1 次回退：华工科技等待 60 秒超时，改用 gemini-3-flash-preview 完成</td></tr>
+   <tr><td>换股判断</td><td class="num">1 次</td><td>deepseek-v4-flash</td><td>正常</td></tr>
+   <tr><td>飞书摘要</td><td class="num">1 次</td><td>deepseek-v4-flash</td><td>正常</td></tr>
+  </tbody></table></div>
+  <p class="note">${TRADE_DATE} 16:00 共调用 26 次，用时 6 分 12 秒。回退的股票在计划里会标出实际使用的模型。</p></section>`;
+}
+function openChannel(id){
+ const m=mdraft(),c=id?m.channels.find(x=>x.id===id):null;state._editCh=id||'';
+ const d=$('#dlg');
+ d.innerHTML=`<div class="dlg-head"><h2 id="dlgTitle">${c?'编辑渠道':'添加渠道'}</h2><button class="x" type="button" data-action="close-dlg" aria-label="关闭">✕</button></div>
+  <form class="dlg-body" id="channelForm" novalidate>
+   <div class="form-grid">
+    <label class="f">名称<input name="name" value="${c?esc(c.name):''}" placeholder="例如 公司中转"></label>
+    <label class="f">接口协议<select name="protocol">${PROTOCOLS.map(p=>`<option ${c&&c.protocol===p?'selected':''}>${p}</option>`).join('')}</select></label>
+   </div>
+   <div class="form-grid" style="margin-top:14px;grid-template-columns:1fr">
+    <label class="f">接口地址<input name="host" value="${c?esc(c.host):''}" placeholder="例如 api.example.com/v1；官方地址可留空" autocomplete="off"></label>
+    <label class="f">API Key<input name="key" type="password" autocomplete="new-password" placeholder="${c&&c.key?'已配置，留空表示不修改':'填写后只保存在本机配置文件里'}"></label>
+    <label class="f">模型（多个用逗号分隔）<input name="models" value="${c?esc(c.models.join(', ')):''}" placeholder="例如 model-a, model-b" autocomplete="off"></label>
+   </div>
+   <p class="err" id="chErr" role="alert"></p>
+   <div class="actions" style="margin-top:6px"><button class="btn primary" type="submit">${c?'保存渠道':'添加渠道'}</button>${c?`<button class="btn quiet" type="button" data-action="del-channel" data-id="${c.id}">删除渠道</button>`:''}</div>
+  </form>`;
+ if(!d.open) d.showModal();
+}
+function testChannel(id){
+ const c=mdraft().channels.find(x=>x.id===id);if(!c) return;
+ c.status='testing';render();
+ setTimeout(()=>{const cur=mdraft().channels.find(x=>x.id===id);if(!cur) return;
+  if(/localhost/.test(cur.host)){cur.status='down';cur.latency=null;toast(`连接失败：${cur.host} 没有响应`)}
+  else{cur.status='ok';cur.latency=cur.latency||960;toast(`${cur.name} 连接正常（设计稿模拟）`)}
+  const saved=state.models.channels.find(x=>x.id===id);if(saved){saved.status=cur.status;saved.latency=cur.latency}
+  if(state.page==='settings'&&state.setTab==='models') render()},900);
+}
+
+/* ---------- 弹层：运行状态、持仓录入 ---------- */
+function openRun(){
+ const hc=state.holdings[0]?.code,hs=hc&&STOCKS[hc],hp=hc&&heldPlan(hc);
+ const watch=state.watch.filter(c=>!held(c));
+ const ok=watch.filter(c=>!STOCKS[c].suspended).length+state.holdings.length,all=watch.length+state.holdings.length;
+ const order={'买入':0,'等待确认':1,'放弃':2,'停牌':3};
+ const lines=watch.slice().sort((a,b)=>order[STOCKS[a].verdict]-order[STOCKS[b].verdict]).map(c=>`<b>${STOCKS[c].name}</b> ${STOCKS[c].verdict}：${esc(STOCKS[c].one)}`).join('<br>');
+ const d=$('#dlg');
+ d.innerHTML=`<div class="dlg-head"><h2 id="dlgTitle">${TRADE_DATE} 16:00 运行</h2><button class="x" data-action="close-dlg" aria-label="关闭">✕</button></div>
+  <div class="dlg-body run-grid"><section>
+   <p class="sub" style="margin:0">用时 6 分 12 秒，16:07 推送完成</p>
+   <ul class="steps">
+    <li><span class="ok" aria-hidden="true">✓</span><span>板块异动</span><span class="num">8 个</span></li>
+    <li><span class="ok" aria-hidden="true">✓</span><span>机会选股</span><span class="num">11 只</span></li>
+    <li><span class="part" aria-hidden="true">!</span><span>自选和持仓（1 只停牌跳过）</span><span class="num">${ok}/${all}</span></li>
+    <li><span class="ok" aria-hidden="true">✓</span><span>换股判断</span><span>不换</span></li>
+    <li><span class="ok" aria-hidden="true">✓</span><span>飞书推送</span><span class="num">16:07</span></li>
+   </ul>
+   <p class="note">推送失败不影响计划生成；失败时这里会显示原因，可以手动重发。</p>
+  </section><section>
+   <h3>飞书消息预览</h3>
+   <div class="lark" aria-label="飞书消息卡片预览"><div class="lh">${NEXT_DATE}次日计划</div><div class="lb">
+    ${hs?`<p><b>持仓：${hs.name} ${hp.verdict}</b><br>${esc(hp.headline)}</p><hr><p><b>换股：不换</b><br>华工科技回踩买入区且${hs.name}跌破 ${f2(hs.tech)} 时才换</p><hr>`:''}
+    <p><b>自选</b><br>${lines}</p><hr>
+    <p><b>板块异动</b><br>通信设备 首次启动，商业航天 持续走强（主线），固态电池 高位分歧，保险 异常下跌</p><hr>
+    <p class="muted">数据提醒：主力资金流未发布；中科曙光停牌</p>
+    <a href="#mine" data-action="close-dlg">打开完整计划</a></div></div>
+   <p class="note">消息超过约 20KB 会分成多条，持仓结论总在第一屏。</p>
+  </section></div>`;
+ d.showModal();
+}
+const stockOpts=c=>Object.keys(STOCKS).filter(k=>!STOCKS[k].suspended).map(k=>`<option value="${k}" ${k===c?'selected':''}>${STOCKS[k].name} ${k}</option>`).join('');
+function holdRow(h,i){
+ return `<div class="holding-edit" data-i="${i}">
+  <label class="f">股票<select name="code">${stockOpts(h.code)}</select></label>
+  <label class="f">数量（股）<input name="shares" inputmode="numeric" value="${h.shares||''}" required></label>
+  <label class="f">成本价<input name="cost" inputmode="decimal" value="${h.cost||''}" required></label>
+  <label class="f">买入日（选填）<input name="date" type="date" value="${h.date||''}"></label>
+  <label class="f">计划周期（选填）<select name="hz">${['','短线','波段'].map(x=>`<option ${x===h.hz?'selected':''} value="${x}">${x||'未填'}</option>`).join('')}</select></label>
+  <button class="btn quiet sm" type="button" data-action="del-hold" data-i="${i}" aria-label="删除第 ${i+1} 条持仓">删除</button>
+ </div>`;
+}
+function openAcct(){
+ if(!state._draft) state._draft=state.holdings.map(h=>({...h}));
+ const d=$('#dlg');
+ d.innerHTML=`<div class="dlg-head"><h2 id="dlgTitle">持仓和资金</h2><button class="x" type="button" data-action="close-dlg" aria-label="关闭">✕</button></div>
+  <form class="dlg-body" id="acctForm" novalidate>
+   <p class="sub" style="margin:0 0 14px">先手动录入持仓快照，后续再支持成交记录导入。${state._record?'记录买入时会自动从现金里扣掉这笔金额。':''}</p>
+   <div class="form-grid cash-field"><label class="f">可用现金（元）<input name="cash" inputmode="decimal" value="${state.cash}"></label></div>
+   <div id="hold-rows">${state._draft.map(holdRow).join('')}</div>
+   <p class="err" id="acctErr" role="alert"></p>
+   <div class="actions" style="margin-top:6px">
+    <button class="btn" type="button" data-action="add-hold">+ 添加持仓</button>
+    <button class="btn primary" type="submit">保存</button>
+    <button class="btn quiet" type="button" data-action="demo-empty">演示：空仓，现金 100,000</button>
+   </div></form>`;
+ if(!d.open) d.showModal();
+}
+function collectHold(){
+ state._draft=[...document.querySelectorAll('#hold-rows .holding-edit')].map(r=>({code:r.querySelector('[name=code]').value,shares:r.querySelector('[name=shares]').value,cost:r.querySelector('[name=cost]').value,date:r.querySelector('[name=date]').value,hz:r.querySelector('[name=hz]').value}));
+}
+function closeDlg(){const d=$('#dlg');if(d.open) d.close()}
+$('#dlg').addEventListener('close',()=>{state._draft=null;state._record=null});
+
+/* ---------- 助手 ---------- */
+function ctxOf(){
+ if(state.page==='boards'){const b=BOARDS.find(x=>x.id===state.board);return {kind:'board',id:b.id,label:`${b.name}（${b.state}）`}}
+ if(state.page==='picks'&&state.ctxCode) return {kind:'stock',id:state.ctxCode,label:STOCKS[state.ctxCode].name};
+ const c=state.sel;return {kind:'stock',id:c,label:STOCKS[c].name+(held(c)?' 持仓':'')};
+}
+function quickFor(ctx){
+ if(ctx.kind==='board') return ['这个板块还能持续吗','涨的原因是什么','板块里哪只最稳'];
+ const s=STOCKS[ctx.id];if(held(ctx.id)) return ['如果明天低开怎么办','如果明天高开怎么办','按我的成本止损在哪','现在加仓风险大吗','要不要换股'];
+ if(s.verdict==='放弃') return ['为什么不建议买','什么情况下可以买'];
+ return ['如果明天低开怎么办','如果明天高开怎么办','买多少','为什么不建议买'];
+}
+function answer(q,ctx){
+ if(ctx.kind==='board'){const b=BOARDS.find(x=>x.id===ctx.id);
+  if(q.includes('持续')) return `${b.name}最近 8 天的超额收益是 ${b.persist.filter(v=>v!=null).map(v=>sgn(v)).join('、')}。${b.state==='首次启动'?'今天是第一次明显放量走强，短期行业动量常有反转，单靠「今天强」不能当作买入理由；明天如果成交额还在 5 日均值 1.5 倍以上、上涨家数保持七成，才算延续。':b.state==='持续走强'?'已经连续多天强于大盘。持续时间越长，后排补涨越多，追高的赔率越差。':'目前不适合按板块机会处理。'}`;
+  if(q.includes('原因')) return b.drivers;
+  return b.reps.length?`板块里计划最清楚的是 ${STOCKS[b.reps[0]].name}：${STOCKS[b.reps[0]].one}。`:'这个板块今天没有挑出代表股票。';}
+ const s=STOCKS[ctx.id],h=held(ctx.id);
+ if(h){const p=heldPlan(ctx.id);
+  if(q.includes('低开')) return `低开在 ${f2(s.tech)} 上方：持有，不补仓。低开到 ${f2(s.tech)} 下方且收盘收不回：短线减半（${oddDown(h.shares/2).toLocaleString()} 股），波段继续拿。明天跌停价是 ${f2(p.limitDown)}，${p.limitDown>p.stop.price?'一天之内碰不到止损价 '+f2(p.stop.price)+'，不用担心一次性被止损。':'可能直接跌破止损价。'}`;
+  if(q.includes('高开')) return `高开后看量：冲到 ${f2(p.pres)} 附近量能不到 5 日均值，卖出 1/3（${oddDown(h.shares/3).toLocaleString()} 股）；放量站上 ${f2(p.pres)}，继续持有，不追加。`;
+  if(q.includes('止损')) return `成本 ${f2(h.cost)} × ${(1-state.rules.stop/100).toFixed(2)} = ${f2(p.stop.price)}。按 ${h.shares.toLocaleString()} 股算，触发时较成本亏损 ${money((h.cost-p.stop.price)*h.shares)} 元，约占总资金 ${pct((h.cost-p.stop.price)*h.shares/account().capital)}。技术支撑 ${f2(s.tech)} 只作提示；如果把止损方式改成「取较近者」，止损价会变成 ${f2(s.tech)}。`;
+  if(q.includes('加仓')){const a=account();return `当前仓位 ${pct(a.pos)}，总仓位上限 ${state.rules.total}%，可用现金 ${money(state.cash)} 元，${state.cash<s.close*100?`不够一手（${money(s.close*100)} 元），按规则不能加仓。`:'还有加仓空间，但计划里没有加仓条件。'}`}
+  if(q.includes('换')){const c2=state.watch.find(c=>!held(c)&&STOCKS[c].verdict==='买入'&&STOCKS[c].zone);return c2?`今天的结论是不换。要同时满足两点才换：${STOCKS[c2].name}回踩 ${f2(STOCKS[c2].zone[0])}–${f2(STOCKS[c2].zone[1])} 企稳，且 ${s.name} 收盘跌破 ${f2(s.tech)}。现在两点都没满足。`:'自选里今天没有「买入」结论的股票，不换。'}}
+ if(q.includes('为什么')) return s.verdict==='放弃'?(s.why||s.one):`这只不是「不建议买」，结论是${s.verdict}：${s.one}。`;
+ if(q.includes('什么情况')) return s.swing[0]?`${s.swing[0].if}，${s.swing[0].then}。`:'等下次 16:00 重新分析。';
+ if(q.includes('买多少')){const z=sizing(ctx.id);if(!z) return '这只没有买入价，不计算股数。';if(z.blocked==='max') return `你已经持有 ${state.holdings.length}/${state.rules.maxHold} 只，按规则不新开仓，要买只能换股。`;if(z.blocked==='lot') return '可用资金不够一手。';return `在 ${f2(z.price)} 买 ${z.shares.toLocaleString()} 股，${money(z.amount)} 元，占总资金 ${pct(z.pctCap)}。止损价 ${f2(z.stop.price)}，到止损亏 ${money(z.loss)} 元。`}
+ if(q.includes('低开')) return s.zone?`低开进入 ${f2(s.zone[0])}–${f2(s.zone[1])} 买入区：等 15 分钟不再创新低再买。低开到 ${f2(s.invalid)} 下方：放弃本次计划。`:`计划不变：${s.one}。`;
+ if(q.includes('高开')) return s.breakout?`高开站上 ${f2(s.breakout)} 且不回踩：不追，等下一次回踩。`:`计划不变：${s.one}。`;
+ return `（设计稿示例回答）正式版会用 ${TRADE_DATE} 收盘的同一份数据回答「${q}」，涉及 ${s.name} 的价位、计划和仓位规则。还没分析过的股票会先分析再回答。`;
+}
+function openAssist(code){
+ if(code) state.ctxCode=code;
+ const ctx=ctxOf();
+ if(!state.ctx||state.ctx.id!==ctx.id){state.ctx=ctx;state.msgs=[]}
+ renderAssist();
+ const d=$('#assistant');d.classList.add('open');d.setAttribute('aria-hidden','false');$('.scrim').classList.add('on');
+ document.querySelectorAll('[data-action=assist]').forEach(b=>b.setAttribute('aria-expanded','true'));
+ setTimeout(()=>$('#ask').focus({preventScroll:true}),80);
+}
+function closeAssist(){const d=$('#assistant');d.classList.remove('open');d.setAttribute('aria-hidden','true');$('.scrim').classList.remove('on');const b=document.querySelector('[data-action=assist]');if(b){b.setAttribute('aria-expanded','false');b.focus({preventScroll:true})}}
+function renderAssist(newIdx){
+ const ctx=state.ctx;
+ $('#ctx').innerHTML=`<span>正在看</span><b>${esc(ctx.label)}</b><span>${TRADE_DATE} 收盘计划</span>`;
+ $('#msgs').innerHTML=state.msgs.length?state.msgs.map(m=>`<div class="msg ${m.me?'me':'bot'}">${esc(m.t)}${m.me?'':'<p class="src">依据：'+TRADE_DATE+' 收盘数据和当前仓位规则，模型 '+esc(mName(state.models.agent||state.models.primary))+'</p>'}</div>`).join(''):`<p class="sub" style="margin:0">可以直接点下面的问题，或者自己输入。</p>`;
+ $('#quick').innerHTML=quickFor(ctx).map(q=>`<button data-q="${esc(q)}">${esc(q)}</button>`).join('');
+ const m=$('#msgs');
+ if(newIdx!=null&&!reduce()){[...m.children].slice(newIdx).forEach((el,i)=>el.animate([{opacity:0,transform:'translateY(10px) scale(.97)'},{opacity:1,transform:'none'}],{duration:480,delay:i*140,easing:SPRING_JS,fill:'backwards'}))}
+ m.scrollTo({top:m.scrollHeight,behavior:reduce()?'auto':'smooth'});
+}
+function ask(q){if(!q.trim())return;const i=state.msgs.length;state.msgs.push({me:true,t:q});state.msgs.push({me:false,t:answer(q,state.ctx)});renderAssist(i)}
+
+/* ---------- 动效：FLIP 布局过渡、数字滚动、入场、图表绘制 ---------- */
+const SPRING_JS=CSS.supports('transition-timing-function','linear(0,1)')?getComputedStyle(document.documentElement).getPropertyValue('--spring').trim():'cubic-bezier(.2,.9,.25,1)';
+const lastVals={};let lastPage=null,lastSel=null,lastHz=null,lastFilter=null;
+function snapshot(){const m=new Map();document.querySelectorAll('[data-flip]').forEach(e=>m.set(e.dataset.flip,e.getBoundingClientRect()));return m}
+function playFlip(prev){
+ if(reduce()) return;
+ document.querySelectorAll('[data-flip]').forEach(e=>{const a=prev.get(e.dataset.flip);if(!a)return;const b=e.getBoundingClientRect();if(!b.width||!b.height||!a.width)return;
+  const dx=a.left-b.left,dy=a.top-b.top,sx=a.width/b.width,sy=a.height/b.height;
+  if(Math.abs(dx)<.5&&Math.abs(dy)<.5&&Math.abs(sx-1)<.01&&Math.abs(sy-1)<.01) return;
+  e.animate([{transformOrigin:'0 0',transform:`translate(${dx}px,${dy}px) scale(${sx},${sy})`},{transformOrigin:'0 0',transform:'none'}],{duration:560,easing:SPRING_JS});});
+}
+function countUp(fresh){
+ document.querySelectorAll('[data-count]').forEach(el=>{
+  const to=+el.dataset.count,dec=+el.dataset.dec,key=el.dataset.key,sign=!!el.dataset.sign;
+  const from=fresh?0:(key in lastVals?lastVals[key]:to);lastVals[key]=to;
+  if(reduce()||from===to) return;
+  const t0=performance.now(),dur=760,ease=t=>1-Math.pow(1-t,4);
+  el.textContent=(sign&&from>0?'+':'')+fmtN(from,dec);
+  const step=now=>{const t=Math.min(1,(now-t0)/dur),v=from+(to-from)*ease(t);el.textContent=(sign&&v>0?'+':'')+fmtN(t<1?v:to,dec);if(t<1) requestAnimationFrame(step)};
+  requestAnimationFrame(step);
+  setTimeout(()=>{if(el.isConnected) el.textContent=(sign&&to>0?'+':'')+fmtN(to,dec)},dur+120);
+ });
+}
+function stagger(sel,{y=10,gap=45,max=8,dur=520}={}){
+ if(reduce()) return;
+ document.querySelectorAll(sel).forEach((el,i)=>el.animate([{opacity:0,transform:`translateY(${y}px)`},{opacity:1,transform:'none'}],{duration:dur,delay:Math.min(i,max)*gap,easing:SPRING_JS,fill:'backwards'}));
+}
+function enterWindows(){
+ if(reduce()) return;
+ document.querySelectorAll('.head,.market,.win').forEach((w,i)=>w.animate([{opacity:0,transform:'translateY(14px) scale(.985)'},{opacity:1,transform:'none'}],{duration:680,delay:i*70,easing:SPRING_JS,fill:'backwards'}));
+ stagger('.side .rows>li',{y:8,gap:30,max:10});
+ stagger('.cands>li',{y:12,gap:60});
+}
+function enterDetail(){stagger('.detail .anim,.set-body.anim');stagger('.cands>li',{y:12,gap:60})}
+function drawCharts(){
+ if(reduce()) return;
+ const axis=document.querySelector('.ladder .axis');
+ if(axis){axis.style.strokeDasharray='1';axis.animate([{strokeDashoffset:1},{strokeDashoffset:0}],{duration:760,delay:120,easing:'cubic-bezier(.3,.7,.2,1)',fill:'backwards'});
+  document.querySelectorAll('.ladder .lv').forEach((g,i)=>g.animate([{opacity:0,transform:'translateX(-8px)'},{opacity:1,transform:'none'}],{duration:520,delay:220+i*60,easing:SPRING_JS,fill:'backwards'}));}
+ document.querySelectorAll('.bars .bar').forEach((r,i)=>r.animate([{transform:'scaleY(0)'},{transform:'scaleY(1)'}],{duration:620,delay:160+i*45,easing:SPRING_JS,fill:'backwards'}));
+}
+function keepScroll(){const m={};document.querySelectorAll('[data-keep-scroll]').forEach(e=>m[e.dataset.keepScroll]=e.scrollTop);return m}
+function restoreScroll(m){document.querySelectorAll('[data-keep-scroll]').forEach(e=>{if(m[e.dataset.keepScroll]!=null) e.scrollTop=m[e.dataset.keepScroll]})}
+/* 玻璃窗跟随指针的柔光 */
+document.addEventListener('pointermove',e=>{if(e.pointerType!=='mouse') return;const w=e.target.closest&&e.target.closest('.win');if(!w) return;const r=w.getBoundingClientRect();w.style.setProperty('--mx',(e.clientX-r.left)+'px');w.style.setProperty('--my',(e.clientY-r.top)+'px')},{passive:true});
+
+/* ---------- 渲染 ---------- */
+function pageHtml(){return state.page==='boards'?pageBoards():state.page==='picks'?pagePicks():state.page==='settings'?pageSettings():pageMine()}
+function render(){
+ const prev=snapshot(),sc=keepScroll();
+ $('#orn').innerHTML=ornament();
+ $('#main').innerHTML=pageHtml()+`<p class="proto">设计稿，全部为虚构的演示数据，不构成投资建议。</p>`;
+ restoreScroll(sc);playFlip(prev);
+ const page=state.page,pageChanged=page!==lastPage;
+ const sel=page==='mine'?state.sel+'|'+state.holdings.length:page==='boards'?state.board:page==='settings'?state.setTab:state.psrc+state.pboard+state.pstrat+state.phz;
+ const filter=page==='boards'?state.btype+state.bstate:'';
+ if(pageChanged){enterWindows();drawCharts()}
+ else if(sel!==lastSel){enterDetail();drawCharts()}
+ else if(page==='mine'&&state.hz!==lastHz) stagger('.ifthen li',{y:6,gap:50});
+ else if(filter!==lastFilter) stagger('.side .rows>li',{y:8,gap:30,max:10});
+ countUp(pageChanged);
+ lastPage=page;lastSel=sel;lastHz=state.hz;lastFilter=filter;
+}
+function navTo(page,opts={}){Object.assign(state,opts);state.page=page;if(location.hash!=='#'+page) history.pushState(null,'','#'+page);render();$('#main').focus({preventScroll:true});scrollTo({top:0,behavior:reduce()?'auto':'smooth'})}
+addEventListener('popstate',()=>{const p=location.hash.slice(1);if(ALL_PAGES.includes(p)){state.page=p;state.detail=false;render()}});
+let tt;function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>e.classList.remove('on'),2400)}
+function openDetail(){state.detail=true;render();if(mobile()) scrollTo({top:0})}
+
+/* ---------- 事件 ---------- */
+document.addEventListener('click',e=>{
+ const t=e.target.closest('button,a');if(!t) return;
+ const d=t.dataset;
+ if(d.nav){e.preventDefault();closeDlg();navTo(d.nav,{detail:false,...(d.tab?{setTab:d.tab}:{})});return}
+ if(d.sel){state.sel=d.sel;openDetail();return}
+ if(d.board&&!d.action){state.board=d.board;openDetail();return}
+ if(d.hz){state.hz=d.hz;render();return}
+ if(d.btype){state.btype=d.btype;render();return}
+ if(d.bstate){state.bstate=d.bstate;render();return}
+ if(d.psrc){state.psrc=d.psrc;render();return}
+ if(d.phz){state.phz=d.phz;render();return}
+ if(d.settab){state.setTab=d.settab;render();return}
+ if(t.closest('#quick')&&d.q){ask(d.q);return}
+ switch(d.action){
+  case 'assist':openAssist();break;
+  case 'close-assist':closeAssist();break;
+  case 'ask':openAssist(d.code);if(d.q) ask(d.q==='换股'?'要不要换股':d.q);break;
+  case 'back':state.detail=false;render();break;
+  case 'run':openRun();break;
+  case 'close-dlg':closeDlg();break;
+  case 'edit-acct':state._draft=null;state._record=null;openAcct();break;
+  case 'add-hold':collectHold();state._draft.push({code:'000988',shares:'',cost:'',date:'',hz:''});$('#hold-rows').innerHTML=state._draft.map(holdRow).join('');break;
+  case 'del-hold':collectHold();state._draft.splice(+d.i,1);$('#hold-rows').innerHTML=state._draft.map(holdRow).join('');break;
+  case 'demo-empty':state.cash=100000;state.watch=[...new Set([...state.holdings.map(h=>h.code),...state.watch])];state.holdings=[];state.sel='000988';closeDlg();render();toast('已切换为空仓，现金 100,000 元');break;
+  case 'watch':if(!state.watch.includes(d.code)) state.watch.push(d.code);render();toast(`已加入自选：${STOCKS[d.code].name}`);break;
+  case 'unwatch':if(!d.code||held(d.code)) break;state.watch=state.watch.filter(c=>c!==d.code);state.sel=state.holdings[0]?.code||state.watch[0];state.detail=false;render();toast('已移出自选');break;
+  case 'open-stock':if(!state.watch.includes(d.code)&&!held(d.code)) state.watch.push(d.code);navTo('mine',{sel:d.code,detail:true});break;
+  case 'pick-board':navTo('picks',{psrc:'board',pboard:d.board,phz:'全部'});break;
+  case 'record':{const s=STOCKS[d.code];
+   if(state.holdings.length>=state.rules.maxHold){toast(`已持有 ${state.holdings.length}/${state.rules.maxHold} 只，先卖出或调整规则`);break}
+   state._record=d.code;state._draft=[...state.holdings.map(h=>({...h})),{code:d.code,shares:'',cost:s.entry||s.close,date:'',hz:state.hz}];openAcct();
+   document.querySelector('#hold-rows .holding-edit:last-child input[name=shares]')?.focus();break}
+  case 'go-switch':e.preventDefault();state.sel=state.holdings[0].code;state.hz='短线';render();setTimeout(()=>document.getElementById('switch')?.scrollIntoView({behavior:reduce()?'auto':'smooth',block:'center'}),60);break;
+  case 'reset-rules':state.rules={stop:10,total:100,maxHold:1,stopMode:'fixed'};render();toast('已恢复默认规则');break;
+  case 'test-push':toast('测试消息已发送到飞书群（设计稿模拟）');break;
+  case 'add-watch':navTo('picks');toast('从选股结果或板块代表股加入自选');break;
+  case 'fb-up':{const f=mdraft().fallbacks,i=+d.i;[f[i-1],f[i]]=[f[i],f[i-1]];mRender(i>1?`[data-action=fb-up][data-i="${i-1}"]`:`[data-action=fb-del][data-i="0"]`);break}
+  case 'fb-del':mdraft().fallbacks.splice(+d.i,1);mRender('#fbAdd');break;
+  case 'model-discard':state._mdraft=null;render();toast('已放弃未保存的修改');break;
+  case 'test-channel':testChannel(d.id);break;
+  case 'edit-channel':openChannel(d.id);break;
+  case 'del-channel':{const id=d.id,u=usesOf(id);
+   if(u.length){$('#chErr').textContent=`${u.join('、')}正在用这个渠道的模型，先在上面换成别的模型再删除。`;break}
+   [state.models,mdraft()].forEach(m=>{m.channels=m.channels.filter(c=>c.id!==id);m.fallbacks=m.fallbacks.filter(x=>!x.startsWith(id+'/'));if(m.agent.startsWith(id+'/')) m.agent=''});
+   closeDlg();render();toast('渠道已删除');break}
+ }
+});
+/* 模型表单：改动先进草稿，点保存才生效；重绘后把焦点放回原控件 */
+function mRender(focusSel){render();if(focusSel) document.querySelector(focusSel)?.focus({preventScroll:true})}
+const ROLE_NAME={primary:'次日计划',agent:'助手',vision:'截图识别'};
+function usesOf(chId){const out=[];[state.models,mdraft()].forEach(m=>['primary','agent','vision'].forEach(k=>{if(m[k]&&m[k].split('/')[0]===chId&&!out.includes(ROLE_NAME[k])) out.push(ROLE_NAME[k])}));return out}
+document.addEventListener('change',e=>{
+ if(e.target.id==='pboard'){state.pboard=e.target.value;render()}
+ if(e.target.id==='pstrat'){state.pstrat=e.target.value;render()}
+ const k=e.target.dataset.m;
+ if(k){const m=mdraft();m[k]=e.target.value;if(k==='primary') m.fallbacks=m.fallbacks.filter(x=>x!==m.primary);mRender(`[data-m=${k}]`)}
+ if(e.target.id==='fbAdd'&&e.target.value){mdraft().fallbacks.push(e.target.value);mRender('#fbAdd')}
+ if(e.target.name==='temp'&&e.target.form?.id==='modelForm'){const v=e.target.value.trim();mdraft().temp=v===''?'':(isNaN(+v)?v:+v);mRender('#modelForm [name=temp]')}
+});
+document.addEventListener('submit',e=>{
+ e.preventDefault();
+ if(e.target.id==='acctForm'){
+  collectHold();const err=$('#acctErr');const cash=Number(String(e.target.cash.value).replace(/,/g,''));
+  e.target.querySelectorAll('input').forEach(i=>i.removeAttribute('aria-invalid'));
+  if(!(cash>=0)){e.target.cash.setAttribute('aria-invalid','true');err.textContent='可用现金要填 0 或正数。';return}
+  const rows=[...document.querySelectorAll('#hold-rows .holding-edit')];
+  for(let i=0;i<state._draft.length;i++){const h=state._draft[i],sh=Number(h.shares),co=Number(h.cost);
+   if(!(Number.isInteger(sh)&&sh>0)){rows[i].querySelector('[name=shares]').setAttribute('aria-invalid','true');rows[i].querySelector('[name=shares]').focus();err.textContent=`第 ${i+1} 条持仓：数量要填正整数（零股也可以）。`;return}
+   if(!(co>0)){rows[i].querySelector('[name=cost]').setAttribute('aria-invalid','true');err.textContent=`第 ${i+1} 条持仓：成本价要大于 0。`;return}}
+  const codes=state._draft.map(h=>h.code);if(new Set(codes).size!==codes.length){err.textContent='同一只股票只录一条，合并数量和成本。';return}
+  if(state._draft.length>state.rules.maxHold){err.textContent=`当前规则最多持有 ${state.rules.maxHold} 只。可以先在「改规则」里调整。`;return}
+  let newCash=cash,msg='持仓和资金已保存，计划已按新数据重算';
+  const rec=state._record&&state._draft.find(h=>h.code===state._record);
+  if(rec&&cash===state.cash){const cost=Number(rec.shares)*Number(rec.cost);
+   if(cost>cash){e.target.cash.setAttribute('aria-invalid','true');err.textContent=`这笔买入需要 ${money(cost)} 元，可用现金只有 ${money(cash)} 元。`;return}
+   newCash=+(cash-cost).toFixed(2);msg=`已记录买入，现金扣减 ${money(cost)} 元`}
+  const before=state.holdings.map(h=>h.code);
+  state.cash=newCash;state.holdings=state._draft.map(h=>({code:h.code,shares:Number(h.shares),cost:Number(h.cost),date:h.date,hz:h.hz}));
+  before.filter(c=>!held(c)&&!state.watch.includes(c)).forEach(c=>state.watch.unshift(c));
+  state.sel=state.holdings[0]?.code||state.sel;closeDlg();render();toast(msg);
+ }
+ if(e.target.id==='rulesForm'){
+  const f=e.target,err=$('#rulesErr');const stop=Number(f.stop.value),total=Number(f.total.value),mh=Number(f.maxHold.value);
+  f.querySelectorAll('input').forEach(i=>i.removeAttribute('aria-invalid'));
+  if(!(stop>0&&stop<50)){f.stop.setAttribute('aria-invalid','true');err.textContent='止损幅度填 0 到 50 之间的数。';return}
+  if(!(total>0&&total<=100)){f.total.setAttribute('aria-invalid','true');err.textContent='总仓位上限填 1 到 100。';return}
+  if(!(Number.isInteger(mh)&&mh>=1&&mh<=10)){f.maxHold.setAttribute('aria-invalid','true');err.textContent='最多持有填 1 到 10 的整数。';return}
+  if(mh<state.holdings.length){f.maxHold.setAttribute('aria-invalid','true');err.textContent=`你现在持有 ${state.holdings.length} 只，最多持有不能小于这个数。`;return}
+  state.rules={stop,total,maxHold:mh,stopMode:f.stopMode.value};render();toast('规则已保存，股数和止损已重算');
+ }
+ if(e.target.id==='modelForm'){
+  const f=e.target,err=$('#modelErr'),m=mdraft();const t=Number(f.temp.value);
+  f.temp.removeAttribute('aria-invalid');
+  if(!m.primary){err.textContent='先选次日计划用的模型。';f.primary.focus();return}
+  if(f.temp.value.trim()===''||!(t>=0&&t<=2)){f.temp.setAttribute('aria-invalid','true');f.temp.focus();err.textContent='温度填 0 到 2 之间的数，例如 0.7。';return}
+  m.temp=t;state.models=clone(m);state._mdraft=null;render();toast('模型设置已保存，下一次运行生效');
+ }
+ if(e.target.id==='channelForm'){
+  const f=e.target,err=$('#chErr'),editId=state._editCh;
+  const name=f.name.value.trim(),models=[...new Set(f.models.value.split(/[,，\s]+/).map(s=>s.trim()).filter(Boolean))];
+  f.querySelectorAll('input').forEach(i=>i.removeAttribute('aria-invalid'));
+  if(!name){f.name.setAttribute('aria-invalid','true');f.name.focus();err.textContent='给渠道起个名字，例如「公司中转」。';return}
+  if(mdraft().channels.some(c=>c.name===name&&c.id!==editId)){f.name.setAttribute('aria-invalid','true');err.textContent=`已经有叫「${name}」的渠道了。`;return}
+  if(!models.length){f.models.setAttribute('aria-invalid','true');f.models.focus();err.textContent='至少填一个模型名。';return}
+  if(editId){const old=mdraft().channels.find(c=>c.id===editId);
+   const gone=old.models.filter(x=>!models.includes(x)).map(x=>editId+'/'+x);
+   const used=[];[state.models,mdraft()].forEach(m=>['primary','agent','vision'].forEach(k=>{if(gone.includes(m[k])&&!used.includes(ROLE_NAME[k])) used.push(ROLE_NAME[k])}));
+   if(used.length){f.models.setAttribute('aria-invalid','true');err.textContent=`${used.join('、')}正在用被删掉的模型，先在上面换成别的模型。`;return}}
+  const host=f.host.value.trim().replace(/^https?:\/\//,'').replace(/\/+$/,'')||{openai:'api.openai.com',anthropic:'api.anthropic.com',gemini:'generativelanguage.googleapis.com',deepseek:'api.deepseek.com'}[f.protocol.value];
+  const hasKey=f.key.value.trim()!=='';
+  let newId=name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'ch';
+  while([state.models,mdraft()].some(m=>m.channels.some(c=>c.id===newId))) newId+='-2';
+  [state.models,mdraft()].forEach(m=>{
+   if(editId){const c=m.channels.find(x=>x.id===editId);const gone=c.models.filter(x=>!models.includes(x)).map(x=>editId+'/'+x);
+    Object.assign(c,{name,protocol:f.protocol.value,host,models,key:c.key||hasKey,status:'unknown',latency:null});m.fallbacks=m.fallbacks.filter(x=>!gone.includes(x))}
+   else{m.channels.push({id:newId,name,protocol:f.protocol.value,host,key:hasKey,models,status:'unknown',latency:null})}});
+  closeDlg();render();toast(editId?'渠道已保存，建议点「测试连接」确认一下':`已添加「${name}」，现在可以在上面选它的模型`);
+ }
+ if(e.target.id==='compose'){const i=$('#ask');ask(i.value);i.value=''}
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#assistant').classList.contains('open')&&!$('#dlg').open) closeAssist()});
+$('#dlg').addEventListener('click',e=>{if(e.target.id==='dlg') closeDlg()});
+
+const start=location.hash.slice(1);if(ALL_PAGES.includes(start)) state.page=start;
+render();
+</script>
+</body>
+</html>
