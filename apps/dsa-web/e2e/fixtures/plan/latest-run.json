@@ -1,0 +1,90 @@
+{
+  "run": {
+    "id": "run-20261106-1600",
+    "trade_date": "2026-11-06",
+    "status": "partial",
+    "trigger": "schedule",
+    "started_at": "2026-11-06T16:00:00+08:00",
+    "finished_at": "2026-11-06T16:07:02+08:00",
+    "duration_sec": 372.0,
+    "steps": [
+      {
+        "key": "boards",
+        "label": "板块异动",
+        "status": "succeeded",
+        "finished_at": "2026-11-06T16:01:20+08:00",
+        "detail": "8 个"
+      },
+      {
+        "key": "picks",
+        "label": "机会选股",
+        "status": "succeeded",
+        "finished_at": "2026-11-06T16:02:41+08:00",
+        "detail": "11 只"
+      },
+      {
+        "key": "plans",
+        "label": "自选和持仓",
+        "status": "partial",
+        "finished_at": "2026-11-06T16:06:05+08:00",
+        "detail": "1 只停牌跳过，7/8"
+      },
+      {
+        "key": "switch",
+        "label": "换股判断",
+        "status": "succeeded",
+        "finished_at": "2026-11-06T16:06:30+08:00",
+        "detail": "不换"
+      },
+      {
+        "key": "push",
+        "label": "飞书推送",
+        "status": "succeeded",
+        "finished_at": "2026-11-06T16:07:02+08:00",
+        "detail": "16:07"
+      }
+    ],
+    "stock_total": 8,
+    "stock_succeeded": 7,
+    "stock_failed": 1,
+    "failures": [
+      {
+        "code": "603019",
+        "name": "中科曙光",
+        "reason": "停牌，无当日行情"
+      }
+    ],
+    "push": {
+      "channel": "feishu",
+      "status": "sent",
+      "sent_at": "2026-11-06T16:07:02+08:00",
+      "error": null,
+      "configured": true
+    },
+    "push_preview_markdown": "**持仓：立讯精密 持有**\n仓位已满，明天只做卖出判断。冲高到 43.10 量能不足先卖 1/3；收盘跌破 36.18，下一交易日清仓。\n\n**换股：不换**\n华工科技回踩买入区且立讯精密跌破 39.60 时才换\n\n**自选**\n华工科技 买入：回踩 46.8–47.2 企稳就买\n沪电股份 等待确认：需要放量站上 40.20\n中科曙光 停牌：停牌中，复牌前不给计划\n\n**板块异动**\n通信设备 首次启动，商业航天 持续走强（主线），固态电池 高位分歧，保险 异常下跌\n\n数据提醒：主力资金流未发布；中科曙光停牌",
+    "model_calls": [
+      {
+        "step": "板块判定说明",
+        "calls": 8,
+        "model": "deepseek/deepseek-v4-flash",
+        "note": null
+      },
+      {
+        "step": "个股计划",
+        "calls": 7,
+        "model": "deepseek/deepseek-v4-flash",
+        "note": null
+      },
+      {
+        "step": "换股判断",
+        "calls": 1,
+        "model": "gemini/gemini-3-flash-preview",
+        "note": "主模型等待 60 秒超时，改用备用模型"
+      }
+    ],
+    "data_gaps": [
+      "主力资金流 16:00 时尚未发布，未参与判断",
+      "3 个新概念不足 10 个交易日，只展示不判定"
+    ]
+  }
+}

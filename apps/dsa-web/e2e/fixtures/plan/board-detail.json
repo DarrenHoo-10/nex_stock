@@ -1,0 +1,120 @@
+{
+  "id": "industry:BK0448",
+  "name": "通信设备",
+  "board_type": "industry",
+  "state": "first_launch",
+  "tags": [],
+  "change_pct": 3.86,
+  "change_5d_pct": 5.1,
+  "excess_pct": 3.48,
+  "amount_ratio": 2.7,
+  "breadth_pct": 82.0,
+  "limit_up_count": null,
+  "broken_rate_pct": null,
+  "reason": "光模块订单消息带动，龙头放量，不是单只股票拉动",
+  "verdict_text": "首次启动：成交额是 5 日均值的 2.7 倍，超额收益 +3.48%，上涨家数 82%，且不是单只股票拉动。",
+  "drivers": "海外云厂商上调资本开支的消息带动光模块方向；板块 82% 的股票上涨，前 5 只贡献不到一半涨幅。",
+  "driver_kind": "news",
+  "metrics": [
+    {
+      "label": "今日",
+      "value": "+3.86%",
+      "hint": null
+    },
+    {
+      "label": "5 日",
+      "value": "+5.10%",
+      "hint": null
+    },
+    {
+      "label": "超额收益",
+      "value": "+3.48%",
+      "hint": "相对中证全指"
+    },
+    {
+      "label": "成交额 / 5 日均",
+      "value": "2.7×",
+      "hint": "明显放量 ≥ 2.5 倍"
+    },
+    {
+      "label": "上涨家数占比",
+      "value": "82%",
+      "hint": "≥ 70% 偏强"
+    },
+    {
+      "label": "涨停 / 炸板率",
+      "value": "行业不看",
+      "hint": "行业板块不用涨停条件"
+    }
+  ],
+  "excess_series": [
+    {
+      "trade_date": "2026-10-28",
+      "excess_pct": -0.4
+    },
+    {
+      "trade_date": "2026-10-29",
+      "excess_pct": 0.2
+    },
+    {
+      "trade_date": "2026-10-30",
+      "excess_pct": -0.6
+    },
+    {
+      "trade_date": "2026-10-31",
+      "excess_pct": 0.3
+    },
+    {
+      "trade_date": "2026-11-03",
+      "excess_pct": -0.1
+    },
+    {
+      "trade_date": "2026-11-04",
+      "excess_pct": 0.5
+    },
+    {
+      "trade_date": "2026-11-05",
+      "excess_pct": 0.9
+    },
+    {
+      "trade_date": "2026-11-06",
+      "excess_pct": 3.48
+    }
+  ],
+  "representatives": [
+    {
+      "code": "000988",
+      "name": "华工科技",
+      "role": "leader",
+      "close": 48.35,
+      "change_pct": 4.21
+    },
+    {
+      "code": "002281",
+      "name": "光迅科技",
+      "role": "turnover",
+      "close": 41.72,
+      "change_pct": 3.12
+    },
+    {
+      "code": "603083",
+      "name": "剑桥科技",
+      "role": "follower",
+      "close": 67.3,
+      "change_pct": 10.0
+    },
+    {
+      "code": "300394",
+      "name": "天孚通信",
+      "role": "follower",
+      "close": 118.6,
+      "change_pct": 2.45
+    }
+  ],
+  "evidence": [
+    "连续 1 天强于基准，尚不满足「持续」（连续 3 天）",
+    "前 5 只股票贡献不到一半涨幅，不属于单股驱动"
+  ],
+  "can_pick": true,
+  "data_gaps": []
+}

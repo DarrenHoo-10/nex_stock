@@ -1,0 +1,219 @@
+{
+  "code": "000988",
+  "name": "华工科技",
+  "board_market": "main",
+  "is_st": false,
+  "held": false,
+  "close": 48.35,
+  "change_pct": 4.21,
+  "verdict": "buy",
+  "headline": "回踩 46.8–47.2 企稳就买",
+  "status": "ready",
+  "failure_reason": null,
+  "trade_date": "2026-11-06",
+  "next_trade_date": "2026-11-09",
+  "situation": "收盘 48.35，涨 4.21%，成交额是 5 日均值的 2.6 倍，突破 20 日整理平台 46.9。所在通信设备板块今天首次启动，涨幅不靠单只股票。",
+  "horizons": {
+    "short": {
+      "verdict": "buy",
+      "headline": "回踩 46.8–47.2 企稳就买",
+      "reason": null,
+      "entry_price": 47.0,
+      "entry_zone": [
+        46.8,
+        47.2
+      ],
+      "breakout_price": 49.6,
+      "invalid_price": 45.6,
+      "take_profit_price": null,
+      "conditions": [
+        {
+          "if_text": "明天回踩 46.8–47.2 并企稳（15 分钟内不再创新低）",
+          "then_text": "47.0 附近买入",
+          "action": "buy",
+          "shares": null,
+          "price": 47.0,
+          "outside_limit": false
+        },
+        {
+          "if_text": "直接高开站上 49.6，不回踩",
+          "then_text": "不追",
+          "action": "skip",
+          "shares": null,
+          "price": 49.6,
+          "outside_limit": false
+        },
+        {
+          "if_text": "收盘跌破 45.6",
+          "then_text": "放弃本次计划",
+          "action": "skip",
+          "shares": null,
+          "price": 45.6,
+          "outside_limit": false
+        }
+      ],
+      "sizing": {
+        "status": "ok",
+        "message": null,
+        "price": 47.0,
+        "lot": 100,
+        "by_single": 2127.66,
+        "by_total": 2127.66,
+        "by_cash": 2127.66,
+        "raw_shares": 2127.66,
+        "shares": 2100,
+        "amount": 98700.0,
+        "capital_pct": 98.7,
+        "post_position_pct": 98.7,
+        "stop": {
+          "price": 42.3,
+          "mode": "fixed",
+          "formula": "47.00 × 0.90",
+          "tech_support": 46.9,
+          "warning": null
+        },
+        "max_loss": 9870.0,
+        "limit_down_price": 38.07,
+        "limit_down_loss": 18753.0,
+        "steps": [
+          "按单只上限 100%：100,000 × 100% ÷ 47.00 = 2,127 股",
+          "按总仓位 100%：剩余额度 ÷ 47.00 = 2,127 股",
+          "按可用现金：100,000 ÷ 47.00 = 2,127 股",
+          "取最小值 2,127，按每手 100 股向下取整 = 2,100 股",
+          "止损价 = 47.00 × 0.90 = 42.30"
+        ]
+      },
+      "stop": {
+        "price": 42.3,
+        "mode": "fixed",
+        "formula": "47.00 × 0.90",
+        "tech_support": 46.9,
+        "warning": null
+      }
+    },
+    "swing": {
+      "verdict": "buy",
+      "headline": "回踩不破 46.9 平台买入，计划持有 2–4 周",
+      "reason": null,
+      "entry_price": 47.0,
+      "entry_zone": [
+        46.8,
+        47.2
+      ],
+      "breakout_price": 49.6,
+      "invalid_price": 45.6,
+      "take_profit_price": 52.0,
+      "conditions": [
+        {
+          "if_text": "回踩不破 46.9 平台",
+          "then_text": "47.0 附近买入，计划持有 2–4 周",
+          "action": "buy",
+          "shares": null,
+          "price": 47.0,
+          "outside_limit": false
+        },
+        {
+          "if_text": "买入后涨到 52.0 附近量能不放大",
+          "then_text": "卖出一半",
+          "action": "sell",
+          "shares": null,
+          "price": 52.0,
+          "outside_limit": false
+        },
+        {
+          "if_text": "收盘跌破止损价",
+          "then_text": "下一交易日全部卖出",
+          "action": "clear",
+          "shares": null,
+          "price": 42.3,
+          "outside_limit": false
+        }
+      ],
+      "sizing": {
+        "status": "ok",
+        "message": null,
+        "price": 47.0,
+        "lot": 100,
+        "by_single": 2127.66,
+        "by_total": 2127.66,
+        "by_cash": 2127.66,
+        "raw_shares": 2127.66,
+        "shares": 2100,
+        "amount": 98700.0,
+        "capital_pct": 98.7,
+        "post_position_pct": 98.7,
+        "stop": {
+          "price": 42.3,
+          "mode": "fixed",
+          "formula": "47.00 × 0.90",
+          "tech_support": 46.9,
+          "warning": null
+        },
+        "max_loss": 9870.0,
+        "limit_down_price": 38.07,
+        "limit_down_loss": 18753.0,
+        "steps": [
+          "按单只上限 100%：100,000 × 100% ÷ 47.00 = 2,127 股",
+          "按总仓位 100%：剩余额度 ÷ 47.00 = 2,127 股",
+          "按可用现金：100,000 ÷ 47.00 = 2,127 股",
+          "取最小值 2,127，按每手 100 股向下取整 = 2,100 股",
+          "止损价 = 47.00 × 0.90 = 42.30"
+        ]
+      },
+      "stop": {
+        "price": 42.3,
+        "mode": "fixed",
+        "formula": "47.00 × 0.90",
+        "tech_support": 46.9,
+        "warning": null
+      }
+    }
+  },
+  "default_horizon": "short",
+  "limit_pct": 10.0,
+  "next_limit_up": 53.19,
+  "next_limit_down": 43.52,
+  "levels": [
+    {
+      "kind": "take_profit",
+      "price": 52.0,
+      "label": "波段止盈位"
+    },
+    {
+      "kind": "breakout",
+      "price": 49.6,
+      "label": "站上不回踩就不追"
+    },
+    {
+      "kind": "close",
+      "price": 48.35,
+      "label": "11-06 收盘"
+    },
+    {
+      "kind": "entry",
+      "price": 47.0,
+      "label": "买入区 46.80–47.20"
+    },
+    {
+      "kind": "support",
+      "price": 46.9,
+      "label": "20 日平台"
+    },
+    {
+      "kind": "stop",
+      "price": 42.3,
+      "label": "买入后止损"
+    }
+  ],
+  "switch": null,
+  "risks": [
+    "板块首日启动，第二天出现分歧很常见",
+    "收盘离买入区上沿 2.4%，可能整天不回踩"
+  ],
+  "data_gaps": [],
+  "model": {
+    "model": "gemini/gemini-3-flash-preview",
+    "fallback_from": "deepseek/deepseek-v4-flash",
+    "fallback_reason": "等待 60 秒超时"
+  }
+}

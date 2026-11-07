@@ -39,8 +39,9 @@ async function login(page: Page) {
     submitButton.click(),
   ]);
 
-  // Wait for navigation to home page after login
-  await page.waitForURL('/', { timeout: 15_000 });
+  // Login lands on the next-day plan (/mine); this spec exercises the legacy home page.
+  await page.waitForURL('/mine', { timeout: 15_000 });
+  await page.goto('/home');
   await page.waitForLoadState('domcontentloaded');
   // Wait for page to stabilize by checking for stock input
   const stockInput = page.getByPlaceholder('输入股票代码或名称，如 600519、贵州茅台、AAPL');

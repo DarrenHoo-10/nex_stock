@@ -1,7 +1,10 @@
+/** Landing page after login (`/` redirects here too). */
+export const DEFAULT_LOGIN_REDIRECT = '/mine';
+
 /** Resolve the shared post-login destination without allowing external URLs or login loops. */
 export function resolveLoginRedirect(rawRedirect: string | null): string {
   if (!rawRedirect?.startsWith('/') || rawRedirect.startsWith('//') || rawRedirect.includes('\\')) {
-    return '/';
+    return DEFAULT_LOGIN_REDIRECT;
   }
 
   try {
@@ -13,10 +16,10 @@ export function resolveLoginRedirect(rawRedirect: string | null): string {
       || pathname.includes('\\')
       || /^\/login\/?$/i.test(pathname)
     ) {
-      return '/';
+      return DEFAULT_LOGIN_REDIRECT;
     }
     return `${target.pathname}${target.search}${target.hash}`;
   } catch {
-    return '/';
+    return DEFAULT_LOGIN_REDIRECT;
   }
 }

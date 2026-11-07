@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增次日计划的 API 与 Web 入口（[说明](daily-plan-api.md)）：`/api/v1/boards/*`（板块异动列表、详情、阈值读写）与 `/api/v1/plan/*`（账户与持仓快照、股票计划、股数试算、运行记录与手动运行），后端服务未就绪时返回 503 `daily_plan_unavailable`；Web 新增深色玻璃风格的板块异动 `/boards`、机会选股 `/picks`（复用现有选股任务）、我的股票 `/mine`、带页面上下文的助手抽屉和新设置页 `/preferences`（仓位规则、按用途的模型、异动阈值、运行和推送、数据状态）；`/` 与登录后默认改为进入 `/mine`，原首页移到 `/home`，其余旧页面路由不变并收进导航「更多」。
+
 - [文档] 新增[核心流程设计稿](design/core-redesign.html)与[设计说明](design/core-redesign.md)：按核心功能说明重做板块异动、机会选股、我的股票三页和全局助手，采用 visionOS 风格的玻璃窗口、悬浮导航和弹簧动效，用价格梯子展示买入区、止损和止盈，股数按可配置仓位规则实时计算，含换股判断、手动持仓录入、按用途选择的模型设置（对应现有 LLM 配置项）、16:00 运行状态与飞书消息预览；仅使用演示数据，不修改生产前端。
 
 - [文档] 新增[核心功能说明讨论稿](design/core-product-spec.md)：聚焦 A 股板块异动（含调研得出的默认阈值与判定规则）、机会选股、自选与手动持仓的次日策略、可配置仓位规则与换股判断、交易日定时运行与飞书 Webhook 推送，以及带上下文的助手；尚未实现。

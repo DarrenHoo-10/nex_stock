@@ -13,7 +13,7 @@ type ShellHeaderProps = {
 };
 
 const TITLES: Record<string, { title: UiTextKey; description: UiTextKey }> = {
-  '/': { title: 'layout.route.home.title', description: 'layout.route.home.description' },
+  '/home': { title: 'layout.route.home.title', description: 'layout.route.home.description' },
   '/chat': { title: 'layout.route.chat.title', description: 'layout.route.chat.description' },
   '/portfolio': { title: 'layout.route.portfolio.title', description: 'layout.route.portfolio.description' },
   '/screening': { title: 'layout.route.screening.title', description: 'layout.route.screening.description' },

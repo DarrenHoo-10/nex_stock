@@ -1,0 +1,125 @@
+/*
+ * 板块异动 (/boards) and 机会选股 (/picks) additions on top of plan-glass.css.
+ * Everything is scoped under `.plan-shell`; class names that already exist in plan-glass.css are reused as-is.
+ */
+
+/* ---------- Shared state panels ---------- */
+.plan-shell .skel { display: flex; flex-direction: column; gap: 14px; padding: 6px 4px; }
+.plan-shell .win.detail > .skel { padding: 8px 0; gap: 18px; }
+.plan-shell .skel-rows { padding: 14px 6px; }
+.plan-shell .skel-bar {
+  display: block; height: 16px; border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255,255,255,.07) 20%, rgba(255,255,255,.16) 50%, rgba(255,255,255,.07) 80%);
+  background-size: 220% 100%; animation: plan-skel 1.4s ease-in-out infinite;
+}
+.plan-shell .skel-bar:first-child { height: 26px; }
+@keyframes plan-skel { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.plan-shell .empty h2 { font-size: 18px; }
+.plan-shell .empty .actions { margin-top: 16px; }
+.plan-shell .empty a.btn { margin-top: 14px; }
+
+/* ---------- 板块异动 ---------- */
+.plan-shell .market-skel { height: 44px; width: min(520px, 100%); }
+.plan-shell .market + .market-notice, .plan-shell .market-notice { margin: -6px 0 16px; max-width: 760px; }
+.plan-shell .market-notice span { min-width: 0; }
+.plan-shell .grid2 { transition: none; }
+.plan-shell .side .filters { padding-bottom: 16px; }
+.plan-shell .board-row { align-items: start; }
+.plan-shell .board-row .r-top { row-gap: 4px; }
+.plan-shell .board-row .b-one { align-items: flex-start; gap: 9px; }
+.plan-shell .board-row .meter { margin-top: 9px; }
+.plan-shell .board-row .b-stats { display: flex; flex-wrap: wrap; gap: 0 12px; min-width: 0; line-height: 1.7; }
+.plan-shell .board-row .board-reason { grid-column: 1 / -1; margin-top: 2px; }
+
+.plan-shell .detail .d-head h2 { overflow-wrap: anywhere; }
+.plan-shell .detail h2:focus-visible { outline-offset: 4px; border-radius: 6px; }
+.plan-shell .detail .meta .tag { margin-right: 4px; }
+.plan-shell .figs.board-figs { grid-template-columns: repeat(3, minmax(104px, 1fr)); gap: 16px 28px; width: min(100%, 500px); }
+.plan-shell .figs.board-figs > div { min-width: 0; }
+.plan-shell .figs.board-figs dd { font-size: 21px; }
+.plan-shell .figs .hint { margin: 2px 0 0; font-size: 11.5px; line-height: 1.4; color: var(--t4); }
+.plan-shell .detail .plan h3 { margin-bottom: 8px; }
+.plan-shell .detail .plan .risk-list { margin-top: 10px; list-style: disc; }
+.plan-shell .reps li { grid-template-columns: minmax(0, 1fr) auto auto; }
+.plan-shell .reps li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.plan-shell .reps .tag { margin-left: 4px; }
+.plan-shell .detail .actions { margin-top: 26px; }
+.plan-shell .detail .note { margin-top: 10px; }
+
+/* 详情窗按自身宽度排版：窄时判定文字在上，六项指标在下 */
+@container (max-width: 980px) {
+  .plan-shell .detail .hero { grid-template-columns: minmax(0, 1fr); align-items: start; }
+  .plan-shell .detail .figs.board-figs { width: 100%; max-width: 560px; }
+}
+
+/* 超额收益折线图 */
+.plan-shell .excess-chart { max-width: 680px; }
+.plan-shell .excess-wrap { position: relative; border-radius: 14px; touch-action: pan-y; }
+.plan-shell .excess-wrap:focus-visible { outline-offset: 4px; }
+.plan-shell .excess-wrap svg { display: block; width: 100%; height: auto; overflow: visible; }
+.plan-shell .excess-wrap text { font-size: 11px; fill: rgba(255,255,255,.66); font-variant-numeric: tabular-nums; }
+.plan-shell .excess-wrap text.on { fill: #fff; font-weight: 600; }
+.plan-shell .excess-wrap .zero-line { stroke: rgba(255,255,255,.38); stroke-width: 1; stroke-dasharray: 3 4; }
+.plan-shell .excess-wrap .zero-label { fill: rgba(255,255,255,.5); }
+.plan-shell .excess-wrap .cursor-line { stroke: rgba(255,255,255,.3); stroke-width: 1; }
+.plan-shell .excess-wrap .excess-line { stroke: rgba(255,255,255,.92); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.plan-shell .excess-wrap .excess-dot { stroke: rgba(40,48,92,.9); stroke-width: 1.5; }
+.plan-shell .excess-wrap .gap-label { fill: rgba(255,255,255,.5); }
+.plan-shell .excess-wrap .last-label { fill: #fff; font-weight: 600; font-size: 12px; }
+.plan-shell .excess-tip {
+  position: absolute; top: -6px; transform: translate(-50%, -100%); pointer-events: none; white-space: nowrap;
+  display: flex; gap: 10px; align-items: baseline; padding: 6px 12px; border-radius: 12px; font-size: 12.5px; color: var(--t2);
+  background: linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.08)), rgba(36,42,84,.92);
+  box-shadow: var(--glass-edge), 0 12px 30px -10px rgba(0,0,0,.5);
+}
+.plan-shell .excess-tip b { font-size: 13.5px; }
+
+/* ---------- 机会选股 ---------- */
+.plan-shell .picks-win .toolbar { padding-top: 20px; }
+.plan-shell .picks-win .toolbar .spacer { flex: 1 1 0; }
+.plan-shell .scope-pill {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px 4px 4px 14px; border-radius: 999px;
+  background: var(--fill2); font-size: 13px; box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+}
+.plan-shell .scope-pill > span { min-width: 0; overflow-wrap: anywhere; }
+.plan-shell .scope-pill .btn.sm { padding: 3px 10px; }
+.plan-shell .strategy-block { padding: 14px 24px 0; }
+.plan-shell .strategy-block .k { font-size: 12px; color: var(--t3); margin-bottom: 8px; }
+.plan-shell .strategy-desc { font-size: 12.5px; color: var(--t3); margin-top: 10px; max-width: 52em; text-wrap: pretty; }
+.plan-shell .picks-notice { margin: 14px 24px 0; }
+.plan-shell .pick-progress { padding: 18px 24px 4px; }
+.plan-shell .pick-progress .bar { position: relative; height: 6px; border-radius: 3px; background: rgba(255,255,255,.14); overflow: hidden; }
+.plan-shell .pick-progress .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: rgba(255,255,255,.8); transition: width .5s var(--spring); }
+.plan-shell .pick-progress .bar i.indeterminate { width: 36%; animation: plan-slide 1.3s ease-in-out infinite; transition: none; }
+.plan-shell .pick-progress p { font-size: 13px; color: var(--t2); margin-top: 8px; }
+@keyframes plan-slide { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
+.plan-shell .cond-line .tag { margin-left: 6px; vertical-align: 1px; }
+.plan-shell .cand .px { gap: 10px; }
+.plan-shell .cand .nm { overflow-wrap: anywhere; }
+.plan-shell .cand .tags .tag { max-width: 100%; }
+.plan-shell .cand dd { overflow-wrap: anywhere; }
+.plan-shell .cand dd.dim, .plan-shell .cand dd .dim { color: var(--t4); }
+.plan-shell .cand dd ul { list-style: none; padding: 0; }
+.plan-shell .cand dd li + li { margin-top: 3px; }
+.plan-shell .cand-skel { padding: 20px 24px 24px; }
+.plan-shell .picks-win .empty { max-width: 36em; }
+.plan-shell .picks-win .empty .actions { margin-top: 14px; }
+
+@media (max-width: 1240px) {
+  .plan-shell .figs.board-figs { grid-template-columns: repeat(3, minmax(104px, 1fr)); }
+}
+@media (max-width: 860px) {
+  .plan-shell .figs.board-figs, .plan-shell .figs.three.board-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .plan-shell .strategy-block { padding: 14px 16px 0; }
+  .plan-shell .picks-notice { margin: 14px 16px 0; }
+  .plan-shell .pick-progress { padding: 18px 16px 4px; }
+  .plan-shell .picks-win .toolbar .spacer { display: none; }
+}
+@media (max-width: 400px) {
+  .plan-shell .figs.board-figs dd { font-size: 19px; }
+  .plan-shell .picks-win .toolbar .btn.primary { width: 100%; }
+  .plan-shell .market { gap: 4px 14px; padding: 10px 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-shell .skel-bar, .plan-shell .pick-progress .bar i.indeterminate { animation: none; }
+}

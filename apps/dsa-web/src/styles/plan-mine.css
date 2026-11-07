@@ -1,0 +1,142 @@
+/*
+ * 我的股票 page additions on top of plan-glass.css (dark glass, scoped under `.plan-shell`).
+ * Reuses the prototype classes from plan-glass.css (grid2, side, acct, row, detail, hero, verdict, figs,
+ * body, ifthen, inset, facts, calc, notice, cmp, cond, holding-edit, ladder) and only adds what the React
+ * port needs: skeletons, the ladder marks, condition chips, inline forms and small helpers.
+ */
+
+/* ---------- Account strip: four numbers, two per row ---------- */
+.plan-shell .acct .stats.mine-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; margin: 0; }
+.plan-shell .acct .stats.mine-stats dd { margin: 0; }
+.plan-shell .acct .stats.mine-stats .v { font-size: 20px; }
+.plan-shell .acct .stats.mine-stats .v small { margin-left: 1px; }
+.plan-shell .acct .stats dt.k { font-weight: 400; }
+
+/* ---------- Skeletons (the global reduced-motion rule shortens the pulse) ---------- */
+.plan-shell .sk { display: block; border-radius: 10px; background: var(--fill2); animation: plan-pulse 1.4s ease-in-out infinite; }
+.plan-shell .sk-line { height: 14px; margin: 8px 0; }
+.plan-shell .sk-xs { width: 38%; height: 11px; margin: 0 0 6px; }
+.plan-shell .sk-lg { width: 72%; height: 20px; margin: 0; }
+.plan-shell .sk-mid { width: 46%; }
+.plan-shell .sk-wide { width: 88%; }
+.plan-shell .sk-title { width: 34%; height: 22px; }
+.plan-shell .sk-hero { width: 52%; height: 64px; border-radius: 18px; margin: 14px 0 18px; }
+.plan-shell .sk-block { height: 150px; border-radius: var(--r-in); }
+.plan-shell .sk-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 22px; }
+.plan-shell .sk-row { padding: 12px; }
+.plan-shell .acct > .sk { margin-top: 14px; }
+.plan-shell .detail-sk { padding-top: 6px; }
+
+/* ---------- List ---------- */
+.plan-shell .list-empty { display: none; padding: 20px 12px; }
+.plan-shell .list-empty h3 { font-size: 16px; }
+.plan-shell .list-empty p { color: var(--t3); margin: 4px 0 12px; }
+.plan-shell .empty-note { color: var(--t3); font-size: 13px; padding: 4px 12px 8px; }
+.plan-shell .row { color: inherit; }
+.plan-shell .row .r-top .tag { flex: none; }
+.plan-shell .add-watch { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.plan-shell .add-watch .err { flex: 1 1 100%; margin-top: 2px; min-height: 0; }
+.plan-shell .add-input {
+  flex: 1 1 130px; min-width: 0; border: 0; border-radius: 999px; padding: 6px 14px; font-size: 13px;
+  background: rgba(10,14,40,.22); box-shadow: inset 0 0 0 1px var(--line); color: #fff;
+}
+.plan-shell .add-input::placeholder { color: var(--t4); }
+.plan-shell .add-input[aria-invalid=true] { box-shadow: inset 0 0 0 1.5px var(--up-mark); }
+
+/* ---------- Detail ---------- */
+.plan-shell .verdict.v-hold { --vtint: #fff; }
+.plan-shell .verdict.v-sell { --vtint: #FFE2A8; }
+.plan-shell .d-head .tag.hold { align-self: center; }
+.plan-shell .figs dd .num, .plan-shell .figs dd { font-variant-numeric: tabular-nums; }
+.plan-shell .link-btn {
+  border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; font: inherit;
+}
+.plan-shell .link-btn.strong { font-weight: 650; color: #fff; text-decoration-color: var(--accent); }
+.plan-shell .notice .link-btn { color: #fff; }
+.plan-shell .then-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
+.plan-shell .then-cell .then { overflow-wrap: anywhere; }
+.plan-shell .cond-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 12px; color: var(--t3); }
+.plan-shell .cond-meta .tag { white-space: normal; line-height: 1.45; padding: 2px 9px; }
+.plan-shell .ifthen .if { overflow-wrap: anywhere; }
+.plan-shell .facts dt, .plan-shell .facts dd { margin: 0; }
+.plan-shell .facts .k { font-weight: 400; }
+.plan-shell .facts .v { font-variant-numeric: tabular-nums; }
+.plan-shell .inset .big { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0; }
+.plan-shell .caps { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 12px 0 0; font-size: 12.5px; color: var(--t3); }
+.plan-shell .caps dt { display: inline; }
+.plan-shell .caps dd { display: inline; margin: 0 0 0 6px; color: var(--t2); }
+.plan-shell .caps .tight dd { color: #fff; font-weight: 600; }
+.plan-shell .switch-lead { margin-top: 14px; }
+.plan-shell .switch-costs { margin-top: 4px; font-size: 12.5px; color: var(--t3); }
+.plan-shell .cond li { align-items: center; }
+.plan-shell .cond li > span:nth-child(2) { flex: 1; min-width: 0; }
+.plan-shell .cond .mark { margin-top: 0; }
+.plan-shell .cond .mark.on { background: #7BE3B0; box-shadow: none; }
+.plan-shell .cond .met-tag { flex: none; }
+.plan-shell .warn-t { color: var(--risk); }
+.plan-shell .mine-foot { margin-top: 22px; font-size: 12px; color: var(--t4); overflow-wrap: anywhere; }
+.plan-shell .mine-foot .num { color: var(--t3); }
+.plan-shell .detail .empty.sm { max-width: none; }
+.plan-shell .detail > .empty { max-width: 34em; }
+.plan-shell .detail .actions.sm-top { margin-top: 12px; }
+
+/* ---------- Price ladder marks (colours from the glass tokens; red up, green down) ---------- */
+.plan-shell .ladder .axis { stroke: rgba(255,255,255,.32); stroke-width: 2; stroke-linecap: round; fill: none; }
+.plan-shell .ladder .lv-link { stroke: rgba(255,255,255,.22); fill: none; }
+.plan-shell .ladder .mk-band-fill { fill: #9CC2FF; opacity: .35; }
+.plan-shell .ladder .mk-band { fill: none; stroke: #9CC2FF; stroke-width: 1.5; }
+.plan-shell .ladder .mk-close-glow { fill: #fff; opacity: .25; }
+.plan-shell .ladder .mk-close { fill: #fff; }
+.plan-shell .ladder .mk-stop-glow { stroke: var(--risk); stroke-width: 6; opacity: .45; }
+.plan-shell .ladder .mk-stop { stroke: var(--risk); stroke-width: 3; stroke-linecap: round; }
+.plan-shell .ladder .mk-worst { stroke: var(--risk); stroke-width: 1.5; stroke-dasharray: 2 4; stroke-linecap: round; opacity: .8; }
+.plan-shell .ladder .mk-limit-down { stroke: var(--down-mark); stroke-width: 2; stroke-dasharray: 5 4; stroke-linecap: round; }
+.plan-shell .ladder .mk-limit-up { stroke: var(--up-mark); stroke-width: 2; stroke-dasharray: 5 4; stroke-linecap: round; }
+.plan-shell .ladder .mk-dot { fill: #414E80; stroke: rgba(255,255,255,.9); stroke-width: 1.8; }
+.plan-shell .ladder .mk-dot.mk-hint { stroke: rgba(255,255,255,.55); }
+.plan-shell .ladder .mk-dot.mk-take-profit { stroke: var(--up-mark); }
+.plan-shell .ladder .mk-dot.mk-entry { stroke: var(--accent); }
+.plan-shell .ladder .lv-limit-down .p { fill: var(--down); }
+.plan-shell .ladder .lv-limit-up .p { fill: var(--up); }
+.plan-shell .ladder .lv-worst .p { fill: var(--risk); font-weight: 500; }
+.plan-shell .ladder figure { min-width: 0; }
+
+/* ---------- Dialogs ---------- */
+.plan-shell .holdings-form .sub { margin: 0 0 14px; }
+.plan-shell .holdings-form .actions { margin-top: 12px; }
+.plan-shell .holding-edit { position: relative; grid-template-columns: 1.3fr 1fr 1fr 1.25fr 1fr auto; }
+.plan-shell .holding-edit .btn.sm { gap: 4px; padding: 6px 10px; }
+.plan-shell .holding-edit .row-err { grid-column: 1 / -1; margin: 0; min-height: 0; }
+.plan-shell .holding-edit label.f input, .plan-shell .holding-edit label.f select { width: 100%; }
+.plan-shell .holdings-form .form-grid.cash-field { margin-bottom: 4px; }
+.plan-shell .holdings-form label.f input[aria-invalid=true] { box-shadow: inset 0 0 0 1.5px var(--up-mark); }
+.plan-shell .record-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.plan-shell .record-grid label.f input, .plan-shell .record-grid label.f select { width: 100%; }
+.plan-shell .record-grid label.f input[aria-invalid=true] { box-shadow: inset 0 0 0 1.5px var(--up-mark); }
+.plan-shell .record-amount { margin-top: 12px; font-variant-numeric: tabular-nums; }
+.plan-shell form .err { margin-top: 6px; }
+
+@media (max-width: 1100px) {
+  .plan-shell .holding-edit { grid-template-columns: 1fr 1fr 1fr; }
+  .plan-shell .holding-edit .btn.sm { justify-self: start; }
+}
+
+@media (max-width: 860px) {
+  .plan-shell .list-empty { display: block; }
+  .plan-shell .detail > .empty { display: none; }
+  .plan-shell .holding-edit { grid-template-columns: 1fr 1fr; }
+  .plan-shell .acct .stats.mine-stats .v { font-size: 19px; }
+  .plan-shell .record-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 400px) {
+  .plan-shell .holding-edit { grid-template-columns: 1fr; }
+  .plan-shell .record-grid { grid-template-columns: 1fr; }
+  .plan-shell .acct .stats.mine-stats .v { font-size: 17px; }
+  .plan-shell .sk-grid { grid-template-columns: 1fr; }
+}
+
+/* Tailwind preflight removes list markers; the prototype keeps them for these lists. */
+.plan-shell .risk-list { list-style: disc; }
+.plan-shell .calc ol { list-style: decimal; }
+.plan-shell .switch-costs { list-style: disc; }

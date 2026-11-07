@@ -1,0 +1,71 @@
+{
+  "trade_date": "2026-11-06",
+  "next_trade_date": "2026-11-09",
+  "items": [
+    {
+      "code": "002475",
+      "name": "立讯精密",
+      "board_market": "main",
+      "is_st": false,
+      "held": true,
+      "close": 41.25,
+      "change_pct": 1.73,
+      "verdict": "hold",
+      "headline": "冲高到 43.10 量能不足先卖 1/3；收盘跌破 36.18，下一交易日清仓。",
+      "status": "ready",
+      "failure_reason": null
+    },
+    {
+      "code": "000988",
+      "name": "华工科技",
+      "board_market": "main",
+      "is_st": false,
+      "held": false,
+      "close": 48.35,
+      "change_pct": 4.21,
+      "verdict": "buy",
+      "headline": "回踩 46.8–47.2 企稳就买",
+      "status": "ready",
+      "failure_reason": null
+    },
+    {
+      "code": "300750",
+      "name": "宁德时代",
+      "board_market": "chinext",
+      "is_st": false,
+      "held": false,
+      "close": 268.5,
+      "change_pct": -0.62,
+      "verdict": null,
+      "headline": "",
+      "status": "failed",
+      "failure_reason": "模型两次超时，当日分析没有完成"
+    },
+    {
+      "code": "600519",
+      "name": "贵州茅台",
+      "board_market": "main",
+      "is_st": false,
+      "held": false,
+      "close": null,
+      "change_pct": null,
+      "verdict": "wait",
+      "headline": "",
+      "status": "missing",
+      "failure_reason": null
+    },
+    {
+      "code": "603019",
+      "name": "中科曙光",
+      "board_market": "main",
+      "is_st": false,
+      "held": false,
+      "close": null,
+      "change_pct": null,
+      "verdict": "suspended",
+      "headline": "停牌中，复牌前不给计划",
+      "status": "failed",
+      "failure_reason": "停牌，无当日行情"
+    }
+  ]
+}

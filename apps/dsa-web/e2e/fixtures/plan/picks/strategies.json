@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "strategy_count": 4,
+  "strategies": [
+    { "id": "volume_breakout", "name": "放量突破", "description": "放量突破近期平台，适合跟随短线动量。" },
+    { "id": "shrink_pullback", "name": "缩量回踩", "description": "上升趋势中缩量回踩均线，等待企稳。" },
+    { "id": "oversold_rebound", "name": "超跌反弹", "description": "短期超跌后出现止跌迹象。" },
+    { "id": "dual_low", "name": "双低", "description": "低估值与低波动的组合。" }
+  ]
+}
