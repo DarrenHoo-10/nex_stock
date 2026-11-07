@@ -1528,6 +1528,9 @@ python main.py --debug
 | `MARKET_SNAPSHOT_BACKFILL_DAYS` | `60` | 冷启动回填 `scripts/backfill_market_snapshot.py` 的个股与板块行情交易日数 |
 | `MARKET_BENCHMARK_CODE` | `000985.CSI` | `market_daily` 使用的基准指数（Tushare 代码） |
 | `MARKET_SNAPSHOT_REQUESTS_PER_MINUTE` | `60` | 快照取数的 Tushare 每分钟请求上限 |
+| `BOARD_ANOMALY_THRESHOLDS` | 空 | 板块异动阈值覆盖（JSON 对象，空表示全部使用默认值），一般通过 Web「设置 → 异动阈值」或 `PUT /api/v1/boards/thresholds` 修改，键和默认值见 [次日计划与板块异动](daily-plan-api.md) |
+| `BOARD_PIPELINE_ENABLED` | `true` | 定时模式（`SCHEDULE_ENABLED=true` 或 `--schedule`）下是否在每个交易日运行板块异动日度流程；还需要 `TUSHARE_TOKEN`，未配置时当次运行跳过并记录日志 |
+| `BOARD_PIPELINE_SCHEDULE_TIME` | `17:00` | 板块异动日度流程的运行时间（`HH:MM`，本机时区）；不影响每日分析的 `SCHEDULE_TIME`。`daily_basic`、`limit_list_d`、`dc_*` 此时尚未发布，流程先推算、次日补全，见 [核心流程后端设计](design/core-backend-design.md) 2.9 |
 
 ---
 

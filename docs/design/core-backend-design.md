@@ -74,9 +74,11 @@ daily_runs ──< board_signal   每次运行的判定结果
 - 某一天的成分：`valid_from ≤ D` 且 (`valid_to` 为空或 `valid_to ≥ D`)。
 - 来源：`dc_member` 提供 2024-12-20 以来的逐日成分，按日期查询，单次最多 5,000 行。逐日结果压缩成拉链表保存：成分不变就不写新行。
 - 刷新：
-  - 每天刷新当天进入判定候选的板块（排名前后各 10%、新出现的板块，约几十个）。
-  - 每周全量刷新一次。全量按板块分批，每个板块一次请求覆盖上次刷新以来的全部日期，限速、带超时。
-  - 漏刷的日期以后可以按日期补齐，拉链表随之修正。
+  - **每个交易日全量取一次**：每日流程（2.9）在 D 日 17:00 取上一交易日 D-1 的 `dc_member`，不带 `ts_code`、只带 `trade_date`，一次查询返回全部板块的成分（约 8 万行，每页 5,000 行、按 `offset` 翻页，约 16–20 次请求，限速、带超时），折叠进拉链表。原来的「每天只刷新候选板块 + 每周全量」不再使用。
+  - D 日的判定使用最新可得成分，即 D-1 的快照（`dc_member` 当天 20:30 才发布），所以新出现的概念板块晚一天进入判定（它在 D-1 的 `dc_index` 里出现，D+1 日 17:00 才作为 D 日的目录补进来，见 2.9）。D 日自己的成分在 D+1 日 17:00 折叠，同时重算 D 日的指标（只改事实，见 2.9）。
+  - **全量结果的防护**：`dc_member` 不带 `ts_code` 按日期翻页取全，翻页是否取全没有真实验证过，所以折叠前先检查——翻页无进展或超过最大页数（`IncompleteMarketDataError`）、返回为空、或条数低于上一次已折叠快照条数的 50%，都判为 `incomplete`，**保留上一日成分、不关闭任何拉链行**，状态写进 `market_daily.quality["ingestion"]["membership"]`，当天的每日流程该步标为 `partial`；下次运行会重新取，不会因为一次截断把大批股票误标为「移出板块」。已折叠成功的日期（状态 `ok`）不重复请求。
+  - 冷启动和人工修复仍用按板块、按日期区间的取法（`refresh_all_membership`，`scripts/backfill_market_snapshot.py --members-only`）：每个板块一次请求覆盖上次刷新以来的全部日期，可断点续跑。
+  - 漏刷的日期以后可以按日期补齐，拉链表随之修正；每日流程只处理上一个交易日，漏跑多天时用回填脚本补。
 - 2024-12-20 之前的成分只能倒推，有幸存者偏差，标为 `backfill`，页面和校准时注明。
 
 ### 2.5 `market_stock_daily`：全市场个股收盘快照
@@ -95,17 +97,18 @@ daily_runs ──< board_signal   每次运行的判定结果
 | `prev_close` / `close` | Float | `daily` | `pre_close` 为除权昨收 |
 | `pct_chg` | Float | `daily` | % |
 | `amount` | Float | `daily` | 元（接口单位为千元，入库时 × 1000） |
-| `turnover_rate` | Float，可空 | `daily_basic` | % |
-| `float_mv` | Float，可空 | `daily_basic.circ_mv` | 流通市值，元（接口单位为万元，× 10000），用于加权 |
-| `limit_state` | String(16) | `daily_basic.limit_status` | `none` / `up` / `one_word_up` / `down` / `one_word_down`，由接口的 0–6 状态码换算 |
-| `touched_limit_up` | Boolean | `limit_list_d` | 当日在涨停或炸板榜里；在炸板榜即为炸板 |
-| `open_times` | Integer，可空 | `limit_list_d` | 炸板次数 |
-| `consecutive_up` | Integer，可空 | `limit_list_d.limit_times` | 连板数 |
+| `turnover_rate` | Float，可空 | `daily_basic`；未发布时推算 | % |
+| `float_mv` | Float，可空 | `daily_basic.circ_mv`；未发布时推算 | 流通市值，元（接口单位为万元，× 10000），用于加权 |
+| `limit_state` | String(16) | `daily_basic.limit_status`；未发布时由 `daily` + `stk_limit` 推算 | `none` / `up` / `one_word_up` / `down` / `one_word_down`，由接口的 0–6 状态码换算 |
+| `touched_limit_up` | Boolean | `limit_list_d`；未发布时推算 | 当日在涨停或炸板榜里；在炸板榜即为炸板 |
+| `open_times` | Integer，可空 | `limit_list_d` | 炸板次数；`limit_list_d` 未发布时为空（不推算） |
+| `consecutive_up` | Integer，可空 | `limit_list_d.limit_times`；未发布时推算 | 连板数 |
 | `data_source` | String(32) | | |
 | `ingested_at` | DateTime | | |
 
 - 主键 `(trade_date, code)`；索引 `(code, trade_date)`。
 - `limit_list_d` 不统计 ST 股，ST 股的涨停相关字段为空；ST 股本来就不参与板块统计，不影响判定。
+- 17:00 运行时 `daily_basic`、`limit_list_d` 还没发布，上面标「未发布时推算」的字段按 2.9 的规则推算，来源记在 `market_daily.quality["ingestion"]`（`basic_source` / `limit_source` 取 `daily_basic` / `limit_list_d` / `derived`），次日由真实值覆盖。
 - 次日涨跌停价只在生成个股计划时按规则计算（主板 ±10%、创业板和科创板 ±20%、北交所 ±30%、ST ±5%），不存在这张表里。
 - 数据量约每天 5,400 行、每年 135 万行，SQLite 可以承受。保留时长做成配置项（建议默认 250 个交易日），更早的数据可以导出到本地数据湖。
 - 不写入现有的 `stock_daily`：那张表只存被分析的股票，并带均线等计算字段，用途和保留策略都不同。
@@ -153,6 +156,19 @@ daily_runs ──< board_signal   每次运行的判定结果
 
 索引：`(board_id, trade_date)`、`(trade_date, rank_pct)`。
 
+计算口径（实现见 `src/services/board_metrics_service.py`，`calc_version` 在公式变化时递增，整日可重算）：
+
+- 有效成分：剔除停牌、ST、退市整理、无涨跌幅限制的新股（主板 / 创业板 / 科创板上市前 5 个交易日，北交所首日）、复牌首日，以及缺收盘价或涨跌幅的股票；各类剔除的数量写入 `quality.exclusions`，不静默丢弃。
+- `ret_cap` 按**前一日流通市值**加权（`float_mv / (1 + pct_chg/100)`，与指数的通行做法一致，涨幅大的股票不会因为涨了而权重变大），至少 80% 的有效成分有市值才计算，否则为空。
+- `rank_pct` 为同类板块中的中位秩百分位，100 表示最强（前 10% 即 `rank_pct ≥ 90`）；同类板块不足 5 个时为空。`excess_vs_median` 的中位数取自同一个同类池（不含 `broad`、`too_few`）。
+- 比例类字段（`up_ratio`、`break_rate`、`drop7_ratio`、`top_contrib_share`）一律存**百分数**；`amount_share` 存比例（0–1）。
+- 近 5 日字段由逐日 `ret_cap`（和基准）复利得到，5 个交易日中任何一天缺失都为空；`amount_ma5_prev` 需前 5 日完整；`amount_peak_20d` 至少 10 日数据。
+- 涨停、炸板、连板等字段只在 ≥ 95% 的有效成分带有对应数据时才产出，否则为空并在 `quality.flags` 里标记；「没有涨停」（0）和「没取到」（空）严格区分。
+- 一字板计入 `limit_up_count`，同时单列 `one_word_count`。
+- 交易日序列优先取交易所日历：某个交易日没有入库时，窗口里会留出这个缺口（相关多日字段为空并标记 `missing_sessions`），而不是悄悄把窗口拉长；没有日历时退回已入库的日期。
+- 没有成分数据的板块写 `excluded_reason = too_few` 并在 `quality.flags` 里加 `no_membership`；`cooling` 只用于「首次出现日晚于系统最早入库日」的概念（最早入库日出现的板块真实上线时间未知，不算新概念）。
+- 阈值里的 `min_members`、`broad_max_members`、`cooling_days`、`break_min_touched` 在计算指标时生效，修改后需重算（`scripts/run_board_pipeline.py --recompute-days N`）才会作用到历史日期；各日实际使用的值记在 `quality.params`。
+
 ### 2.8 `board_signal`：异动判定结果
 
 | 字段 | 类型 | 说明 |
@@ -161,35 +177,83 @@ daily_runs ──< board_signal   每次运行的判定结果
 | `run_id` | FK → `daily_runs` | |
 | `trade_date` | Date | |
 | `board_id` | FK → `board_catalog.id` | |
-| `signal_type` | String(16) | `first_launch` / `sustained` / `divergence` / `ebb` / `abnormal_drop` |
-| `flags` | Text JSON | 主线、有承接、单股驱动、历史数据不足等标注 |
-| `evidence` | Text JSON | 每条条件的实际值、阈值和是否满足，页面上的「依据」直接读这里 |
-| `driver` | String(16) | `news` / `capital` / `earnings` / `unknown` |
+| `signal_type` | String(16) | `first_launch` / `strengthening` / `divergence` / `ebbing` / `abnormal_drop` / `insufficient_history` / `none`（与 API 的 `BoardState` 一致） |
+| `flags` | Text JSON | `tags`（`mainline` / `supported` / `single_stock` / `cooling` / `merged`）、`excluded`（未参与判定的原因）、`core_missing`、`blocked_by`、`merge`（合并组角色）等 |
+| `evidence` | Text JSON | 逐条条件的实际值、阈值、是否满足（`met` 为 `true` / `false` / `null`，`null` 表示数据不足）、`data_gaps`、`undetermined`（数据不足无法判定的状态）、使用的阈值、驱动因素；页面上的「依据」读 `lines` |
+| `driver` | String(16) | `news` / `capital` / `earnings` / `unknown`；目前没有消息 / 业绩数据，只有成交额明显放大（≥ 明显放量阈值）的启动 / 走强会标为 `capital`，其余为 `unknown` |
 | `reason` | Text | 一句话原因 |
 
 - 约束：`UNIQUE(run_id, board_id)`。
-- 阈值快照存在 `daily_runs` 上（结构见每日运行的设计），同一次运行内的所有判定使用同一组阈值。
+- 阈值快照存在 `daily_runs.thresholds_snapshot`（`values` 是生效的全部阈值，`overridden` 是被覆盖的键），同一次运行内的所有判定使用同一组阈值。`daily_runs.steps` 是步骤列表（`ingest` / `membership` / `metrics` / `signals`，每步有 `key`、`label`、`status`、`finished_at`、`detail`、`data`），`status` 取 `running` / `succeeded` / `partial` / `failed`；有数据缺口的运行记为 `partial`，之后可以再跑一次补算。
+- 同一天再次运行（`--force`）会新增一条运行记录，旧运行的判定原样保留；读取时取该交易日最新的完成运行。
+- 实现见 `src/services/board_signal_service.py`，规则与产品说明 3.3 一一对应。
+
+#### 2.8.1 判定实现口径
+
+- **三值逻辑**：每个条件是满足 / 不满足 / 数据不足。「与」「或」按三值运算（任一不满足则整体不满足；否则有数据不足则整体数据不足）。数据不足**不会**被当成不满足：一个状态的结果是「数据不足」，且板块当日显著（强日、弱日或近 5 日排名在前）时，输出 `insufficient_history` 并在 `evidence.data_gaps` 列出缺什么；当日不显著的板块输出 `none`，但 `evidence.undetermined` 仍记录哪些状态无法判定，页面的 `history_note` 汇总历史积累天数和各状态需要的天数。
+- **优先级**：异常下跌 > 退潮 > 高位分歧 > 持续走强 > 首次启动。更高优先级的状态数据不足、而较低优先级的状态成立时，输出较低的状态，并把数据缺口写进 `data_gaps`。
+- **普涨日保护**：全 A 等权涨幅 ≥ 阈值时，涨停数、炸板率、上涨家数占比类条件不参与（`skipped`），只看排名和超额；证据里会写出被忽略的条件。当日全 A 涨幅缺失时按非普涨日处理并告警。
+- **单股驱动**：首次启动 / 持续走强要求最大单股贡献不超过阈值；不满足时输出 `none` 并打 `single_stock` 标签（列表里照常显示这类板块，说明为什么没有报异动）。高位分歧、退潮、异常下跌不受此规则影响。
+- **新概念冷却**：只拦截首次启动。其余条件成立（或因数据不足无法判定）且当日显著时输出 `insufficient_history` 并打 `cooling` 标签。API 里的 `cooling` 标签表示「冷却期」，不是「降温」。
+- **历史不足的来源**：板块历史由本地逐日积累，所以天数不够、成分尚未刷新的板块天然缺历史；成分在 2024-12-20 之前的日期是倒推的（`quality.member_origin = backfill`），页面和详情里会注明存在幸存者偏差。
+- **首次启动的「近 5 日超额不在前 30%」** 取前一交易日的 5 日排名（当日强势不应抬高自己的排名）。**主线的「持续 ≥ 5 天」** 按连续跑赢基准的天数计。**有承接** 只用于概念：成交额不低于前一日且仍有涨停。
+- **概念合并**：成分重合度（Jaccard）≥ 阈值的概念以成分最多的板块为锚点分组（`board_catalog.merge_group`）；组内状态最强的板块作为代表显示并打 `merged` 标签，其余成员在列表里隐藏、详情里说明。
 
 ### 2.9 每日数据流程
 
-全部按 `trade_date` 查询，一次取全市场。积分要求和单次行数上限摘自 Tushare 文档。当前账号有 15,000 积分，满足下表所有接口的要求；实现前每个接口用一次真实请求确认返回字段和行数。
+**每个交易日 17:00 运行一次**（调度器注册，见 `BOARD_PIPELINE_*`，本机时区，仅交易日，需要 `TUSHARE_TOKEN`）。全部按 `trade_date` 查询，一次取全市场。积分要求、单次行数上限、发布时间摘自 Tushare 文档和接口说明；当前账号有 15,000 积分，满足下表所有接口的要求。
 
-| 步骤 | Tushare 接口 | 写入 | 请求 | 权限 / 上限 |
+交易日 D 各接口的发布时间：
+
+| 接口 | 发布时间 | 说明 |
+| --- | --- | --- |
+| `stk_limit` | ≈ 09:00 | D 的涨停价、跌停价，含基金；每次 5,800 行 |
+| `daily` | 16:00–17:00 | 每次 6,000 行；17:00 时通常已发布，没发布则当天运行失败（见下） |
+| `daily_basic` | 17:00–19:00 | 2,000 积分；每次 6,000 行 |
+| `limit_list_d` | 18:30–19:30 | 5,000 积分起；每次 2,500 行 |
+| `dc_index`、`dc_daily`、`dc_member` | 20:30 | 6,000 积分；每次 5,000 / 2,000 / 5,000 行 |
+| `suspend_d` | 09:00 和 21:00 | 17:00 取到的是早上那一版 |
+
+所以 D 日 17:00 能拿到 D 的 `daily`、`stk_limit`、`suspend_d`，拿不到 D 的 `daily_basic`、`limit_list_d` 和全部 `dc_*`；D-1 的所有接口都已发布。流程因此是「D-1 补全 + D 先推算」：
+
+| 步骤 | 对象 | 接口 | 写入 | 请求 |
 | --- | --- | --- | --- | --- |
-| 1 | `daily` | `market_stock_daily` 的价格和成交额 | 1 | 15:00–16:00 入库；每次 6,000 行 |
-| 2 | `daily_basic` | 换手率、流通市值、`limit_state` | 1 | 2,000 积分；15:00–17:00 更新；每次 6,000 行 |
-| 3 | `limit_list_d` | `touched_limit_up`、`open_times`、`consecutive_up` | 1 | 5,000 积分起；每次 2,500 行 |
-| 4 | `suspend_d` | 停牌股 | 1 | |
-| 5 | `index_daily`（`000985.CSI`） | `market_daily` 的基准；本地数据湖有数据时不请求 | 0–1 | |
-| 6 | `dc_index`（行业、概念各一次） | `board_catalog`，发现新板块和下线板块 | 2 | 6,000 积分；每次 5,000 行 |
-| 7 | `dc_daily` | `board_daily.vendor_ret`、`vendor_amount` | 1 | 6,000 积分；每次 2,000 行；2020 年起 |
-| 8 | `dc_member` | 判定候选板块的当日成分 | 约几十 | 6,000 积分；每周另有一次全量刷新 |
-| 9 | 无 | 计算 `board_daily`、`market_daily` 的宽度字段 | 0 | 只读本地表 |
-| 10 | 无 | 判定写入 `board_signal` | 0 | |
+| 1 补全 D-1 | D-1 个股 | `daily`、`daily_basic`、`limit_list_d`、`suspend_d`、`index_daily`、`stock_basic`（D-1 已是 `complete` 时整步跳过） | 用真实值重写 D-1 的 `market_stock_daily` 和 `market_daily` 基准，替换前一天推算的值 | 约 8 |
+| 2 | D-1 板块目录与行情 | `dc_index`（行业、概念各一次）、`dc_daily` | `board_catalog`（新板块在这里出现，晚一天）、`board_daily.vendor_ret/vendor_amount` | 3 |
+| 3 | D-1 成分 | `dc_member(trade_date=D-1)`，全部板块 | 折叠进 `board_membership`（2.4，含防护） | 约 16–20 |
+| 4 入库 D | D 个股 | `daily`（必需）、`stk_limit`、`suspend_d`、`index_daily`；`daily_basic`、`limit_list_d` 先取一次，没发布就推算 | `market_stock_daily`（D）、`market_daily` 基准；D 的板块目录和行情不取 | 约 7 |
+| 5 重算 D-1 | 无 | 只读本地表 | 步骤 1 或 3 改动了 D-1 的输入时，重算 D-1 的 `board_daily`、`market_daily`（只改事实字段） | 0 |
+| 6 计算 D | 无 | 只读本地表 | `board_daily`、`market_daily`（D） | 0 |
+| 7 判定 D | 无 | | `board_signal`（D 这次运行） | 0 |
 
-- `stock_basic`（名称、上市日期、板块）每周刷新一次即可。
-- 全市场 A 股约 5,400 只，接近 `daily` 和 `daily_basic` 6,000 行的上限，取数时按行数判断是否需要分页，不能假定一次取全。
-- 16:00 时 `daily_basic` 可能还没更新完（文档写 15:00–17:00），缺失的项写进 `quality`，相关条件判为「数据不足」，不当作不满足。这里需要和每日运行一起设计：16:00 先跑，缺数据时是否在 17:00 后补算一次。
+合计约 40 次请求，默认每分钟 60 次的限速下不到两分钟。**D-1 补全放在入库 D 之前**，这样 D 的推算用的是 D-1 的真实流通市值和真实连板数。`stock_basic`（名称、上市日期、板块）每周刷新一次即可（进程内缓存）。全市场 A 股约 5,400 只，接近 `daily` 和 `daily_basic` 6,000 行的上限，取数时按行数判断是否需要分页，不能假定一次取全。
+
+**推算规则（D 日，仅在真实接口未发布时使用，对非停牌股）**
+
+| 字段 | 规则 |
+| --- | --- |
+| 涨停收盘 | `close ≥ up_limit − 0.005`（半个最小报价单位的容差，防浮点误差）；`open`、`low` 也在涨停价则为 `one_word_up` |
+| 跌停收盘 | `close ≤ down_limit + 0.005`；`open`、`high` 也在跌停价则为 `one_word_down` |
+| `limit_state` | 涨停收盘 → `up` / `one_word_up`，跌停收盘 → `down` / `one_word_down`，否则 `none`；ST 股也推算（接口有它们的涨跌停价，和 `daily_basic.limit_status` 口径一致） |
+| `touched_limit_up` | 非 ST：`high ≥ up_limit − 0.005`；炸板即触及但未涨停收盘；ST 保持为空（和 `limit_list_d` 一致） |
+| `open_times` | 为空，等 `limit_list_d` |
+| `consecutive_up` | 非 ST 且涨停收盘时：上一行是上一交易日、未停牌且状态已知——上一日涨停则上一日连板数 + 1（上一日连板数为空则为空），否则 1；其余情况为空（不猜，也不重置为 1）。因为 D-1 已先补全，上一日的连板数通常是真实值 |
+| `float_mv` | 上一份快照的 `float_mv × (1 + pct_chg / 100)`，即流通市值权重仍是「前一日流通市值」，和 2.7 的市值加权一致 |
+| `turnover_rate` | `vol`（手）÷ 流通股本，流通股本 = 上一份快照的 `float_mv ÷ close`，即 `vol × 10⁴ ÷ 流通股本` 个百分点 |
+
+- 推算只在 `allow_derived=True`（每日流程）时启用，回填和人工入库保持原行为：接口缺失就是质量标记，不推算。上一份快照与 D 相隔超过 10 个自然日时不推算流通市值和换手率。
+- `stk_limit` 请求失败时记入 `missing`（状态 `partial`），涨跌停相关字段保持为空，不当作 `none`；真实接口出了错（而不是「未发布」）也保持在 `missing` 里。
+- 质量记录：`market_daily.quality["ingestion"]` 里 `derived`（被推算替代的接口）、`basic_source`、`limit_source`、`derived_from`（推算所用快照日期）、`boards`（`done` / `pending`）；`quality["metrics"]["input_sources"]` 带到指标的质量里。入库状态：`complete`（全部真实）、`provisional`（有推算值或板块目录待补，没有失败）、`partial`（有接口失败或翻页不完整）。`provisional` 的日期下次运行会整日重新入库，不会被当作已完成而跳过。
+- D 当天的 `daily_basic` / `limit_list_d` 如果已经发布（比如手动在晚上补跑），直接使用，不推算。
+
+**运行结果**
+
+- `daily` 缺失（没发布或非交易日）：当天运行 `failed`，不写信号；D-1 补全和成分折叠已经完成的部分保留，重跑只补缺的。
+- 推算本身不算告警：入库步骤显示「已推算」，运行状态仍可为 `succeeded`；步骤失败、成分不完整、质量缺失才是 `partial`。
+- **D-1 的信号不改写**：判定属于当时那次运行（一次运行一批信号，见 2.8），D-1 补全只更新 D-1 的事实字段（`board_daily`、`market_daily`），D-1 运行里已经写下的信号和证据保持原样；D 的 5 日涨幅等字段读到的是补全后的 D-1 数据。
+- 每步幂等：D-1 已 `complete` 就不再请求，成分日期已折叠就不再请求，重跑只补缺的（`--force` 才新增一次运行）。
+
+**代价**：D 的判定用 D-1 的成分（新概念晚一天）、推算的换手率 / 流通市值和没有炸板次数的涨停数据；D 的这些字段在 D+1 日 17:00 被真实值替换，D 的指标随之重算，但 D 当天的信号不重写。
 
 ### 2.10 冷启动回填
 
@@ -219,7 +283,7 @@ daily_runs ──< board_signal   每次运行的判定结果
 1. **产品口径不变。** 次日计划只在收盘后生成。盘中助手用实时数据回答问题、检查计划里的条件是否已触发，不生成新的买卖建议，也不改写计划。用户追问「要不要改」时，回答写明这是盘中看法，计划没有变。
 2. **助手知道现在是什么时候。** 每次提问都带上市场阶段（盘前、集合竞价、盘中、午休、收盘后、非交易日）和当前时间，复用 `src/core/trading_calendar.py` 的 `build_market_phase_context`。
 3. **每个实时数字都带时间。** 回答写「截至 10:32」；快照超过时效的标「数据延迟」。
-4. **盘中数据只放内存缓存**，不写入 `stock_daily` 和 `market_stock_daily`，避免把未收盘的 K 线当成收盘数据。收盘数据仍由 16:00 的每日运行写入。
+4. **盘中数据只放内存缓存**，不写入 `stock_daily` 和 `market_stock_daily`，避免把未收盘的 K 线当成收盘数据。收盘数据仍由 17:00 的每日运行写入。
 
 ### 3.2 数据来源：Tushare 优先
 
@@ -381,5 +445,49 @@ Hindsight 的具体约定：
 
 1. **金额打码（已决定）：** 默认开，可以用配置关闭。
 2. **现有 `AgentMemory`：** 助手配置不启用它的置信度校准，保持现状；以前的计划结果用 `get_plan_history` 回答。是否以后把它也改成回忆插件的一个来源，留到第二版再定。
+
+## 5. 隔夜美股、资讯与 8:45 盘前推送（讨论稿，未实现）
+
+### 5.1 已确定
+
+| 事项 | 决定 |
+| --- | --- |
+| 17:00 运行 | 使用前一晚的美股交易日（北京时间凌晨收盘，Tushare `us_daily` 13:00 已发布），直接读 Tushare |
+| 8:45 推送 | 每个交易日 8:45 推送一版自选股分析和其他资讯；需要约 8:15 开始运行 |
+| 美股数据粒度 | 只要日线 |
+| 资讯来源 | 自建 NewsNow（开源、MIT），部署在东京服务器，`NEWSNOW_BASE_URL` 指向自建实例；不购买 Tushare「新闻资讯」权限（账号当前无权限，且按小时更新） |
+
+### 5.2 接口与发布时间（Tushare MCP 工具说明 + 单次采样）
+
+| 数据 | 接口 | 发布时间（北京） | 账号可用 |
+| --- | --- | --- | --- |
+| 美股日线 | `us_daily` | 交易日 13:00 | 是（采样 NVDA 11-06 成功） |
+| 国际指数 | `index_global` | 交易日 9:00 | 是（采样 SPX 11-06 成功） |
+| 新闻快讯 | `news` | 每小时第 50 分钟 | 否（错误 40203） |
+
+8:45 时 Tushare 还没有前一晚的美股日线，所以 8:45 这一步用 yfinance（项目已有、免费、无需密钥，美股收盘后即可取）；13:00 后用 Tushare 覆盖为正式值。
+
+### 5.3 美股龙头与板块映射
+
+- 用户可编辑的观察列表，约 10–15 只，每只映射到若干 A 股板块（`board_catalog`），例如 NVDA、AVGO、AMD、TSM、费城半导体指数 → 算力 / CPO / 半导体；TSLA → 特斯拉概念 / 汽车零部件；AAPL → 消费电子 / 苹果概念；纳斯达克中国金龙指数 → 中概互联。
+- 日线存入现有 `stock_daily`（已支持美股代码），不新建行情表；映射关系需要一张小表或配置，实现时定。
+- 龙头单日涨跌超过阈值（可配置）时，给映射的板块和计划里的相关股票加「隔夜美股」提示。
+
+### 5.4 资讯
+
+- NewsNow 来源改用财联社电报（`cls-telegraph`，实时快讯）替换现有模板里的财联社热榜（`cls-hot`），保留华尔街见闻、金十、格隆汇；部署后逐个来源核对东京 IP 能否取到。
+- 现有资讯池（`intelligence_items`）改为定时抓取，不再只在分析时顺带抓取。
+- 每条资讯用低成本模型分类：范围（全市场 / 板块 / 个股）、重要程度、关联的 A 股板块、关联的美股龙头、是否突发。分类结果用于板块判定的驱动因素（`driver_kind=news`）、助手上下文、8:45 和 17:00 的推送。
+- 自选股的公司事件优先用 Tushare 结构化接口（业绩预告 `forecast`、业绩快报 `express`、增减持 `stk_holdertrade`、解禁 `share_float`、回购 `repurchase`），实现前各采样一次确认权限。
+
+### 5.5 8:45 盘前推送
+
+- 复用现有的每日个股分析和飞书推送，把隔夜美股、龙头映射结果和新资讯作为附加上下文，不另建分析流程。
+- 17:00 的计划（价位、条件、股数）保持不变，作为基准；盘前版给出盘前看法。若隔夜变化足以改变结论，标为「盘前建议调整」并写明原因，不覆盖原计划。
+
+### 5.6 待定
+
+1. 盘中突发资讯是否即时推送飞书。核心功能说明目前把「盘中盯盘推送」列为不做的事。
+2. 美股观察列表的默认名单和涨跌阈值。
 
 回滚：删除本文并撤销 CHANGELOG 对应条目即可。

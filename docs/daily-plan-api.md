@@ -5,8 +5,9 @@
 ## 当前状态
 
 - API 层（`api/v1/endpoints/boards.py`、`api/v1/endpoints/daily_plan.py`）和 Web 页面已实现。
-- 后端服务 `src/services/board_anomaly_service.py`（`BoardAnomalyService`）与 `src/services/daily_plan_service.py`（`DailyPlanService`）**尚未实现**。在它们存在之前，`/boards/*` 与 `/plan/*` 一律返回 `503 {"error": "daily_plan_unavailable", "message": "次日计划服务未就绪"}`，Web 页面显示「次日计划服务未就绪」说明，不影响其他页面。
-- API 在每次请求时按需导入这两个模块，后端服务落地后无需改 API 层即可生效。服务类需支持无参构造。
+- 板块异动服务 `src/services/board_anomaly_service.py`（`BoardAnomalyService`）已实现，读取本地的板块指标和判定结果（见[核心流程后端设计](design/core-backend-design.md)第 2 节），数据由调度器每个交易日 17:00 运行的板块日度流程（`BOARD_PIPELINE_*`，也可用 `scripts/run_board_pipeline.py` 手动运行）产生；没有任何已完成的运行时 `/boards/anomalies` 返回空列表和说明，不返回 503。
+- 次日计划服务 `src/services/daily_plan_service.py`（`DailyPlanService`）**尚未实现**。在它存在之前，`/plan/*` 一律返回 `503 {"error": "daily_plan_unavailable", "message": "次日计划服务未就绪"}`，Web 页面显示「次日计划服务未就绪」说明，不影响其他页面。
+- API 在每次请求时按需导入服务模块，服务类需支持无参构造。
 
 ## 约定
 
@@ -75,7 +76,47 @@
 - 模型（按用途映射现有键）：分析模型 `LITELLM_MODEL`、助手模型 `AGENT_LITELLM_MODEL`（空表示跟随分析模型）、备用模型 `LITELLM_FALLBACK_MODELS`、识图模型 `VISION_MODEL`、温度 `LLM_TEMPERATURE`；渠道与密钥仍在高级设置中编辑
 - 异动阈值：`BOARD_ANOMALY_THRESHOLDS`（经 `PUT /boards/thresholds` 写入）
 
-上述 `POSITION_*`、`DAILY_PLAN_*`、`BOARD_ANOMALY_THRESHOLDS` 的默认值、注册与 `.env.example` 说明随后端服务一起落地；在此之前设置页按普通值读写，保存后不影响任何现有流程。
+`BOARD_ANOMALY_THRESHOLDS` 已随板块异动服务落地：值是一个 JSON 对象，只写被覆盖的键（空表示全部默认），字典型阈值可只写其中的字段（如 `{"excess_floor": {"concept": 3}}`）；它在 `src/core/config_registry.py` 中列为不在通用设置页显示的键（由异动阈值页面通过 `PUT /boards/thresholds` 编辑），`.env.example` 里有说明。`POSITION_*`、`DAILY_PLAN_*` 的默认值、注册与 `.env.example` 说明随次日计划服务一起落地；在此之前设置页按普通值读写，保存后不影响任何现有流程。
+
+### 板块异动阈值键
+
+`GET /boards/thresholds` 返回下列键（`key` / 默认值 / 依据等级）。数值边界由 `PUT /boards/thresholds` 校验，不合法时返回 400 和问题列表；非法或互相矛盾的已保存值会整体退回默认值并写日志。
+
+| 键 | 默认值 | 依据 |
+| --- | --- | --- |
+| `amount_ratio_mild` / `amount_ratio_strong` | 1.5 / 2.5（倍） | 中 |
+| `rank_strong_top_pct` / `rank_weak_bottom_pct` | 10 / 10（%） | 中 / 推断 |
+| `excess_floor` | `{"industry": 1.5, "concept": 2.5}`（%） | 推断 |
+| `breadth_pct` | `{"strong": 70, "weak": 30}`（%） | 低 |
+| `limit_up_effect` | 3（家，概念） | 低 |
+| `mainline` | `{"limit_up": 5, "days": 2, "max_consecutive": 3, "min_days": 5}` | 低 |
+| `break_rate_warn` / `break_min_touched` | 40（%） / 5（家） | 中 / 推断 |
+| `confirm` | `{"days": 3, "strong_days": 2}` | 低 |
+| `strengthening_rank_5d_top_pct` | 10（%） | 低 |
+| `first_launch` | `{"prior_days": 5, "not_top_pct": 30, "breadth_pct": 60}` | 推断 |
+| `divergence` | `{"min_conditions": 2, "breadth_pct": 50, "limit_up_drop_pct": 50}` | 推断 |
+| `ebb_peak_pct` / `ebb` | 50（%） / `{"lookback_days": 10, "consecutive_days": 2, "min_conditions": 2, "limit_up_max": 1, "rank_5d_out_pct": 50}` | 低 / 推断 |
+| `abnormal_drop` | `{"limit_down_count": 3, "drop7_ratio_pct": 30}`（概念补充条件） | 推断 |
+| `broad_rally_pct` | 2（%） | 低 |
+| `min_members` / `broad_max_members` | 10 / 800（只） | 推断 |
+| `single_stock_share_pct` | 50（%） | 推断 |
+| `cooling_days` | 10（交易日） | 推断 |
+| `merge_jaccard` | 0.6 | 推断 |
+
+`break_min_touched`、`min_members`、`broad_max_members`、`cooling_days` 在计算板块指标时生效，修改后需重算历史指标；其余键在判定时生效，下一次运行即用新值，旧运行的判定和阈值快照不变。
+
+### 板块日度流程
+
+```bash
+python scripts/backfill_market_snapshot.py            # 首次：回填个股、板块与成分
+python scripts/run_board_pipeline.py                  # 补全上一交易日 -> 上一日全量成分 -> 入库 -> 指标 -> 判定，写 daily_runs
+python scripts/run_board_pipeline.py --date 2026-11-06 --skip-ingest   # 只用本地数据重新计算
+python scripts/backfill_market_snapshot.py --members-only              # 人工修复：按板块、按区间重刷成分
+```
+
+**定时运行**：在开启定时模式（`SCHEDULE_ENABLED=true` 或 `--schedule`，Web / API 常驻进程或命令行定时循环均可）时，调度器每个交易日（A 股交易日历）按 `BOARD_PIPELINE_SCHEDULE_TIME`（默认 `17:00`，本机时区，与 `SCHEDULE_TIME` 相同；不影响每日分析的 `SCHEDULE_TIME`）运行一次；`BOARD_PIPELINE_ENABLED=false` 可关闭。需要配置 `TUSHARE_TOKEN`，未配置时当次运行跳过并写一行日志；每次运行都重新读取令牌，在 Web 设置里补上后无需重启。运行放在独立线程，上一次没跑完则跳过下一次；失败只记日志，不影响调度器和每日分析，`partial` 记为警告。调度器在 17:00 之后才启动时当天不会补跑，手动运行脚本即可（幂等）。
+
+流程入口是 `src/services/board_pipeline.py::run_board_pipeline(trade_date, force=False, skip_ingest=False, skip_members=False, recompute_days=0)`，步骤和推算规则见[核心流程后端设计](design/core-backend-design.md) 2.9：D 日 17:00 `daily_basic`、`limit_list_d`、`dc_*` 还没发布，所以先补全 D-1（真实值替换前一天的推算值、取 D-1 的板块目录 / 行情 / 全量成分，并重算 D-1 的指标，D-1 已写下的信号不改写），再入库 D（换手率、流通市值、涨跌停由 `daily` + `stk_limit` + 上一日数据推算，`open_times` 留空，来源记在 `market_daily.quality`）。已有成功运行的交易日默认跳过；数据不完整的运行记为 `partial`，补齐数据后可直接再跑。助手工具 `get_board_signal` 读取同一份结果。
 
 ## 回滚
 

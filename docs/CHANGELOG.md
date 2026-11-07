@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [新功能] 板块与全市场日度快照入库：新增 `board_catalog`、`board_membership`（成分拉链表）、`market_stock_daily`、`market_daily`、`board_daily`、`daily_runs`、`board_signal` 表，按交易日从 Tushare 取全市场行情、每日指标、涨跌停、停牌与东方财富板块（含分页、单位换算、数据缺失标记），新增可断点续跑的回填脚本 `scripts/backfill_market_snapshot.py`；新增配置 `MARKET_SNAPSHOT_RETENTION_DAYS`、`MARKET_SNAPSHOT_BACKFILL_DAYS`、`MARKET_BENCHMARK_CODE`、`MARKET_SNAPSHOT_REQUESTS_PER_MINUTE`；板块指标计算与异动判定尚未接入。
+- [新功能] 板块与全市场日度快照入库：新增 `board_catalog`、`board_membership`（成分拉链表）、`market_stock_daily`、`market_daily`、`board_daily`、`daily_runs`、`board_signal` 表，按交易日从 Tushare 取全市场行情、每日指标、涨跌停、停牌与东方财富板块（含分页、单位换算、数据缺失标记），新增可断点续跑的回填脚本 `scripts/backfill_market_snapshot.py`；新增配置 `MARKET_SNAPSHOT_RETENTION_DAYS`、`MARKET_SNAPSHOT_BACKFILL_DAYS`、`MARKET_BENCHMARK_CODE`、`MARKET_SNAPSHOT_REQUESTS_PER_MINUTE`。
+
+- [新功能] 板块异动计算与判定：由本地快照计算全市场与板块日度指标（市值加权 / 等权收益、超额、排名、量比、宽度、涨跌停、炸板率、贡献股等），按核心功能说明的规则与默认阈值判定首次启动、持续走强、分歧、退潮、异常下跌，含普涨保护、历史不足、单股驱动、新概念冷却与概念合并，数据缺失记为「数据不足」而不当作不满足；`/api/v1/boards/*` 接入真实数据，阈值可经 `BOARD_ANOMALY_THRESHOLDS` 覆盖；新增每日板块流程脚本 `scripts/run_board_pipeline.py` 与助手工具 `get_board_signal`（盘中附实时强弱）；阈值尚未经历史回测校准。
+
+- [新功能] 每日板块流程接入定时任务：交易日 17:00 运行一次（`BOARD_PIPELINE_ENABLED`、`BOARD_PIPELINE_SCHEDULE_TIME`，未配置 `TUSHARE_TOKEN` 时跳过并记录原因），与现有分析的 `SCHEDULE_TIME` 互不影响；当天尚未发布的每日指标、涨跌停数据由日线、涨跌停价和前一日数据推算并标记来源，次日运行时补齐前一日的真实数据并重算其指标（不改写已有判定）；板块成分改为每天按交易日全量获取前一交易日成分，取消每周全量刷新。
+
+- [修复] 按交易日获取全部板块成分时，同一股票属于多个板块不再被合并成一行。
 
 - [新功能] 盘中实时数据：Tushare 单只报价改用 `rt_k`（无权限时干净回退），新增必盈 API 作为第二实时源（`BIYING_LICENCE`，可在 Web 设置页填写，日志中打码），新增按需获取、带缓存的全市场盘中快照服务（`INTRADAY_SNAPSHOT_TTL_SECONDS`）；助手每轮对话带上市场阶段与当前时间。
 
@@ -19,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] 持仓快照录入：`PortfolioService.set_holdings_snapshot` 把录入的持仓写成「期初持仓」/「持仓调整」交易与现金差额，持仓和成本仍由现有账本回放计算，同一快照重复录入不重复写入。
 
-- [文档] 新增[核心流程后端设计讨论稿](design/core-backend-design.md)：手动持仓以「期初持仓」写入现有账本；板块数据统一取自 Tushare，每日保存全市场个股快照与成分拉链表、由本地数据计算板块指标，含板块维表、日度指标、判定结果的表结构与每日数据流程；助手沿用现有 Agent，盘中优先用 Tushare 实时接口、必盈 API（包年版）作为第二实时源，回答问题并检查计划条件；助手记忆分为会话、Markdown 笔记（用户确认后写入）、可插拔的长期回忆插件（首个实现为 Hindsight，不配置也可运行）三层；尚未实现。
+- [文档] 新增[核心流程后端设计讨论稿](design/core-backend-design.md)：手动持仓以「期初持仓」写入现有账本；板块数据统一取自 Tushare，每日保存全市场个股快照与成分拉链表、由本地数据计算板块指标，含板块维表、日度指标、判定结果的表结构与每日数据流程；助手沿用现有 Agent，盘中优先用 Tushare 实时接口、必盈 API（包年版）作为第二实时源，回答问题并检查计划条件；助手记忆分为会话、Markdown 笔记（用户确认后写入）、可插拔的长期回忆插件（首个实现为 Hindsight，不配置也可运行）三层；隔夜美股与资讯：17:00 用前一晚美股日线、8:45 推送盘前版自选股分析与资讯、自建 NewsNow 作为快讯来源；尚未实现。
 
 - [新功能] 新增次日计划的 API 与 Web 入口（[说明](daily-plan-api.md)）：`/api/v1/boards/*`（板块异动列表、详情、阈值读写）与 `/api/v1/plan/*`（账户与持仓快照、股票计划、股数试算、运行记录与手动运行），后端服务未就绪时返回 503 `daily_plan_unavailable`；Web 新增深色玻璃风格的板块异动 `/boards`、机会选股 `/picks`（复用现有选股任务）、我的股票 `/mine`、带页面上下文的助手抽屉和新设置页 `/preferences`（仓位规则、按用途的模型、异动阈值、运行和推送、数据状态）；`/` 与登录后默认改为进入 `/mine`，原首页移到 `/home`，其余旧页面路由不变并收进导航「更多」。
 

@@ -101,6 +101,40 @@ class MarketSnapshotRepository:
 
         self.db._run_write_transaction(f"upsert market_daily[{trade_date}]", _write)
 
+    def merge_ingestion_quality(self, trade_date: date, patch: Dict[str, Any]) -> None:
+        """Merge ``patch`` into the ``ingestion`` quality block of ``trade_date`` (row created if absent)."""
+
+        def _write(session) -> None:
+            row = session.get(MarketDaily, trade_date)
+            if row is None:
+                row = MarketDaily(trade_date=trade_date)
+                session.add(row)
+            quality = _loads(row.quality)
+            block = quality.get(QUALITY_INGESTION_KEY)
+            block = dict(block) if isinstance(block, dict) else {}
+            block.update(patch)
+            quality[QUALITY_INGESTION_KEY] = block
+            row.quality = json.dumps(quality, ensure_ascii=False, sort_keys=True)
+
+        self.db._run_write_transaction(f"merge ingestion quality[{trade_date}]", _write)
+
+    def get_previous_stock_day(self, trade_date: date) -> tuple:
+        """``(date, {code: row})`` of the newest ingested day before ``trade_date`` (or ``(None, {})``).
+
+        Only the columns needed to derive turnover / float cap / limit streaks are returned.
+        """
+        columns = ("code", "is_suspended", "close", "float_mv", "limit_state", "consecutive_up")
+        with self.db.get_session() as session:
+            prev = session.execute(
+                select(func.max(MarketStockDaily.trade_date)).where(MarketStockDaily.trade_date < trade_date)
+            ).scalar_one_or_none()
+            if prev is None:
+                return None, {}
+            rows = session.execute(
+                select(*[getattr(MarketStockDaily, c) for c in columns]).where(MarketStockDaily.trade_date == prev)
+            ).all()
+        return prev, {row[0]: dict(zip(columns, row)) for row in rows}
+
     def prune_stock_daily(self, keep_trading_days: int) -> int:
         """Delete ``market_stock_daily`` rows older than the newest ``keep_trading_days`` dates."""
         keep = max(int(keep_trading_days), 1)
@@ -346,6 +380,24 @@ class MarketSnapshotRepository:
             return stats
 
         return self.db._run_write_transaction(f"apply board_membership[{board_id}]", _write)
+
+    def count_members_on(self, on_date: date, board_ids: Iterable[int]) -> int:
+        """Number of (board, stock) membership pairs valid on ``on_date`` for the given boards."""
+        ids = list(board_ids)
+        if not ids:
+            return 0
+        with self.db.get_session() as session:
+            return int(
+                session.execute(
+                    select(func.count())
+                    .select_from(BoardMembership)
+                    .where(
+                        BoardMembership.board_id.in_(ids),
+                        BoardMembership.valid_from <= on_date,
+                        (BoardMembership.valid_to.is_(None)) | (BoardMembership.valid_to >= on_date),
+                    )
+                ).scalar_one()
+            )
 
     def get_members_on(self, board_id: int, on_date: date) -> Set[str]:
         """Members of a board on ``on_date``: ``valid_from <= D and (valid_to is null or valid_to >= D)``."""

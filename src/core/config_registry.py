@@ -85,6 +85,13 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "MARKET_SNAPSHOT_BACKFILL_DAYS",
     "MARKET_BENCHMARK_CODE",
     "MARKET_SNAPSHOT_REQUESTS_PER_MINUTE",
+    # Board anomaly threshold overrides (JSON object) are edited through the
+    # dedicated thresholds page / PUT /api/v1/boards/thresholds, not the generic form.
+    "BOARD_ANOMALY_THRESHOLDS",
+    # Board pipeline schedule knobs are ops-level (scheduler wiring), read by the
+    # scheduler owners; the switch/time are not part of the generic settings form.
+    "BOARD_PIPELINE_ENABLED",
+    "BOARD_PIPELINE_SCHEDULE_TIME",
     "USE_PROXY",
     "PROXY_HOST",
     "PROXY_PORT",

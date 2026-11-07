@@ -14,7 +14,7 @@ MARKET_SNAPSHOT_REQUESTS_PER_MINUTE。
     python scripts/backfill_market_snapshot.py                  # 回填 MARKET_SNAPSHOT_BACKFILL_DAYS 个交易日 + 成分
     python scripts/backfill_market_snapshot.py --days 30
     python scripts/backfill_market_snapshot.py --skip-members   # 只回填个股与板块行情
-    python scripts/backfill_market_snapshot.py --members-only   # 每周成分全量刷新
+    python scripts/backfill_market_snapshot.py --members-only   # 按板块、按区间重刷成分（人工修复；每日流程已自动折叠全量成分）
     python scripts/backfill_market_snapshot.py --force          # 重新入库已完整的日期
 
 环境要求：.env 中配置 TUSHARE_TOKEN（daily_basic 2000 积分，limit_list_d 5000 积分，dc_* 6000 积分）。
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--days", type=int, default=None, help="回填的交易日数（默认 MARKET_SNAPSHOT_BACKFILL_DAYS）")
     parser.add_argument("--end-date", default=None, help="终点交易日 YYYY-MM-DD（默认今天）")
     parser.add_argument("--skip-members", action="store_true", help="不回填板块成分")
-    parser.add_argument("--members-only", action="store_true", help="只刷新板块成分（每周全量刷新）")
+    parser.add_argument("--members-only", action="store_true", help="只刷新板块成分（按板块、按区间；人工修复用）")
     parser.add_argument("--force", action="store_true", help="重新入库已完整的日期")
     return parser
 

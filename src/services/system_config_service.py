@@ -2133,6 +2133,8 @@ class SystemConfigService:
             "SCHEDULE_ENABLED",
             "SCHEDULE_TIME",
             "SCHEDULE_TIMES",
+            "BOARD_PIPELINE_ENABLED",
+            "BOARD_PIPELINE_SCHEDULE_TIME",
         }:
             try:
                 self._runtime_scheduler.reconcile_from_config(

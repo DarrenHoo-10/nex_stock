@@ -34,6 +34,7 @@ DAILY_PAGE_CAP = 6000
 DAILY_BASIC_PAGE_CAP = 6000
 LIMIT_LIST_PAGE_CAP = 2500
 SUSPEND_PAGE_CAP = 5000
+STK_LIMIT_PAGE_CAP = 5800
 STOCK_BASIC_PAGE_CAP = 6000
 INDEX_DAILY_PAGE_CAP = 8000
 DC_INDEX_PAGE_CAP = 5000
@@ -214,14 +215,17 @@ class TushareMarketDataMixin:
     # ------------------------------------------------------------------
     def fetch_market_daily(self, trade_date: DateLike) -> pd.DataFrame:
         """``daily``：全市场未复权日线。``amount`` 换算为元。"""
-        columns = ["ts_code", "code", "pre_close", "close", "pct_chg", "amount"]
+        # open / high / low / vol 只用于在 limit_list_d、daily_basic 尚未发布时推算涨跌停与换手率，不入库。
+        columns = [
+            "ts_code", "code", "open", "high", "low", "pre_close", "close", "pct_chg", "vol", "amount",
+        ]
 
         def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             if df.empty:
                 return _empty(columns)
             df = df.copy()
-            _numeric(df, ["pre_close", "close", "pct_chg", "amount"])
-            df["amount"] = df["amount"] * 1000  # 千元 -> 元
+            _numeric(df, ["open", "high", "low", "pre_close", "close", "pct_chg", "vol", "amount"])
+            df["amount"] = df["amount"] * 1000  # 千元 -> 元；vol 保持「手」
             df["code"] = df["ts_code"].map(code_from_ts_code)
             return df[columns].reset_index(drop=True)
 
@@ -230,7 +234,7 @@ class TushareMarketDataMixin:
             page_cap=DAILY_PAGE_CAP,
             key_cols=["ts_code"],
             trade_date=to_ymd(trade_date),
-            fields="ts_code,trade_date,pre_close,close,pct_chg,amount",
+            fields="ts_code,trade_date,open,high,low,pre_close,close,pct_chg,vol,amount",
             normalize=_normalize,
         )
 
@@ -298,6 +302,27 @@ class TushareMarketDataMixin:
             trade_date=to_ymd(trade_date),
             suspend_type="S",
             fields="ts_code,trade_date,suspend_type,suspend_timing",
+            normalize=_normalize,
+        )
+
+    def fetch_stk_limit(self, trade_date: DateLike) -> pd.DataFrame:
+        """``stk_limit``：当日涨跌停价（约 09:00 发布，含基金，调用方按个股代码取用）。"""
+        columns = ["ts_code", "code", "up_limit", "down_limit"]
+
+        def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+            if df.empty:
+                return _empty(columns)
+            df = df.copy()
+            _numeric(df, ["up_limit", "down_limit"])
+            df["code"] = df["ts_code"].map(code_from_ts_code)
+            return df[columns].drop_duplicates(subset=["ts_code"]).reset_index(drop=True)
+
+        return self._market_query_paged(
+            "stk_limit",
+            page_cap=STK_LIMIT_PAGE_CAP,
+            key_cols=["ts_code"],
+            trade_date=to_ymd(trade_date),
+            fields="ts_code,trade_date,up_limit,down_limit",
             normalize=_normalize,
         )
 
@@ -432,13 +457,16 @@ class TushareMarketDataMixin:
 
     def fetch_dc_member(
         self,
-        ts_code: str,
+        ts_code: Optional[str],
         trade_date: Optional[DateLike] = None,
         start_date: Optional[DateLike] = None,
         end_date: Optional[DateLike] = None,
     ) -> pd.DataFrame:
-        """``dc_member``：板块成分，按单日或日期区间；2024-12-20 起有逐日数据。"""
-        params: dict = {"ts_code": ts_code}
+        """``dc_member``：板块成分，按单日或日期区间；2024-12-20 起有逐日数据。
+
+        ``ts_code=None`` 且给定 ``trade_date`` 时取当日全部板块的成分（约 8 万行，按页取全）。
+        """
+        params: dict = {} if ts_code is None else {"ts_code": ts_code}
         if trade_date is not None:
             params["trade_date"] = to_ymd(trade_date)
         if start_date is not None:
@@ -458,7 +486,9 @@ class TushareMarketDataMixin:
         return self._market_query_paged(
             "dc_member",
             page_cap=DC_MEMBER_PAGE_CAP,
-            key_cols=["trade_date", "con_code"],
+            # ts_code is part of the key: without it, the all-boards query would collapse a stock that
+            # belongs to several boards into one row
+            key_cols=["trade_date", "ts_code", "con_code"],
             fields="trade_date,ts_code,con_code",
             **params,
             normalize=_normalize,

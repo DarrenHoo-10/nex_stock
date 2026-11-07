@@ -73,6 +73,7 @@ _THINKING_TOOL_LABELS: Dict[str, str] = {
     "search_comprehensive_intel": "综合情报搜索",
     "get_market_indices": "市场概览获取",
     "get_sector_rankings": "行业板块分析",
+    "get_board_signal": "板块异动判定",
     "get_analysis_context": "历史分析上下文",
     "get_stock_info": "基本信息获取",
     "analyze_pattern": "K线形态识别",

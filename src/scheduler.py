@@ -124,6 +124,7 @@ class Scheduler:
         self._pass_scheduled_for = pass_scheduled_for
         self._daily_job: Optional[Any] = None
         self._daily_jobs: List[Any] = []
+        self._extra_daily_jobs: List[Dict[str, Any]] = []
         self._background_tasks: List[Dict[str, Any]] = []
         self._lifecycle_lock = threading.Lock()
         self._running = False
@@ -288,6 +289,92 @@ class Scheduler:
         """Public wrapper for runtime scheduler reconciliation."""
         self._refresh_daily_schedule_if_needed()
 
+    def add_daily_job(
+        self,
+        task: Callable,
+        schedule_time: str,
+        *,
+        name: Optional[str] = None,
+        schedule_time_provider: Optional[Callable[[], str]] = None,
+    ) -> bool:
+        """Register an independent daily job (own time, own thread) next to the main daily task.
+
+        Used for jobs that must not share the main task's schedule or block it, e.g. the 17:00
+        board pipeline. The task runs in a daemon thread; a still-running previous occurrence makes
+        the next one skip. ``schedule_time_provider`` is polled by the run loop and re-registers
+        the job when its time changes. Returns False (job not registered) for an invalid time.
+        """
+        candidate = (schedule_time or "").strip()
+        if not self._is_valid_schedule_time(candidate):
+            logger.warning("Invalid schedule time %r for daily job %s; job not registered", schedule_time, name)
+            return False
+        entry: Dict[str, Any] = {
+            "task": task,
+            "name": name or getattr(task, "__name__", "daily_job"),
+            "time": candidate,
+            "provider": schedule_time_provider,
+            "job": None,
+            "thread": None,
+        }
+        entry["job"] = self._register_extra_daily_job(entry)
+        self._extra_daily_jobs.append(entry)
+        logger.info("Daily job %s registered at %s", entry["name"], candidate)
+        return True
+
+    def _register_extra_daily_job(self, entry: Dict[str, Any]) -> Any:
+        return self.schedule.every().day.at(entry["time"]).do(lambda: self._start_extra_daily_job(entry))
+
+    def _start_extra_daily_job(self, entry: Dict[str, Any]) -> None:
+        worker = entry.get("thread")
+        if worker is not None and worker.is_alive():
+            logger.warning("Daily job %s is still running; skipping this occurrence", entry["name"])
+            return
+
+        def _runner() -> None:
+            try:
+                logger.info("Daily job %s started", entry["name"])
+                entry["task"]()
+            except Exception as exc:  # noqa: BLE001 - a job failure must not stop the scheduler
+                logger.exception("Daily job %s failed: %s", entry["name"], exc)
+
+        thread = threading.Thread(target=_runner, daemon=True, name=f"scheduler-daily-{entry['name']}")
+        entry["thread"] = thread
+        thread.start()
+
+    def _cancel_extra_daily_job(self, entry: Dict[str, Any]) -> None:
+        job = entry.get("job")
+        if job is None:
+            return
+        if hasattr(self.schedule, "cancel_job"):
+            self.schedule.cancel_job(job)
+        entry["job"] = None
+
+    def _cancel_extra_daily_jobs(self) -> None:
+        for entry in self._extra_daily_jobs:
+            self._cancel_extra_daily_job(entry)
+        self._extra_daily_jobs = []
+
+    def _refresh_extra_daily_jobs_if_needed(self) -> None:
+        """Re-register extra daily jobs whose provider reports a new valid time."""
+        for entry in self._extra_daily_jobs:
+            provider = entry.get("provider")
+            if provider is None:
+                continue
+            try:
+                latest = (provider() or "").strip()
+            except Exception as exc:  # pragma: no cover - defensive branch
+                logger.warning("Failed to read latest time of daily job %s; keeping %s: %s", entry["name"], entry["time"], exc)
+                continue
+            if not latest or latest == entry["time"]:
+                continue
+            if not self._is_valid_schedule_time(latest):
+                logger.warning("Invalid time %r for daily job %s; keeping %s", latest, entry["name"], entry["time"])
+                continue
+            self._cancel_extra_daily_job(entry)
+            entry["time"] = latest
+            entry["job"] = self._register_extra_daily_job(entry)
+            logger.info("Daily job %s moved to %s", entry["name"], latest)
+
     def _safe_run_task(self, scheduled_for: Optional[datetime] = None):
         """安全执行任务（带异常捕获）"""
         if self._task_callback is None:
@@ -415,6 +502,7 @@ class Scheduler:
 
         while self._running and not self.shutdown_handler.should_shutdown:
             self._refresh_daily_schedule_if_needed()
+            self._refresh_extra_daily_jobs_if_needed()
             self.schedule.run_pending()
             if not self._dispatch_background_tasks_if_running():
                 break
@@ -440,6 +528,7 @@ class Scheduler:
             self._stop_requested = True
             self._running = False
         self._cancel_daily_job()
+        self._cancel_extra_daily_jobs()
 
 
 def run_with_schedule(
@@ -451,6 +540,7 @@ def run_with_schedule(
     schedule_times: Optional[Sequence[str]] = None,
     schedule_times_provider: Optional[Callable[[], Union[Sequence[str], str]]] = None,
     pass_scheduled_for: bool = False,
+    extra_daily_jobs: Optional[List[Dict[str, Any]]] = None,
 ):
     """
     便捷函数：使用定时调度运行任务
@@ -483,6 +573,8 @@ def run_with_schedule(
             run_immediately=entry.get("run_immediately", False),
             name=entry.get("name"),
         )
+    for job in extra_daily_jobs or []:
+        scheduler.add_daily_job(**job)
     scheduler.set_daily_task(task, run_immediately=run_immediately)
     scheduler.run()
 

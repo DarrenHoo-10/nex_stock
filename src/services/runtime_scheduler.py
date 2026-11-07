@@ -683,6 +683,16 @@ class RuntimeSchedulerService:
             "name": name,
         }]
 
+    def _current_daily_jobs(self, config: Config) -> List[Dict[str, Any]]:
+        """Independent daily jobs (own time): the 17:00 board pipeline, when enabled."""
+        try:
+            from src.services.board_pipeline_schedule import build_board_pipeline_jobs
+
+            return build_board_pipeline_jobs(config, config_provider=self._config_provider)
+        except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
+            logger.warning("Failed to build board pipeline daily job: %s", exc)
+            return []
+
     @staticmethod
     def _run_in_background_thread(target: Callable[[], None]) -> None:
         """Run a callback in a background thread without blocking startup."""
@@ -737,6 +747,8 @@ class RuntimeSchedulerService:
                     run_immediately=entry.get("run_immediately", False),
                     name=entry.get("name"),
                 )
+            for job in self._current_daily_jobs(config):
+                scheduler.add_daily_job(**job)
             if run_immediately and self._run_immediately_in_background:
                 self._run_in_background_thread(scheduled_analysis)
             thread = threading.Thread(

@@ -1887,6 +1887,11 @@ def main() -> int:
                 "schedule_time_provider": schedule_time_provider,
                 "pass_scheduled_for": True,
             }
+            from src.services.board_pipeline_schedule import build_board_pipeline_jobs
+
+            board_jobs = build_board_pipeline_jobs(config, config_provider=_reload_runtime_config)
+            if board_jobs:
+                schedule_kwargs["extra_daily_jobs"] = board_jobs
             if hasattr(config, "schedule_times"):
                 schedule_kwargs["schedule_times"] = config.schedule_times
                 schedule_kwargs["schedule_times_provider"] = schedule_times_provider

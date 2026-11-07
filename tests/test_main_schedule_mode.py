@@ -1154,6 +1154,43 @@ class MainScheduleModeTestCase(unittest.TestCase):
         worker.run_once.assert_called_once_with()
         info_log.assert_any_call("[EventMonitor] 本轮触发 %d 条提醒", 2)
 
+    def test_schedule_mode_registers_board_pipeline_daily_job_without_touching_analysis_time(self) -> None:
+        args = self._make_args(schedule=True)
+        config = self._make_config(
+            schedule_enabled=False,
+            board_pipeline_enabled=True,
+            board_pipeline_schedule_time="17:00",
+            tushare_token="token-for-tests",
+        )
+        scheduled_call = {}
+
+        def fake_run_with_schedule(
+            task,
+            schedule_time,
+            run_immediately,
+            background_tasks=None,
+            schedule_time_provider=None,
+            pass_scheduled_for=False,
+            extra_daily_jobs=None,
+        ):
+            scheduled_call["schedule_time"] = schedule_time
+            scheduled_call["extra_daily_jobs"] = extra_daily_jobs or []
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main._reload_runtime_config", return_value=config), \
+             patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
+             patch("main.setup_logging"), \
+             patch("main.run_full_analysis"), \
+             patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(scheduled_call["schedule_time"], "18:00")
+        [job] = scheduled_call["extra_daily_jobs"]
+        self.assertEqual(job["name"], "board_pipeline")
+        self.assertEqual(job["schedule_time"], "17:00")
+
     def test_schedule_mode_registers_event_monitor_worker_without_legacy_rules(self) -> None:
         args = self._make_args(schedule=True)
         config = self._make_config(

@@ -283,6 +283,17 @@ def parse_env_int(
     return parsed
 
 
+def _parse_hhmm(value: Optional[str], default: str, *, field_name: str) -> str:
+    """Parse an ``HH:MM`` env value; blank -> default, invalid -> warning + default."""
+    text = (value or '').strip()
+    if not text:
+        return default
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', text):
+        logger.warning("%s=%r is not a valid HH:MM time; falling back to %s", field_name, text, default)
+        return default
+    return text
+
+
 def parse_env_float(
     value: Optional[str],
     default: float,
@@ -1299,6 +1310,9 @@ class Config:
     market_snapshot_backfill_days: int = 60  # 冷启动回填的交易日数
     market_benchmark_code: str = "000985.CSI"  # market_daily 的基准指数（Tushare 代码）
     market_snapshot_requests_per_minute: int = 60  # 快照取数的 Tushare 每分钟请求上限
+    board_anomaly_thresholds: str = ""  # 板块异动阈值覆盖（JSON 对象，空表示全部默认）
+    board_pipeline_enabled: bool = True  # 定时模式下是否在交易日运行板块异动日度流程（还需 TUSHARE_TOKEN）
+    board_pipeline_schedule_time: str = "17:00"  # 板块异动日度流程的运行时间（HH:MM，本机时区）
 
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
@@ -2337,6 +2351,13 @@ class Config:
                 60,
                 field_name='MARKET_SNAPSHOT_REQUESTS_PER_MINUTE',
                 minimum=1,
+            ),
+            board_anomaly_thresholds=(os.getenv('BOARD_ANOMALY_THRESHOLDS') or '').strip(),
+            board_pipeline_enabled=parse_env_bool(os.getenv('BOARD_PIPELINE_ENABLED'), default=True),
+            board_pipeline_schedule_time=_parse_hhmm(
+                os.getenv('BOARD_PIPELINE_SCHEDULE_TIME'),
+                default='17:00',
+                field_name='BOARD_PIPELINE_SCHEDULE_TIME',
             ),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',

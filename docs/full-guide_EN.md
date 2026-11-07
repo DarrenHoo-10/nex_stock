@@ -1354,6 +1354,9 @@ You can tune the behavior in `.env`:
 | `MARKET_SNAPSHOT_BACKFILL_DAYS` | `60` | Trading days of stock snapshots and board quotes backfilled by `scripts/backfill_market_snapshot.py` |
 | `MARKET_BENCHMARK_CODE` | `000985.CSI` | Benchmark index (Tushare code) used by `market_daily` |
 | `MARKET_SNAPSHOT_REQUESTS_PER_MINUTE` | `60` | Tushare requests-per-minute cap for snapshot fetching |
+| `BOARD_ANOMALY_THRESHOLDS` | empty | Board anomaly threshold overrides as a JSON object (empty = all defaults); normally edited from the Web settings page or `PUT /api/v1/boards/thresholds`. Keys and defaults: [daily plan API](daily-plan-api.md) (Chinese) |
+| `BOARD_PIPELINE_ENABLED` | `true` | In schedule mode (`SCHEDULE_ENABLED=true` or `--schedule`), run the daily board anomaly pipeline on every trading day; also needs `TUSHARE_TOKEN` (without it the run is skipped with a log line) |
+| `BOARD_PIPELINE_SCHEDULE_TIME` | `17:00` | Run time of the daily board pipeline (`HH:MM`, host local time); does not change `SCHEDULE_TIME` of the daily analysis. `daily_basic`, `limit_list_d` and `dc_*` are not published yet at that time, so the pipeline derives today's values and completes them the next day; see the [core backend design](design/core-backend-design.md) 2.9 (Chinese) |
 
 ---
 
