@@ -1350,6 +1350,10 @@ You can tune the behavior in `.env`:
 | `SQLITE_BUSY_TIMEOUT_MS` | `5000` | SQLite lock wait timeout in milliseconds |
 | `SQLITE_WRITE_RETRY_MAX` | `3` | Max retries for `database is locked` / `database table is locked` errors |
 | `SQLITE_WRITE_RETRY_BASE_DELAY` | `0.1` | Base backoff delay in seconds for exponential write retries |
+| `MARKET_SNAPSHOT_RETENTION_DAYS` | `250` | Trading days of the `market_stock_daily` board/market snapshot to keep (minimum 30) |
+| `MARKET_SNAPSHOT_BACKFILL_DAYS` | `60` | Trading days of stock snapshots and board quotes backfilled by `scripts/backfill_market_snapshot.py` |
+| `MARKET_BENCHMARK_CODE` | `000985.CSI` | Benchmark index (Tushare code) used by `market_daily` |
+| `MARKET_SNAPSHOT_REQUESTS_PER_MINUTE` | `60` | Tushare requests-per-minute cap for snapshot fetching |
 
 ---
 

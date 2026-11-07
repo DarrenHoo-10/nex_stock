@@ -734,6 +734,9 @@ class ConversationMessage(Base):
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.now, index=True)
+    # JSON text: market phase, data time and context object when the message
+    # was produced. Nullable so old rows and old writers stay valid.
+    context_snapshot = Column(Text, nullable=True)
 
 
 class ConversationSessionState(Base):
@@ -758,6 +761,16 @@ class ConversationSessionState(Base):
     last_accepted_user_message_id = Column(Integer, nullable=True)
 
 
+def _dump_context_snapshot(value: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Serialize a message context snapshot; never let it break a chat write."""
+    if not value:
+        return None
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
+
+
 class ChatSessionStateConflict(Exception):
     """A prepared Chat turn no longer belongs to the current session snapshot."""
 
@@ -780,6 +793,71 @@ class ConversationSummary(Base):
     estimated_tokens = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+
+class AssistantNote(Base):
+    """One LLM-wiki style Markdown page per scope (global / stock / board)."""
+
+    __tablename__ = 'assistant_note'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope = Column(String(16), nullable=False)  # global / stock / board
+    subject = Column(String(32), nullable=True)  # stock code / board id; NULL for global
+    title = Column(String(64), nullable=False)
+    body_md = Column(Text, nullable=False, default="")
+    version = Column(Integer, nullable=False, default=1)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('scope', 'subject', name='uix_assistant_note_scope_subject'),
+        # NULL subjects never collide in a plain UNIQUE; keep one global page.
+        Index(
+            'uix_assistant_note_global',
+            'scope',
+            unique=True,
+            sqlite_where=text("subject IS NULL"),
+            postgresql_where=text("subject IS NULL"),
+        ),
+    )
+
+
+class AssistantNoteRevision(Base):
+    """Immutable history of every written version of an assistant note."""
+
+    __tablename__ = 'assistant_note_revision'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    note_id = Column(Integer, ForeignKey('assistant_note.id'), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    body_md = Column(Text, nullable=False, default="")
+    source = Column(String(16), nullable=False)  # user_said / suggested / manual_edit
+    origin_session_id = Column(String(100), nullable=True)
+    origin_message_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('note_id', 'version', name='uix_assistant_note_revision_version'),
+    )
+
+
+class AssistantNoteProposal(Base):
+    """Pending (not yet confirmed) edit of a note page, with its base version."""
+
+    __tablename__ = 'assistant_note_proposal'
+
+    id = Column(String(36), primary_key=True)
+    scope = Column(String(16), nullable=False)
+    subject = Column(String(32), nullable=True)
+    title = Column(String(64), nullable=False)
+    base_version = Column(Integer, nullable=False, default=0)  # 0 = page does not exist yet
+    before_md = Column(Text, nullable=False, default="")
+    after_md = Column(Text, nullable=False, default="")
+    source = Column(String(16), nullable=False)  # user_said / suggested
+    origin_session_id = Column(String(100), nullable=True)
+    origin_message_id = Column(Integer, nullable=True)
+    status = Column(String(16), nullable=False, default='pending', index=True)  # pending / confirmed / rejected
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    resolved_at = Column(DateTime, nullable=True)
 
 
 class AgentProviderTurn(Base):
@@ -1321,6 +1399,201 @@ class SkillOpinionOutcomeRecord(Base):
     )
 
 
+# === 板块与全市场快照（docs/design/core-backend-design.md 第 2 节）===
+# 金额统一为「元」；Tushare 接口单位（daily.amount 千元、daily_basic.circ_mv 万元、
+# dc_index.total_mv 万元）在 data_provider 层取数时换算，入库后不再有单位差异。
+
+class BoardCatalog(Base):
+    """板块维表：每个数据商的每个板块一行。"""
+
+    __tablename__ = 'board_catalog'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(8), nullable=False, default='dc')  # dc 东方财富；预留 sw / ths
+    board_type = Column(String(16), nullable=False)  # industry / concept / region
+    code = Column(String(32), nullable=False)  # 例如 BK1184.DC
+    name = Column(String(64), nullable=False)
+    level = Column(String(16))  # 行业层级，来自 dc_index.level
+    first_seen_date = Column(Date, nullable=False)
+    last_seen_date = Column(Date, nullable=False)
+    status = Column(String(16), nullable=False, default='active')  # active / retired
+    merge_group = Column(String(64))
+    merge_computed_on = Column(Date)
+    # 偏离设计文档 2.3 的追加列：最近一次成分刷新覆盖到的交易日，
+    # 拉链表据此确定「退出板块」的最后可见日，并让重复刷新保持幂等。
+    membership_checked_date = Column(Date)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('source', 'board_type', 'code', name='uix_board_catalog_source_type_code'),
+        Index('ix_board_catalog_status', 'status'),
+    )
+
+
+class BoardMembership(Base):
+    """板块成分股拉链表：记录每只股票进入、退出板块的交易日。"""
+
+    __tablename__ = 'board_membership'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    board_id = Column(Integer, ForeignKey('board_catalog.id'), nullable=False)
+    stock_code = Column(String(10), nullable=False)
+    valid_from = Column(Date, nullable=False)  # 第一次在成分里看到的交易日
+    valid_to = Column(Date)  # 最后一次看到的交易日；空表示当前仍在
+    origin = Column(String(16), nullable=False, default='observed')  # observed / backfill
+    fetched_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('board_id', 'stock_code', 'valid_from', name='uix_board_membership_board_stock_from'),
+        Index('ix_board_membership_board_valid_to', 'board_id', 'valid_to'),
+        Index('ix_board_membership_stock_valid_to', 'stock_code', 'valid_to'),
+    )
+
+
+class MarketStockDaily(Base):
+    """全市场个股收盘快照：每个交易日 × 全部 A 股。"""
+
+    __tablename__ = 'market_stock_daily'
+
+    trade_date = Column(Date, primary_key=True)
+    code = Column(String(10), primary_key=True)  # 6 位代码
+    name = Column(String(32))
+    exchange_board = Column(String(8))  # main / gem / star / bse
+    is_st = Column(Boolean, nullable=False, default=False)
+    is_suspended = Column(Boolean, nullable=False, default=False)
+    list_date = Column(Date)
+    prev_close = Column(Float)
+    close = Column(Float)
+    pct_chg = Column(Float)  # %
+    amount = Column(Float)  # 元
+    turnover_rate = Column(Float)  # %
+    float_mv = Column(Float)  # 流通市值，元
+    # none / up / one_word_up / down / one_word_down；空表示当日未取到（不等于 none）
+    limit_state = Column(String(16))
+    touched_limit_up = Column(Boolean)  # 空表示未取到或 ST（limit_list_d 不统计 ST）
+    open_times = Column(Integer)
+    consecutive_up = Column(Integer)
+    data_source = Column(String(32), nullable=False, default='tushare')
+    ingested_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        Index('ix_market_stock_daily_code_date', 'code', 'trade_date'),
+    )
+
+
+class MarketDaily(Base):
+    """基准和全市场：每个交易日一行。"""
+
+    __tablename__ = 'market_daily'
+
+    trade_date = Column(Date, primary_key=True)
+    benchmark_code = Column(String(16))
+    benchmark_ret = Column(Float)  # %
+    total_amount = Column(Float)  # 元
+    up_count = Column(Integer)
+    down_count = Column(Integer)
+    limit_up_count = Column(Integer)
+    limit_down_count = Column(Integer)
+    touched_up_count = Column(Integer)
+    break_rate = Column(Float)
+    all_a_ret = Column(Float)
+    quality = Column(Text)  # JSON：缺失或延迟的数据项
+
+
+class BoardDaily(Base):
+    """板块日度指标：每个交易日、每个板块一行，可整日重算。"""
+
+    __tablename__ = 'board_daily'
+
+    trade_date = Column(Date, primary_key=True)
+    board_id = Column(Integer, ForeignKey('board_catalog.id'), primary_key=True)
+    # 成分
+    member_count = Column(Integer)
+    valid_member_count = Column(Integer)
+    excluded_reason = Column(String(16))  # broad / too_few / cooling
+    # 涨幅
+    ret_cap = Column(Float)
+    ret_eq = Column(Float)
+    vendor_ret = Column(Float)  # dc_daily 板块涨幅，仅作参考
+    vendor_amount = Column(Float)  # dc_daily 板块成交额，元，仅作参考
+    excess_ret = Column(Float)
+    excess_vs_median = Column(Float)
+    rank_pct = Column(Float)
+    ret_5d = Column(Float)
+    excess_5d = Column(Float)
+    rank_5d_pct = Column(Float)
+    # 成交
+    amount = Column(Float)
+    amount_ma5_prev = Column(Float)
+    amount_ratio_5d = Column(Float)
+    amount_share = Column(Float)
+    amount_peak_20d = Column(Float)
+    # 宽度
+    up_count = Column(Integer)
+    down_count = Column(Integer)
+    up_ratio = Column(Float)
+    # 涨停
+    limit_up_count = Column(Integer)
+    limit_down_count = Column(Integer)
+    one_word_count = Column(Integer)
+    touched_up_count = Column(Integer)
+    max_consecutive = Column(Integer)
+    break_rate = Column(Float)
+    drop7_ratio = Column(Float)
+    # 驱动
+    top_contrib_code = Column(String(10))
+    top_contrib_share = Column(Float)
+    leader_code = Column(String(10))
+    top_amount_code = Column(String(10))
+    # 质量
+    quality = Column(Text)  # JSON
+    calc_version = Column(String(16))
+    computed_at = Column(DateTime)
+
+    __table_args__ = (
+        Index('ix_board_daily_board_date', 'board_id', 'trade_date'),
+        Index('ix_board_daily_date_rank', 'trade_date', 'rank_pct'),
+    )
+
+
+class DailyRun(Base):
+    """每日运行记录：判定结果（board_signal）挂在每次运行上，阈值快照随运行保存。"""
+
+    __tablename__ = 'daily_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    status = Column(String(16), nullable=False, default='running')
+    started_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    finished_at = Column(DateTime)
+    thresholds_snapshot = Column(Text)  # JSON
+    steps = Column(Text)  # JSON
+    error = Column(Text)
+
+
+class BoardSignal(Base):
+    """板块异动判定结果；一次运行内每个板块至多一条。"""
+
+    __tablename__ = 'board_signal'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('daily_runs.id'), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    board_id = Column(Integer, ForeignKey('board_catalog.id'), nullable=False)
+    # first_launch / sustained / divergence / ebb / abnormal_drop
+    signal_type = Column(String(16), nullable=False)
+    flags = Column(Text)  # JSON
+    evidence = Column(Text)  # JSON
+    driver = Column(String(16))  # news / capital / earnings / unknown
+    reason = Column(Text)
+
+    __table_args__ = (
+        UniqueConstraint('run_id', 'board_id', name='uix_board_signal_run_board'),
+        Index('ix_board_signal_date_board', 'trade_date', 'board_id'),
+    )
+
+
 class _DatabaseManagerMeta(type):
     """Serialize DatabaseManager construction across __new__ and __init__."""
 
@@ -1408,6 +1681,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
             self._ensure_chat_session_schema()
+            self._ensure_conversation_context_snapshot_column()
 
             self._initialized = True
             logger.info(f"数据库初始化完成: {db_url}")
@@ -1544,6 +1818,30 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             CHAT_STATE_SCHEMA_VERSION,
             "Additive Chat identity, acceptance version and active-stock state",
         )
+
+    def _ensure_conversation_context_snapshot_column(self) -> None:
+        """Additive migration: nullable ``conversation_messages.context_snapshot``."""
+        table = ConversationMessage.__tablename__
+        column = "context_snapshot"
+        existing = {col["name"] for col in inspect(self._engine).get_columns(table)}
+        if column not in existing:
+            max_retries = self._sqlite_write_retry_max if self._is_sqlite_engine else 0
+            for attempt in range(max_retries + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_engine and self._is_sqlite_duplicate_column_error(exc, column):
+                        break
+                    if (
+                        self._is_sqlite_engine
+                        and self._is_sqlite_locked_error(exc)
+                        and attempt < max_retries
+                    ):
+                        time.sleep(self._sqlite_write_retry_base_delay * (2 ** attempt))
+                        continue
+                    raise
 
     def _ensure_decision_signal_profile_schema(self) -> None:
         """Add and backfill nullable decision_profile for existing SQLite DBs."""
@@ -3870,6 +4168,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         selected_skill_ids: Optional[List[str]] = None,
         active_stock_context: Optional[Dict[str, Any]] = None,
         confirm_stock: bool = False,
+        context_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Accept message + explicit Skill + stock exactly once with snapshot CAS.
 
@@ -3890,7 +4189,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 raise ChatSessionStateConflict()
 
             now = datetime.now()
-            message = ConversationMessage(session_id=session_id, role="user", content=content, created_at=now)
+            message = ConversationMessage(
+                session_id=session_id, role="user", content=content, created_at=now,
+                context_snapshot=_dump_context_snapshot(context_snapshot),
+            )
             session.add(message)
             session.flush()
             if selected_skill_ids is not None:
@@ -3969,6 +4271,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     def save_conversation_message(
         self, session_id: str, role: str, content: str,
         *, accepted_turn: Optional[Dict[str, Any]] = None,
+        context_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
         """
         保存 Agent 对话消息
@@ -3982,7 +4285,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             msg = ConversationMessage(
                 session_id=session_id,
                 role=role,
-                content=content
+                content=content,
+                context_snapshot=_dump_context_snapshot(context_snapshot),
             )
             session.add(msg)
             session.flush()
@@ -4004,8 +4308,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     @staticmethod
     def _insert_conversation_user_turn(
         session: Session, session_id: str, content: str, selected_skill_ids: Optional[List[str]],
+        context_snapshot: Optional[Dict[str, Any]] = None,
     ) -> ConversationMessage:
-        msg = ConversationMessage(session_id=session_id, role="user", content=content)
+        msg = ConversationMessage(
+            session_id=session_id, role="user", content=content,
+            context_snapshot=_dump_context_snapshot(context_snapshot),
+        )
         session.add(msg)
         session.flush()
         if selected_skill_ids is not None:
@@ -4022,6 +4330,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     def commit_legacy_chat_user_turn(
         self, snapshot: Dict[str, Any], content: str, selected_skill_ids: Optional[List[str]] = None,
         *, state_disposition: str = "legacy-unaware",
+        context_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Bind a compatibility request without confirming stock or advancing version.
 
@@ -4044,7 +4353,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 != snapshot["latest_user_anchor"]
             ):
                 raise ChatSessionStateConflict()
-            message = self._insert_conversation_user_turn(session, session_id, content, selected_skill_ids)
+            message = self._insert_conversation_user_turn(
+                session, session_id, content, selected_skill_ids, context_snapshot,
+            )
             if state_disposition == "preserve":
                 state.last_accepted_user_message_id = int(message.id)
             return {"session_id": session_id, "session_generation": state.session_generation,
@@ -4447,13 +4758,30 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 for msg in messages
             ]
 
+    def get_conversation_turn_document_ids(self, session_id: str) -> List[str]:
+        """Long-term recall document ids (``session_id:user_message_id``) of a session."""
+        with self.session_scope() as session:
+            ids = session.execute(
+                select(ConversationMessage.id).where(
+                    ConversationMessage.session_id == session_id,
+                    ConversationMessage.role == "user",
+                )
+            ).scalars().all()
+        return [f"{session_id}:{int(message_id)}" for message_id in ids]
+
     def delete_conversation_session(self, session_id: str) -> int:
         """
-        删除指定会话的所有消息
+        删除指定会话的所有消息；若启用了长期回忆插件，同步删除对应回忆文档。
 
         Returns:
             删除的消息数
         """
+        try:
+            document_ids = self.get_conversation_turn_document_ids(session_id)
+        except Exception as exc:  # recall bookkeeping must never block deletion
+            logger.warning("Failed to collect recall document ids for %s: %s", session_id, exc)
+            document_ids = []
+
         def write(session: Session) -> int:
             session.execute(
                 delete(ConversationSessionState).where(
@@ -4477,7 +4805,15 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
             return result.rowcount
 
-        return self._run_write_transaction("delete_conversation_session", write)
+        deleted = self._run_write_transaction("delete_conversation_session", write)
+        if document_ids:
+            try:
+                from src.agent.recall import forget_documents
+
+                forget_documents(document_ids)
+            except Exception as exc:  # weak dependency: never fail the delete
+                logger.warning("Recall forget for session %s was not queued: %s", session_id, exc)
+        return deleted
 
     # ------------------------------------------------------------------
     # LLM usage tracking

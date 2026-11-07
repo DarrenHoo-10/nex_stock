@@ -165,7 +165,7 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
     @patch.dict(sys.modules, {"tushare": MagicMock()})
     def test_legacy_realtime_quote_keeps_sz_hint_as_stock_symbol(self) -> None:
         fetcher = self._make_fetcher()
-        fetcher._api.quotation.side_effect = Exception("quota")
+        fetcher._api.rt_k.side_effect = Exception("quota")
 
         tushare_module = sys.modules["tushare"]
         tushare_module.get_realtime_quotes.return_value = pd.DataFrame(

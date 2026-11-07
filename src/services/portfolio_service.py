@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -38,6 +40,21 @@ VALID_CASH_DIRECTIONS = {"in", "out"}
 VALID_CORPORATE_ACTIONS = {"cash_dividend", "split_adjustment"}
 PORTFOLIO_FX_REFRESH_DISABLED_REASON = "portfolio_fx_update_disabled"
 PORTFOLIO_REALTIME_QUOTE_MAX_WORKERS = 4
+
+# Holdings snapshot (manual entry) markers. They are stored in ``portfolio_trades.note``
+# as ``<tag>[|日期未确认][|horizon=<short|swing>]`` so no new table or column is needed.
+SNAPSHOT_TAG_OPENING = "期初持仓"
+SNAPSHOT_TAG_ADJUST = "持仓调整"
+SNAPSHOT_TAG_DATE_UNCONFIRMED = "日期未确认"
+SNAPSHOT_NOTE_HORIZON_PREFIX = "horizon="
+SNAPSHOT_CASH_NOTE = "持仓快照现金差额"
+SNAPSHOT_HORIZONS = {"short", "swing"}
+# Costs typed from a broker app are usually rounded to 3 decimals; differences below
+# half a thousandth of a yuan are treated as "unchanged" to keep re-entry idempotent.
+SNAPSHOT_COST_TOLERANCE = 0.0005
+SNAPSHOT_CASH_TOLERANCE = 0.005
+_SNAPSHOT_CODE_RE = re.compile(r"^\d{6}$")
+_POSITION_CORE_CODE_RE = re.compile(r"^(?:SH|SZ|BJ)?(\d{6})$")
 
 
 def _portfolio_limitations_for_market(market: str) -> List[str]:
@@ -325,6 +342,513 @@ class PortfolioService:
                 note=(note or "").strip() or None,
             )
             return {"id": int(row.id)}
+
+    # ------------------------------------------------------------------
+    # Manual holdings snapshot
+    # ------------------------------------------------------------------
+    def set_holdings_snapshot(
+        self,
+        cash: float,
+        holdings: Iterable[Dict[str, Any]],
+        *,
+        account_id: Optional[int] = None,
+        entry_date: Optional[date] = None,
+        include_realtime: bool = False,
+    ) -> Dict[str, Any]:
+        """Write a manual holdings snapshot into the existing ledger.
+
+        ``cash`` is the target available cash; ``holdings`` items are
+        ``{code, shares, cost, buy_date?, horizon?}``. Positions, cost and risk keep
+        coming from the normal replay: the snapshot is translated into marked buy/sell
+        trades (note tags ``期初持仓`` / ``持仓调整``) plus one cash ledger entry, all in
+        one transaction. Entering the same snapshot again writes nothing.
+
+        Per code, against the replayed (FIFO) position:
+        - unchanged shares and cost: nothing;
+        - more shares: one buy of the difference priced so the total cost matches;
+        - fewer shares with a matching remaining cost: one cost-neutral sell;
+        - cost correction or any other mismatch: a cost-neutral sell of the whole
+          remaining quantity, then a fresh buy at the entered cost;
+        - holding missing from the snapshot: a cost-neutral sell of the remaining quantity.
+        Cost-neutral sells are priced at the consumed cost basis, so realized PnL is
+        not distorted by snapshot corrections.
+        """
+        entry = entry_date or date.today()
+        cash_target = self._validate_snapshot_cash(cash)
+        items = self._validate_snapshot_holdings(holdings, entry)
+        resolved_account_id = self._resolve_snapshot_account_id(account_id)
+
+        written_trades: List[Dict[str, Any]] = []
+        cash_entry: Optional[Dict[str, Any]] = None
+        warnings: List[str] = []
+        with self.repo.portfolio_write_session() as session:
+            account = self._require_active_account_in_session(session=session, account_id=resolved_account_id)
+            all_trades = self.repo.list_trades_in_session(session=session, account_id=account.id, as_of=date.max)
+            all_cash = self.repo.list_cash_ledger_in_session(session=session, account_id=account.id, as_of=date.max)
+            latest = max(
+                [entry]
+                + [row.trade_date for row in all_trades]
+                + [row.event_date for row in all_cash]
+            )
+            # Planning reads committed state only; nothing is written before the plan is complete
+            # and the write lock is already held, so no other writer can interleave.
+            state = self._replay_account(
+                account=account,
+                as_of_date=latest,
+                cost_method="fifo",
+                include_realtime=False,
+            )
+            ops = self._plan_snapshot_trades(
+                account=account,
+                items=items,
+                entry=entry,
+                state=state,
+                last_event_dates=self._last_trade_dates(all_trades),
+                warnings=warnings,
+            )
+
+            trade_cash_delta = 0.0
+            for op in ops:
+                if op["side"] == "sell":
+                    self._validate_sell_quantity(
+                        account_id=account.id,
+                        symbol=op["symbol"],
+                        market=account.market,
+                        currency=op["currency"],
+                        trade_date=op["trade_date"],
+                        quantity=op["quantity"],
+                        session=session,
+                    )
+                row = self.repo.add_trade_in_session(
+                    session=session,
+                    account_id=account.id,
+                    trade_uid=None,
+                    symbol=op["symbol"],
+                    market=account.market,
+                    currency=op["currency"],
+                    trade_date=op["trade_date"],
+                    side=op["side"],
+                    quantity=op["quantity"],
+                    price=op["price"],
+                    fee=0.0,
+                    tax=0.0,
+                    note=op["note"],
+                    dedup_hash=None,
+                )
+                sign = 1.0 if op["side"] == "sell" else -1.0
+                trade_cash_delta += sign * op["quantity"] * op["price"]
+                written_trades.append(
+                    {
+                        "id": int(row.id),
+                        "symbol": op["symbol"],
+                        "side": op["side"],
+                        "quantity": op["quantity"],
+                        "price": op["price"],
+                        "trade_date": op["trade_date"].isoformat(),
+                        "note": op["note"],
+                    }
+                )
+
+            cash_diff = cash_target - (float(state["total_cash"]) + trade_cash_delta)
+            if abs(cash_diff) > SNAPSHOT_CASH_TOLERANCE:
+                direction = "in" if cash_diff > 0 else "out"
+                cash_row = self.repo.add_cash_ledger_in_session(
+                    session=session,
+                    account_id=account.id,
+                    event_date=entry,
+                    direction=direction,
+                    amount=abs(cash_diff),
+                    currency=account.base_currency,
+                    note=SNAPSHOT_CASH_NOTE,
+                )
+                cash_entry = {
+                    "id": int(cash_row.id),
+                    "direction": direction,
+                    "amount": abs(cash_diff),
+                    "event_date": entry.isoformat(),
+                }
+            account_id_final = int(account.id)
+            as_of_final = max([latest] + [op["trade_date"] for op in ops])
+
+        return self._build_snapshot_result(
+            account_id=account_id_final,
+            as_of_date=as_of_final,
+            items=items,
+            written_trades=written_trades,
+            cash_entry=cash_entry,
+            warnings=warnings,
+            include_realtime=include_realtime,
+        )
+
+    @staticmethod
+    def _validate_snapshot_cash(cash: Any) -> float:
+        if isinstance(cash, bool) or not isinstance(cash, (int, float)):
+            raise ValueError("cash must be a number")
+        value = float(cash)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("cash must be >= 0")
+        return value
+
+    @staticmethod
+    def _validate_snapshot_holdings(holdings: Iterable[Dict[str, Any]], entry: date) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for raw in holdings or []:
+            code = str(raw.get("code") or "").strip().upper()
+            if not _SNAPSHOT_CODE_RE.match(code):
+                raise ValueError(f"code must be a 6-digit A-share code: {raw.get('code')!r}")
+            if code in seen:
+                raise ValueError(f"duplicate code in holdings: {code}")
+            seen.add(code)
+
+            shares = raw.get("shares")
+            if isinstance(shares, float) and shares.is_integer():
+                shares = int(shares)
+            if isinstance(shares, bool) or not isinstance(shares, int) or shares <= 0:
+                raise ValueError(f"shares must be a positive integer for {code}")
+            # Lot sizes (100 shares) are intentionally not enforced: users may hold odd lots.
+
+            cost = raw.get("cost")
+            if isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost <= 0:
+                raise ValueError(f"cost must be > 0 for {code}")
+
+            buy_date_raw = raw.get("buy_date")
+            buy_date: Optional[date] = None
+            if isinstance(buy_date_raw, date):
+                buy_date = buy_date_raw
+            elif buy_date_raw not in (None, ""):
+                try:
+                    buy_date = date.fromisoformat(str(buy_date_raw).strip())
+                except ValueError as exc:
+                    raise ValueError(f"buy_date must be YYYY-MM-DD for {code}") from exc
+            if buy_date is not None and buy_date > entry:
+                raise ValueError(f"buy_date must not be in the future for {code}")
+
+            horizon = raw.get("horizon")
+            if horizon in (None, ""):
+                horizon = None
+            elif horizon not in SNAPSHOT_HORIZONS:
+                raise ValueError(f"horizon must be one of {sorted(SNAPSHOT_HORIZONS)} for {code}")
+
+            items.append(
+                {"code": code, "shares": shares, "cost": float(cost), "buy_date": buy_date, "horizon": horizon}
+            )
+        return items
+
+    def _resolve_snapshot_account_id(self, account_id: Optional[int]) -> int:
+        """Use the given account, else the first active CN/CNY account, else create one."""
+        if account_id is not None:
+            account = self._require_active_account(account_id)
+            if account.market != "cn" or account.base_currency != "CNY":
+                raise ValueError("Holdings snapshot requires a cn/CNY account")
+            return int(account.id)
+        for row in self.repo.list_accounts(include_inactive=False):
+            if row.market == "cn" and row.base_currency == "CNY":
+                return int(row.id)
+        created = self.create_account(name="默认账户", broker=None, market="cn", base_currency="CNY")
+        return int(created["id"])
+
+    def _last_trade_dates(self, trades: Iterable[Any]) -> Dict[str, date]:
+        last: Dict[str, date] = {}
+        for row in trades:
+            key = self._normalize_symbol_for_position(row.symbol)
+            if key not in last or row.trade_date > last[key]:
+                last[key] = row.trade_date
+        return last
+
+    @staticmethod
+    def _snapshot_note(tag: str, *, date_unconfirmed: bool, horizon: Optional[str]) -> str:
+        parts = [tag]
+        if date_unconfirmed:
+            parts.append(SNAPSHOT_TAG_DATE_UNCONFIRMED)
+        if horizon:
+            parts.append(f"{SNAPSHOT_NOTE_HORIZON_PREFIX}{horizon}")
+        return "|".join(parts)
+
+    @staticmethod
+    def _parse_snapshot_note(note: Optional[str]) -> Optional[Dict[str, Any]]:
+        parts = (note or "").split("|")
+        if parts[0] not in (SNAPSHOT_TAG_OPENING, SNAPSHOT_TAG_ADJUST):
+            return None
+        horizon = None
+        for part in parts[1:]:
+            if part.startswith(SNAPSHOT_NOTE_HORIZON_PREFIX):
+                horizon = part[len(SNAPSHOT_NOTE_HORIZON_PREFIX):] or None
+        return {
+            "tag": parts[0],
+            "date_unconfirmed": SNAPSHOT_TAG_DATE_UNCONFIRMED in parts[1:],
+            "horizon": horizon,
+        }
+
+    def _plan_snapshot_trades(
+        self,
+        *,
+        account: Any,
+        items: List[Dict[str, Any]],
+        entry: date,
+        state: Dict[str, Any],
+        last_event_dates: Dict[str, date],
+        warnings: List[str],
+    ) -> List[Dict[str, Any]]:
+        existing: Dict[str, Dict[str, Any]] = {}
+        for pos in state["positions_cache"]:
+            if pos["market"] != account.market or pos["currency"] != account.base_currency:
+                continue
+            match = _POSITION_CORE_CODE_RE.match(pos["symbol"])
+            if not match:
+                continue
+            core = match.group(1)
+            if core in existing:
+                raise PortfolioConflictError(
+                    f"Ambiguous existing positions for {core}: {existing[core]['symbol']}, {pos['symbol']}"
+                )
+            existing[core] = pos
+
+        ops: List[Dict[str, Any]] = []
+
+        def add_op(
+            *,
+            symbol: str,
+            side: str,
+            quantity: float,
+            price: float,
+            trade_date: date,
+            tag: str,
+            date_unconfirmed: bool,
+            horizon: Optional[str],
+        ) -> None:
+            ops.append(
+                {
+                    "symbol": symbol,
+                    "currency": account.base_currency,
+                    "side": side,
+                    "quantity": float(quantity),
+                    "price": float(price),
+                    "trade_date": trade_date,
+                    "note": self._snapshot_note(tag, date_unconfirmed=date_unconfirmed, horizon=horizon),
+                }
+            )
+
+        for item in items:
+            code, shares, cost = item["code"], item["shares"], item["cost"]
+            buy_date, horizon = item["buy_date"], item["horizon"]
+            pos = existing.get(code)
+            if pos is None:
+                add_op(
+                    symbol=self._normalize_symbol_for_storage(code),
+                    side="buy",
+                    quantity=shares,
+                    price=cost,
+                    trade_date=buy_date or entry,
+                    tag=SNAPSHOT_TAG_OPENING,
+                    date_unconfirmed=buy_date is None,
+                    horizon=horizon,
+                )
+                continue
+
+            symbol = pos["symbol"]
+            held = float(pos["quantity"])
+            total_cost = float(pos["total_cost"])
+            avg_cost = total_cost / held
+            cost_matches = abs(avg_cost - cost) <= SNAPSHOT_COST_TOLERANCE
+            diff = shares - held
+            if abs(diff) <= EPS and cost_matches:
+                continue
+
+            if diff > EPS:
+                derived_price = (shares * cost - total_cost) / diff
+                if derived_price > EPS:
+                    add_op(
+                        symbol=symbol,
+                        side="buy",
+                        quantity=diff,
+                        price=derived_price,
+                        trade_date=buy_date or entry,
+                        tag=SNAPSHOT_TAG_ADJUST,
+                        date_unconfirmed=buy_date is None,
+                        horizon=horizon,
+                    )
+                    continue
+            elif diff < -EPS and cost_matches:
+                consumed_qty, consumed_cost, remaining_cost = self._simulate_fifo_sell(
+                    state["lots_cache"], pos, -diff
+                )
+                if abs(remaining_cost / shares - cost) <= SNAPSHOT_COST_TOLERANCE:
+                    add_op(
+                        symbol=symbol,
+                        side="sell",
+                        quantity=consumed_qty,
+                        price=consumed_cost / consumed_qty,
+                        trade_date=max(entry, last_event_dates.get(symbol, entry)),
+                        tag=SNAPSHOT_TAG_ADJUST,
+                        date_unconfirmed=False,
+                        horizon=horizon,
+                    )
+                    continue
+
+            # Close and reopen: cost-neutral sell of everything, then a fresh buy at the entered cost.
+            wanted_date = buy_date or entry
+            trade_date = max(wanted_date, last_event_dates.get(symbol, wanted_date))
+            moved = buy_date is not None and trade_date > buy_date
+            if moved:
+                warnings.append(
+                    f"{code}: buy_date {buy_date.isoformat()} moved to {trade_date.isoformat()} "
+                    "because the ledger already has later events for this stock"
+                )
+            add_op(
+                symbol=symbol,
+                side="sell",
+                quantity=held,
+                price=avg_cost,
+                trade_date=trade_date,
+                tag=SNAPSHOT_TAG_ADJUST,
+                date_unconfirmed=False,
+                horizon=horizon,
+            )
+            add_op(
+                symbol=symbol,
+                side="buy",
+                quantity=shares,
+                price=cost,
+                trade_date=trade_date,
+                tag=SNAPSHOT_TAG_ADJUST,
+                date_unconfirmed=buy_date is None or moved,
+                horizon=horizon,
+            )
+
+        wanted_codes = {item["code"] for item in items}
+        for core, pos in existing.items():
+            if core in wanted_codes:
+                continue
+            symbol = pos["symbol"]
+            held = float(pos["quantity"])
+            add_op(
+                symbol=symbol,
+                side="sell",
+                quantity=held,
+                price=float(pos["total_cost"]) / held,
+                trade_date=max(entry, last_event_dates.get(symbol, entry)),
+                tag=SNAPSHOT_TAG_ADJUST,
+                date_unconfirmed=False,
+                horizon=None,
+            )
+        return ops
+
+    @staticmethod
+    def _simulate_fifo_sell(
+        lots: List[Dict[str, Any]], pos: Dict[str, Any], quantity: float
+    ) -> Tuple[float, float, float]:
+        """Return (consumed_qty, consumed_cost, remaining_cost) if ``quantity`` were sold FIFO."""
+        left = quantity
+        consumed_cost = 0.0
+        remaining_cost = 0.0
+        for lot in lots:
+            if (lot["symbol"], lot["market"], lot["currency"]) != (pos["symbol"], pos["market"], pos["currency"]):
+                continue
+            lot_qty = float(lot["remaining_quantity"])
+            take = min(lot_qty, left)
+            consumed_cost += take * float(lot["unit_cost"])
+            remaining_cost += (lot_qty - take) * float(lot["unit_cost"])
+            left -= take
+        return quantity - left, consumed_cost, remaining_cost
+
+    def _build_snapshot_result(
+        self,
+        *,
+        account_id: int,
+        as_of_date: date,
+        items: List[Dict[str, Any]],
+        written_trades: List[Dict[str, Any]],
+        cash_entry: Optional[Dict[str, Any]],
+        warnings: List[str],
+        include_realtime: bool,
+    ) -> Dict[str, Any]:
+        account = self._require_active_account(account_id)
+        state = self._replay_account(
+            account=account,
+            as_of_date=as_of_date,
+            cost_method="fifo",
+            include_realtime=include_realtime,
+        )
+        trade_rows = {int(r.id): r for r in self.repo.list_trades(account_id, as_of=date.max)}
+        positions: Dict[str, Dict[str, Any]] = {}
+        for pos in state["positions_cache"]:
+            match = _POSITION_CORE_CODE_RE.match(pos["symbol"])
+            if match and pos["market"] == account.market:
+                positions[match.group(1)] = pos
+
+        market_value = 0.0
+        holdings: List[Dict[str, Any]] = []
+        for item in items:
+            pos = positions.get(item["code"])
+            if pos is None:
+                continue
+            pos_key = (pos["symbol"], pos["market"], pos["currency"])
+            lots = [
+                lot for lot in state["lots_cache"]
+                if (lot["symbol"], lot["market"], lot["currency"]) == pos_key
+            ]
+            latest_lot = (
+                max(lots, key=lambda lot: (lot["open_date"], lot["source_trade_id"] or 0)) if lots else None
+            )
+            lot_trade = trade_rows.get(latest_lot["source_trade_id"]) if latest_lot else None
+            lot_note = self._parse_snapshot_note(lot_trade.note) if lot_trade is not None else None
+            horizon = None
+            for row in sorted(trade_rows.values(), key=lambda r: r.id, reverse=True):
+                if self._normalize_symbol_for_position(row.symbol) != pos["symbol"]:
+                    continue
+                parsed = self._parse_snapshot_note(row.note)
+                if parsed is not None:
+                    horizon = parsed["horizon"]
+                    break
+            price_available = bool(pos["price_available"])
+            holding_value = float(pos["market_value_base"]) if price_available else float(pos["total_cost"])
+            market_value += holding_value
+            holdings.append(
+                {
+                    "code": item["code"],
+                    "name": self._resolve_snapshot_stock_name(item["code"]),
+                    "shares": int(round(float(pos["quantity"]))),
+                    "cost": round(float(pos["avg_cost"]), 6),
+                    "buy_date": latest_lot["open_date"].isoformat() if latest_lot else None,
+                    "buy_date_confirmed": not (lot_note and lot_note["date_unconfirmed"]),
+                    "horizon": horizon,
+                    "last_price": float(pos["last_price"]) if price_available else None,
+                    "price_available": price_available,
+                    "market_value": round(holding_value, 6),
+                }
+            )
+
+        cash = float(state["total_cash"])
+        return {
+            "account_id": account_id,
+            "as_of": as_of_date.isoformat(),
+            "changed": bool(written_trades or cash_entry),
+            "cash": round(cash, 6),
+            "market_value": round(market_value, 6),
+            "total_capital": round(cash + market_value, 6),
+            "holdings": holdings,
+            "trades": written_trades,
+            "cash_entry": cash_entry,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _resolve_snapshot_stock_name(code: str) -> str:
+        """Offline name lookup (static map, then bundled stock index); falls back to the code."""
+        from src.data.stock_mapping import STOCK_NAME_MAP
+
+        name = STOCK_NAME_MAP.get(code)
+        if name:
+            return name
+        try:
+            from src.data.stock_index_loader import get_index_stock_name
+
+            name = get_index_stock_name(code)
+        except Exception as exc:  # pragma: no cover - index file is optional
+            logger.debug("stock name index lookup failed for %s: %s", code, exc)
+            name = None
+        return name or code
 
     def delete_trade_event(self, trade_id: int) -> bool:
         with self.repo.portfolio_write_session() as session:

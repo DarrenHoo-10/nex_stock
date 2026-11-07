@@ -330,6 +330,9 @@ class SystemConfigService:
         reset_tool_registry()
         reset_fetcher_manager()
         reset_search_service()
+        from src.services.intraday_snapshot_service import reset_intraday_snapshot_service
+
+        reset_intraday_snapshot_service()
 
     @classmethod
     def _normalize_display_value(cls, key: str, value: str) -> str:

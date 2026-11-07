@@ -983,6 +983,9 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    biying_licence: Optional[str] = None
+    biying_timeout_seconds: float = 8.0
+    intraday_snapshot_ttl_seconds: int = 60
     tickflow_api_key: Optional[str] = None
     tickflow_kline_adjust: str = "none"
     tickflow_priority: int = 2
@@ -1143,6 +1146,15 @@ class Config:
     agent_context_compression_trigger_tokens: int = 12000
     agent_context_protected_turns: int = 4
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
+    # === 助手记忆（笔记 + 可插拔长期回忆）===
+    assistant_recall_provider: str = "none"  # none | hindsight
+    hindsight_base_url: str = ""
+    hindsight_api_key: Optional[str] = None
+    hindsight_bank_id: str = ""
+    assistant_recall_timeout_s: float = 2.0  # 提问时 recall 的整体超时，超时即跳过
+    assistant_recall_mask_amounts: bool = True  # 发送给回忆服务前对金额/股数/成本打码
+    assistant_note_daily_proposal_limit: int = 2  # 助手每天最多主动提议修改笔记的次数
+    assistant_note_inject_max_chars: int = 3000  # 笔记注入提示词的总长度上限
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
 
@@ -1281,6 +1293,12 @@ class Config:
     sqlite_busy_timeout_ms: int = 5000
     sqlite_write_retry_max: int = 3
     sqlite_write_retry_base_delay: float = 0.1
+
+    # === 板块与全市场快照（docs/design/core-backend-design.md 第 2 节）===
+    market_snapshot_retention_days: int = 250  # market_stock_daily 保留的交易日数
+    market_snapshot_backfill_days: int = 60  # 冷启动回填的交易日数
+    market_benchmark_code: str = "000985.CSI"  # market_daily 的基准指数（Tushare 代码）
+    market_snapshot_requests_per_minute: int = 60  # 快照取数的 Tushare 每分钟请求上限
 
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
@@ -1909,6 +1927,9 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            biying_licence=os.getenv('BIYING_LICENCE'),
+            biying_timeout_seconds=parse_env_float(os.getenv('BIYING_TIMEOUT_SECONDS'), 8.0, field_name='BIYING_TIMEOUT_SECONDS', minimum=1.0),
+            intraday_snapshot_ttl_seconds=parse_env_int(os.getenv('INTRADAY_SNAPSHOT_TTL_SECONDS'), 60, field_name='INTRADAY_SNAPSHOT_TTL_SECONDS', minimum=0),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
             tickflow_kline_adjust=normalize_tickflow_kline_adjust(os.getenv('TICKFLOW_KLINE_ADJUST')),
             tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
@@ -2134,6 +2155,34 @@ class Config:
             agent_context_compression_trigger_tokens=agent_context_compression_trigger_tokens,
             agent_context_protected_turns=agent_context_protected_turns,
             agent_event_monitor_enabled=os.getenv('AGENT_EVENT_MONITOR_ENABLED', 'false').lower() == 'true',
+            assistant_recall_provider=(os.getenv('ASSISTANT_RECALL_PROVIDER') or 'none').strip().lower() or 'none',
+            hindsight_base_url=(os.getenv('HINDSIGHT_BASE_URL') or '').strip(),
+            hindsight_api_key=(os.getenv('HINDSIGHT_API_KEY') or '').strip() or None,
+            hindsight_bank_id=(os.getenv('HINDSIGHT_BANK_ID') or '').strip(),
+            assistant_recall_timeout_s=parse_env_float(
+                os.getenv('ASSISTANT_RECALL_TIMEOUT_S'),
+                2.0,
+                field_name='ASSISTANT_RECALL_TIMEOUT_S',
+                minimum=0.2,
+                maximum=30.0,
+            ),
+            assistant_recall_mask_amounts=parse_env_bool(
+                os.getenv('ASSISTANT_RECALL_MASK_AMOUNTS'), default=True,
+            ),
+            assistant_note_daily_proposal_limit=parse_env_int(
+                os.getenv('ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT'),
+                2,
+                field_name='ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT',
+                minimum=0,
+                maximum=50,
+            ),
+            assistant_note_inject_max_chars=parse_env_int(
+                os.getenv('ASSISTANT_NOTE_INJECT_MAX_CHARS'),
+                3000,
+                field_name='ASSISTANT_NOTE_INJECT_MAX_CHARS',
+                minimum=200,
+                maximum=20000,
+            ),
             agent_event_monitor_interval_minutes=parse_env_int(
                 os.getenv('AGENT_EVENT_MONITOR_INTERVAL_MINUTES'),
                 5,
@@ -2269,6 +2318,25 @@ class Config:
                 0.1,
                 field_name='SQLITE_WRITE_RETRY_BASE_DELAY',
                 minimum=0.0,
+            ),
+            market_snapshot_retention_days=parse_env_int(
+                os.getenv('MARKET_SNAPSHOT_RETENTION_DAYS'),
+                250,
+                field_name='MARKET_SNAPSHOT_RETENTION_DAYS',
+                minimum=30,
+            ),
+            market_snapshot_backfill_days=parse_env_int(
+                os.getenv('MARKET_SNAPSHOT_BACKFILL_DAYS'),
+                60,
+                field_name='MARKET_SNAPSHOT_BACKFILL_DAYS',
+                minimum=1,
+            ),
+            market_benchmark_code=(os.getenv('MARKET_BENCHMARK_CODE') or '').strip() or '000985.CSI',
+            market_snapshot_requests_per_minute=parse_env_int(
+                os.getenv('MARKET_SNAPSHOT_REQUESTS_PER_MINUTE'),
+                60,
+                field_name='MARKET_SNAPSHOT_REQUESTS_PER_MINUTE',
+                minimum=1,
             ),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
@@ -3133,14 +3201,20 @@ class Config:
             return explicit
 
         tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        if tushare_token:
-            # Token configured but no explicit priority override
-            # Prepend tushare so the paid source is tried first
+        biying_licence = os.getenv('BIYING_LICENCE', '').strip()
+        if tushare_token or biying_licence:
+            # Paid sources configured but no explicit priority override:
+            # tushare -> biying -> free sources (only the configured ones are injected)
             import logging
             logger = logging.getLogger(__name__)
-            resolved = f'tushare,{default_priority}'
+            injected = [
+                name for name, configured in (('tushare', tushare_token), ('biying', biying_licence))
+                if configured
+            ]
+            resolved = ','.join(injected + [default_priority])
             logger.info(
-                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
+                "Paid realtime source(s) detected, auto-injecting into realtime priority: %s",
+                resolved,
             )
             return resolved
 

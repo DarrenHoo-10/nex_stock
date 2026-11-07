@@ -53,6 +53,7 @@ daily_runs ──< board_signal   每次运行的判定结果
 | `status` | String(16) | `active` / `retired` |
 | `merge_group` | String(64)，可空 | 成分重合度 ≥ 0.6 的概念归为一组，组内只展示一个 |
 | `merge_computed_on` | Date，可空 | 合并分组的计算日期，随成分刷新一起更新 |
+| `membership_checked_date` | Date，可空 | 最近一次核对成分的交易日；用于写准成分退出日期（`valid_to`），并让重复运行不再请求 |
 | `created_at` / `updated_at` | DateTime | |
 
 约束：`UNIQUE(source, board_type, code)`。
@@ -238,7 +239,7 @@ daily_runs ──< board_signal   每次运行的判定结果
 ### 3.3 权限不足或请求失败时
 
 - `rt_*` 接口按接口单独开通，不包含在积分里。没开通或请求失败时，先用必盈 API（见下），再退回现有的实时行情链路（腾讯、新浪、efinance、东方财富），回答里写明数据来源。
-- **必盈 API 作为第二实时源，按包年版证书设计**（[文档](https://www.biyingapi.com/doc_hs)）。证书放在请求路径里，实现时新增 `BIYING_LICENCE` 配置，只写在 `.env`，日志里打码。包年版每分钟 3,000 次、每日和总次数不限，不依赖深度行情包：
+- **必盈 API 作为第二实时源，按包年版证书设计**（[文档](https://www.biyingapi.com/doc_hs)）。证书放在请求路径里，实现时新增 `BIYING_LICENCE` 配置：和 `TUSHARE_TOKEN` 一样登记到 `src/core/config_registry.py`（`category=data_source`、`ui_control=password`、`is_sensitive=True`），可以写在 `.env` 或环境变量里，也可以在 Web 设置页填写（经 `PUT /api/v1/system/config` 写回 `.env`，页面只显示是否已配置）；日志和请求记录里把路径中的证书打码。包年版每分钟 3,000 次、每日和总次数不限，不依赖深度行情包：
 
   | 用途 | 接口 | 更新 | 用法 |
   | --- | --- | --- | --- |
@@ -330,6 +331,7 @@ daily_runs ──< board_signal   每次运行的判定结果
 
 - 约束：`UNIQUE(scope, subject)`。
 - 历史版本存在 `assistant_note_revision`（`note_id`、`version`、`body_md`、`source`、`origin_session_id`、`origin_message_id`、`created_at`），可以查看和回退。
+- 待确认的修改存在 `assistant_note_proposal`（基于的版本、修改前后正文、状态），确认时如果页面已被改过则返回冲突，不覆盖。
 - 存在数据库里，不写磁盘文件：Web 编辑、备份、Docker 和桌面端走同一条路径；需要时可以导出成 `.md`。
 
 写入流程：
@@ -359,7 +361,7 @@ class RecallProvider(Protocol):
 
 - **默认 `none`**：空实现，什么也不做。
 - **`hindsight`**：在 `src/agent/recall/hindsight_provider.py`，只在选中时才导入，Hindsight 客户端不进 `requirements.txt` 的必装依赖，作为可选依赖单独说明。
-- 选择方式：`ASSISTANT_RECALL_PROVIDER=none|hindsight`；Hindsight 相关的 `HINDSIGHT_BASE_URL`、`HINDSIGHT_API_KEY`、`HINDSIGHT_BANK_ID`、`ASSISTANT_RECALL_TIMEOUT_S`。不写死服务器地址；新增配置时同步更新 `.env.example` 和文档。
+- 选择方式：`ASSISTANT_RECALL_PROVIDER=none|hindsight`；Hindsight 相关的 `HINDSIGHT_BASE_URL`、`HINDSIGHT_API_KEY`、`HINDSIGHT_BANK_ID`、`ASSISTANT_RECALL_TIMEOUT_S`。不写死服务器地址；这些配置同样登记到 `config_registry.py`，`HINDSIGHT_API_KEY` 标为敏感项，可以在 Web 设置页填写；新增配置时同步更新 `.env.example` 和文档。
 
 调用方式：
 

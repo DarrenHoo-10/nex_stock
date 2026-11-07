@@ -16,6 +16,7 @@
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from threading import RLock
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Union
@@ -91,6 +92,56 @@ def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
     return default
 
 
+_CN_TZ = timezone(timedelta(hours=8))
+_CN_TIMESTAMP_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y%m%d %H:%M:%S",
+    "%Y%m%d%H%M%S",
+)
+
+
+def format_cn_provider_timestamp(value: Any, *, today: Optional[datetime] = None) -> Optional[str]:
+    """Convert an A-share provider timestamp (Asia/Shanghai wall clock) to ISO 8601.
+
+    ``DataFetcherManager._enrich_realtime_quote`` treats naive timestamps as UTC,
+    so A-share providers that return naive China-local times must attach the
+    ``+08:00`` offset here, otherwise ``stale_seconds`` is off by eight hours.
+    A bare ``HH:MM:SS`` is combined with ``today`` (default: current China date).
+    Returns ``None`` when the value cannot be parsed.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    parsed: Optional[datetime] = None
+    if ":" in text and len(text) <= 8 and "-" not in text and "/" not in text:
+        base = today or datetime.now(_CN_TZ)
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                clock = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            parsed = base.replace(
+                hour=clock.hour, minute=clock.minute, second=clock.second, microsecond=0
+            )
+            break
+    else:
+        for fmt in _CN_TIMESTAMP_FORMATS:
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_CN_TZ)
+    return parsed.astimezone(_CN_TZ).isoformat()
+
+
 class RealtimeSource(Enum):
     """实时行情数据源"""
     EFINANCE = "efinance"           # 东方财富（efinance库）
@@ -98,6 +149,7 @@ class RealtimeSource(Enum):
     AKSHARE_SINA = "akshare_sina"   # 新浪财经
     AKSHARE_QQ = "akshare_qq"       # 腾讯财经
     TUSHARE = "tushare"             # Tushare Pro
+    BIYING = "biying"               # 必盈 API（券商/公开实时源）
     TICKFLOW = "tickflow"           # TickFlow
     TENCENT = "tencent"             # 腾讯直连
     SINA = "sina"                   # 新浪直连

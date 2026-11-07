@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from src.agent.agent_backend import AgentBackend, AgentRunRequest
+from src.agent.assistant_memory import retain_chat_turn
 from src.agent.conversation import conversation_manager
 from src.agent.executor import AgentResult, PreparedAgentChat, prepare_agent_chat
 from src.agent.provider_trace import persist_provider_trace_turns
@@ -122,11 +123,18 @@ class AgentChatExecutor:
         baseline_len = len(prepared.history_messages) + 2
         run_id = str(uuid.uuid4())
         accepted = None
+        memory = prepared.memory
+        snapshot_kwargs = (
+            {"context_snapshot": memory.context_snapshot}
+            if memory is not None and memory.context_snapshot else {}
+        )
         if resolved_turn is not None:
-            accepted = session_service.commit_user_turn(resolved_turn)
+            accepted = session_service.commit_user_turn(resolved_turn, **snapshot_kwargs)
             user_message_id = accepted["user_message_id"]
         else:
-            accepted = conversation_manager.commit_user_turn(db, snapshot, message, selected_skill_ids)
+            accepted = conversation_manager.commit_user_turn(
+                db, snapshot, message, selected_skill_ids, **snapshot_kwargs,
+            )
             user_message_id = accepted["user_message_id"]
         return PreparedAgentChatTurn(
             message=message,
@@ -179,14 +187,26 @@ class AgentChatExecutor:
             usage=backend_result.usage,
         )
 
+        memory = turn.prepared.memory
+        snapshot_kwargs = (
+            {"context_snapshot": memory.context_snapshot}
+            if memory is not None and memory.context_snapshot else {}
+        )
         if result.success:
             if turn.accepted_snapshot is not None:
                 assistant_message_id = conversation_manager.add_message(
                     turn.session_id, "assistant", result.content, accepted_turn=turn.accepted_snapshot,
-                    db_manager=turn.db_manager,
+                    db_manager=turn.db_manager, **snapshot_kwargs,
                 )
             else:
-                assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content)
+                assistant_message_id = conversation_manager.add_message(
+                    turn.session_id, "assistant", result.content, **snapshot_kwargs,
+                )
+            if assistant_message_id is not None:
+                retain_chat_turn(
+                    session_id=turn.session_id, user_message_id=turn.user_message_id,
+                    user_text=turn.message, assistant_text=result.content, memory=memory,
+                )
             if not self.backend.runtime_owns_loop and assistant_message_id is not None:
                 persist_provider_trace_turns(
                     session_id=turn.session_id,

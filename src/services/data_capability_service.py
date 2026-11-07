@@ -123,6 +123,14 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         },
     ),
     _ProviderDefinition(
+        name="biying",
+        label="Biying",
+        fetcher_name="BiyingFetcher",
+        dataset_markets={
+            "quote.realtime": ("cn",),
+        },
+    ),
+    _ProviderDefinition(
         name="longbridge",
         label="Longbridge",
         fetcher_name="LongbridgeFetcher",
@@ -178,6 +186,7 @@ _REALTIME_SOURCE_PROVIDER = {
     "tencent": "akshare",
     "tushare": "tushare",
     "tickflow": "tickflow",
+    "biying": "biying",
     "futu": "futu",
     "longbridge": "longbridge",
     "akshare": "akshare",
@@ -201,6 +210,7 @@ _CN_REALTIME_SOURCES = {
     "tencent",
     "tushare",
     "tickflow",
+    "biying",
 }
 
 _SCREENING_SOURCES = {"tushare", "sina", "efinance", "akshare_em", "em_datacenter"}
@@ -357,6 +367,8 @@ class DataCapabilityService:
             return _truthy(getattr(self.config, "tushare_token", None))
         if name == "tickflow":
             return _truthy(getattr(self.config, "tickflow_api_key", None))
+        if name == "biying":
+            return _truthy(getattr(self.config, "biying_licence", None))
         if name == "futu":
             return _truthy(getattr(self.config, "futu_opend_host", None))
         if name == "longbridge":

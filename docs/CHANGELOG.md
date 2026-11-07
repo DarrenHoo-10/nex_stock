@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 板块与全市场日度快照入库：新增 `board_catalog`、`board_membership`（成分拉链表）、`market_stock_daily`、`market_daily`、`board_daily`、`daily_runs`、`board_signal` 表，按交易日从 Tushare 取全市场行情、每日指标、涨跌停、停牌与东方财富板块（含分页、单位换算、数据缺失标记），新增可断点续跑的回填脚本 `scripts/backfill_market_snapshot.py`；新增配置 `MARKET_SNAPSHOT_RETENTION_DAYS`、`MARKET_SNAPSHOT_BACKFILL_DAYS`、`MARKET_BENCHMARK_CODE`、`MARKET_SNAPSHOT_REQUESTS_PER_MINUTE`；板块指标计算与异动判定尚未接入。
+
+- [新功能] 盘中实时数据：Tushare 单只报价改用 `rt_k`（无权限时干净回退），新增必盈 API 作为第二实时源（`BIYING_LICENCE`，可在 Web 设置页填写，日志中打码），新增按需获取、带缓存的全市场盘中快照服务（`INTRADAY_SNAPSHOT_TTL_SECONDS`）；助手每轮对话带上市场阶段与当前时间。
+
+- [修复] 助手盘中查询日线时，不再把当天未收盘的 K 线写入 `stock_daily`。
+
+- [新功能] 助手记忆：新增 Markdown 笔记（偏好、个股、板块各一页，修改需确认，带历史版本，接口 `/api/v1/agent/notes`）并注入对话；新增可插拔长期回忆插件（`ASSISTANT_RECALL_PROVIDER`，默认 `none`，首个实现为 Hindsight，默认对金额打码，超时或不可用时照常回答）；对话消息新增 `context_snapshot` 记录市场阶段与数据时间。详见[助手记忆](assistant-memory.md)。
+
+- [新功能] 持仓快照录入：`PortfolioService.set_holdings_snapshot` 把录入的持仓写成「期初持仓」/「持仓调整」交易与现金差额，持仓和成本仍由现有账本回放计算，同一快照重复录入不重复写入。
+
 - [文档] 新增[核心流程后端设计讨论稿](design/core-backend-design.md)：手动持仓以「期初持仓」写入现有账本；板块数据统一取自 Tushare，每日保存全市场个股快照与成分拉链表、由本地数据计算板块指标，含板块维表、日度指标、判定结果的表结构与每日数据流程；助手沿用现有 Agent，盘中优先用 Tushare 实时接口、必盈 API（包年版）作为第二实时源，回答问题并检查计划条件；助手记忆分为会话、Markdown 笔记（用户确认后写入）、可插拔的长期回忆插件（首个实现为 Hindsight，不配置也可运行）三层；尚未实现。
 
 - [文档] 新增[核心流程设计稿](design/core-redesign.html)与[设计说明](design/core-redesign.md)：按核心功能说明重做板块异动、机会选股、我的股票三页和全局助手，采用 visionOS 风格的玻璃窗口、悬浮导航和弹簧动效，用价格梯子展示买入区、止损和止盈，股数按可配置仓位规则实时计算，含换股判断、手动持仓录入、按用途选择的模型设置（对应现有 LLM 配置项）、16:00 运行状态与飞书消息预览；仅使用演示数据，不修改生产前端。

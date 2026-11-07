@@ -276,10 +276,13 @@ class AgentChatSessionService:
             return StockScopeResolution(effective, StockScope(strict=True)), "invalidate"
         return StockScopeResolution(turn.effective_context, turn.stock_scope), turn.compatibility_disposition
 
-    def commit_user_turn(self, turn: ResolvedChatTurn) -> Dict[str, Any]:
+    def commit_user_turn(
+        self, turn: ResolvedChatTurn, *, context_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        extra = {"context_snapshot": context_snapshot} if context_snapshot else {}
         return self.db.commit_chat_user_turn(
             turn.snapshot, turn.message, selected_skill_ids=turn.skill_selection.selected_skill_ids_update,
-            active_stock_context=turn.active_stock_context, confirm_stock=turn.confirm_stock,
+            active_stock_context=turn.active_stock_context, confirm_stock=turn.confirm_stock, **extra,
         )
 
     def delete_session(self, session_id: str) -> int:

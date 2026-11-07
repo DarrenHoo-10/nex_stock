@@ -430,6 +430,9 @@ daily_stock_analysis/
 | 变量名 | 说明 | 默认值 | 必填 |
 |--------|------|--------|:----:|
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
+| `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。 | - | 可选 |
+| `BIYING_TIMEOUT_SECONDS` | 必盈单次请求超时（秒） | `8` | 可选 |
+| `INTRADAY_SNAPSHOT_TTL_SECONDS` | 助手盘中数据（全市场快照、个股报价、5 分钟 K 线）的内存缓存时效（秒）；仅提问时取，不做定时刷新，不写入 `stock_daily`。 | `60` | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填 `http://` 或 `https://` 开头的完整地址 | `http://api.tushare.pro` | 可选 |
 | `TICKFLOW_API_KEY` | TickFlow API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | - | 可选 |
 | `TICKFLOW_PRIORITY` | TickFlow 普通 A 股日 K 数据源优先级；数字越小越早尝试，默认 `2`；未配置 API Key 时不启用；已登记指数使用独立固定链，不读取本变量；不影响实时行情。 | `2` | 可选 |
@@ -1521,6 +1524,10 @@ python main.py --debug
 | `SQLITE_BUSY_TIMEOUT_MS` | `5000` | SQLite 等锁超时（毫秒） |
 | `SQLITE_WRITE_RETRY_MAX` | `3` | 遇到 `database is locked` / `database table is locked` 时的最大重试次数 |
 | `SQLITE_WRITE_RETRY_BASE_DELAY` | `0.1` | 写入重试基础退避时间（秒，按指数退避递增） |
+| `MARKET_SNAPSHOT_RETENTION_DAYS` | `250` | 板块/全市场快照 `market_stock_daily` 保留的交易日数（最小 30） |
+| `MARKET_SNAPSHOT_BACKFILL_DAYS` | `60` | 冷启动回填 `scripts/backfill_market_snapshot.py` 的个股与板块行情交易日数 |
+| `MARKET_BENCHMARK_CODE` | `000985.CSI` | `market_daily` 使用的基准指数（Tushare 代码） |
+| `MARKET_SNAPSHOT_REQUESTS_PER_MINUTE` | `60` | 快照取数的 Tushare 每分钟请求上限 |
 
 ---
 
