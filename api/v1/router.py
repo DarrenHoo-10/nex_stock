@@ -19,6 +19,8 @@ from api.v1.endpoints import (
     analysis,
     auth,
     backtest,
+    boards,
+    daily_plan,
     data,
     decision_signals,
     health,
@@ -110,6 +112,18 @@ router.include_router(
     screening.router,
     prefix="/screening",
     tags=["Screening"]
+)
+
+router.include_router(
+    boards.router,
+    prefix="/boards",
+    tags=["Boards"]
+)
+
+router.include_router(
+    daily_plan.router,
+    prefix="/plan",
+    tags=["DailyPlan"]
 )
 
 router.include_router(

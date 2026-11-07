@@ -1,0 +1,68 @@
+{
+  "run_id": "run-fixture-1",
+  "strategy": "volume_breakout",
+  "market": "cn",
+  "enabled": true,
+  "created_at": "2026-11-06T16:08:00+08:00",
+  "max_results": 10,
+  "scope": { "boards": [], "topics": [], "topic_match": "any" },
+  "candidate_count": 4,
+  "warnings": [],
+  "candidates": [
+    {
+      "rank": 1,
+      "code": "000988",
+      "name": "华工科技",
+      "reason": "板块首次启动，个股放量 2.6 倍",
+      "price": 48.35,
+      "change_pct": 4.21,
+      "horizons": ["short"],
+      "entry_condition": "回踩 46.8–47.2 元缩量企稳，47.0 元附近买入",
+      "invalid_condition": "收盘跌破 45.5 元",
+      "risks": ["板块只启动 1 天，持续性待确认"],
+      "note": null,
+      "raw": {}
+    },
+    {
+      "rank": 2,
+      "code": "002281",
+      "name": "光迅科技",
+      "reason": "站上 60 日线，量能 2.1 倍",
+      "price": 41.72,
+      "change_pct": 3.12,
+      "horizons": ["short", "swing"],
+      "entry_condition": "站稳 41.0 元三天后买入",
+      "invalid_condition": "收盘跌破 39.8 元",
+      "risks": ["前高 43.5 元附近有压力"],
+      "note": null,
+      "raw": {}
+    },
+    {
+      "rank": 3,
+      "code": "300394",
+      "name": "天孚通信",
+      "reason": "三周上升通道，板块启动时没有掉队",
+      "price": 118.6,
+      "change_pct": 2.45,
+      "horizons": ["swing"],
+      "entry_condition": "回踩 20 日线 114–116 元企稳",
+      "invalid_condition": "收盘跌破 20 日线且量能放大",
+      "risks": ["估值偏高"],
+      "note": null,
+      "raw": {}
+    },
+    {
+      "rank": 4,
+      "code": "603083",
+      "name": "剑桥科技",
+      "reason": "板块内首个涨停",
+      "price": 67.3,
+      "change_pct": 10.0,
+      "llm_watch_items": ["开板后能否回封", "次日量能是否放大"],
+      "llm_invalidators": ["放量跌破涨停价下方 5%"],
+      "risk_summary": "涨停开板两次，封板不稳",
+      "note": "涨停开板两次，只列出不建议追",
+      "raw": {}
+    }
+  ]
+}

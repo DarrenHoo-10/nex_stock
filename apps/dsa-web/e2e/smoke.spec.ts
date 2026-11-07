@@ -30,10 +30,12 @@ async function login(page: Page) {
   const homeLink = page.getByRole('link', { name: '首页' });
 
   const isAlreadyAuthenticated =
-    page.url().endsWith('/') ||
+    page.url().endsWith('/mine') ||
     await homeLink.isVisible({ timeout: 2_000 }).catch(() => false);
 
   if (isAlreadyAuthenticated) {
+    // The login landing page is the next-day plan; these specs exercise the legacy home page.
+    await page.goto('/home');
     await page.waitForLoadState('domcontentloaded');
     return;
   }
@@ -50,7 +52,8 @@ async function login(page: Page) {
     submitButton.click(),
   ]);
 
-  await page.waitForURL('/', { timeout: 15_000 });
+  await page.waitForURL('/mine', { timeout: 15_000 });
+  await page.goto('/home');
   await page.waitForLoadState('domcontentloaded');
   await page.waitForTimeout(1000);
 }

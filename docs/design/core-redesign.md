@@ -1,7 +1,7 @@
 # 核心流程设计稿说明
 
 - 日期：2026-11-07
-- 状态：设计稿，未实现
+- 状态：设计稿；Web 页面已按本稿实现（见 [次日计划 API 与 Web 入口](../daily-plan-api.md)），后端服务尚未实现
 - 原型：[core-redesign.html](core-redesign.html)，单文件，直接用浏览器打开
 - 依据：[核心功能说明](core-product-spec.md)
 

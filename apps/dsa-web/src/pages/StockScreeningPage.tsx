@@ -1147,7 +1147,7 @@ const StockScreeningPage: React.FC = () => {
       return;
     }
     const stockName = String(stock.name || stockCode).trim();
-    navigate('/', {
+    navigate('/home', {
       state: {
         stockCode,
         stockName,
@@ -1166,7 +1166,7 @@ const StockScreeningPage: React.FC = () => {
     const stockName = String(candidate.name || stockCode).trim();
     const resultStrategy = strategies.find(item => item.id === (screenMeta?.strategy || strategy));
     const analysisSkills = (resultStrategy?.analysisSkills || []).filter(Boolean);
-    navigate('/', {
+    navigate('/home', {
       state: {
         stockCode,
         stockName,

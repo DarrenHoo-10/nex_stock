@@ -1,0 +1,31 @@
+{
+  "status": "ok",
+  "message": null,
+  "price": 47.0,
+  "lot": 100,
+  "by_single": 2127.66,
+  "by_total": 2127.66,
+  "by_cash": 2127.66,
+  "raw_shares": 2127.66,
+  "shares": 2100,
+  "amount": 98700.0,
+  "capital_pct": 98.7,
+  "post_position_pct": 98.7,
+  "stop": {
+    "price": 42.3,
+    "mode": "fixed",
+    "formula": "47.00 × 0.90",
+    "tech_support": 46.9,
+    "warning": null
+  },
+  "max_loss": 9870.0,
+  "limit_down_price": 38.07,
+  "limit_down_loss": 18753.0,
+  "steps": [
+    "按单只上限 100%：100,000 × 100% ÷ 47.00 = 2,127 股",
+    "按总仓位 100%：剩余额度 ÷ 47.00 = 2,127 股",
+    "按可用现金：100,000 ÷ 47.00 = 2,127 股",
+    "取最小值 2,127，按每手 100 股向下取整 = 2,100 股",
+    "止损价 = 47.00 × 0.90 = 42.30"
+  ]
+}

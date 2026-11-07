@@ -1,0 +1,16 @@
+{
+  "cash": 100000.0,
+  "market_value": 0.0,
+  "total_capital": 100000.0,
+  "position_pct": 0.0,
+  "holdings": [],
+  "rules": {
+    "stop_loss_pct": 10.0,
+    "max_total_pct": 100.0,
+    "max_holdings": 1,
+    "max_single_pct": 100.0,
+    "max_single_pct_derived": true,
+    "stop_mode": "fixed"
+  },
+  "updated_at": "2026-11-06T16:00:00+08:00"
+}

@@ -1,0 +1,54 @@
+/* Assistant drawer additions (scoped under .plan-shell). Base drawer/ctx/msgs/quick styles live in plan-glass.css. */
+.plan-shell .assist-ctx { margin-bottom: 2px; }
+.plan-shell .assist-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0;
+  padding: 3px 4px 3px 11px; border-radius: 999px; background: var(--fill2); color: #fff;
+}
+.plan-shell .assist-chip[data-kind="none"] { padding-right: 11px; color: var(--t2); }
+.plan-shell .assist-chip b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-shell .assist-chip button {
+  border: 0; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  background: var(--fill2); color: #fff; transition: background .2s;
+}
+.plan-shell .assist-chip button:hover { background: var(--fill3); }
+.plan-shell .assist-date { color: var(--t3); font-size: 12px; }
+.plan-shell .assist-open-chat { margin-left: auto; color: var(--accent); font-size: 12.5px; text-decoration: none; white-space: nowrap; }
+.plan-shell .assist-open-chat:hover { text-decoration: underline; }
+.plan-shell .assist-msgs { overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; }
+.plan-shell .assist-hint { margin: 0; }
+.plan-shell .msg { min-width: 0; overflow-wrap: anywhere; animation: plan-assist-in .4s var(--spring) both; }
+.plan-shell .assist-md { min-width: 0; max-width: 100%; overflow-x: auto; font-size: 14px; }
+.plan-shell .assist-md > :first-child { margin-top: 0; }
+.plan-shell .assist-md > :last-child { margin-bottom: 0; }
+.plan-shell .assist-md p { margin: 0 0 8px; }
+.plan-shell .assist-md ul, .plan-shell .assist-md ol { margin: 0 0 8px; padding-left: 20px; }
+.plan-shell .assist-md ul { list-style: disc; }
+.plan-shell .assist-md ol { list-style: decimal; }
+.plan-shell .assist-md li + li { margin-top: 3px; }
+.plan-shell .assist-md h1, .plan-shell .assist-md h2, .plan-shell .assist-md h3, .plan-shell .assist-md h4 { font-size: 14.5px; margin: 10px 0 6px; font-weight: 650; }
+.plan-shell .assist-md a { color: var(--accent); }
+.plan-shell .assist-md strong { font-weight: 650; }
+.plan-shell .assist-md code { font-size: 12.5px; padding: 1px 5px; border-radius: 6px; background: rgba(10,14,40,.28); }
+.plan-shell .assist-md pre { overflow-x: auto; padding: 10px 12px; border-radius: 12px; background: rgba(10,14,40,.28); margin: 0 0 8px; }
+.plan-shell .assist-md pre code { padding: 0; background: none; }
+.plan-shell .assist-md blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--line); color: var(--t2); }
+.plan-shell .assist-md table { border-collapse: collapse; font-size: 12.5px; margin: 0 0 8px; }
+.plan-shell .assist-md th, .plan-shell .assist-md td { padding: 5px 9px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.plan-shell .assist-pending { display: flex; align-items: center; gap: 9px; color: var(--t2); }
+.plan-shell .assist-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--fill3); border-top-color: #fff; animation: plan-assist-spin .9s linear infinite; flex: none; }
+.plan-shell .assist-note { font-size: 12.5px; color: var(--t3); margin: 0; }
+.plan-shell .assist-err {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 14px; border-radius: 16px;
+  background: rgba(255,207,110,.14); color: #FFEBC0; font-size: 13px;
+}
+.plan-shell .assist-err .btn { margin-top: 4px; }
+.plan-shell .quick button[disabled] { opacity: .5; cursor: not-allowed; }
+.plan-shell .assist-compose { display: flex; gap: 8px; padding: 6px 0 0; }
+.plan-shell .assist-compose input {
+  flex: 1; min-width: 0; border: 0; border-radius: 999px; padding: 10px 16px; color: #fff;
+  background: rgba(10,14,40,.28); box-shadow: inset 0 0 0 1px var(--line);
+}
+.plan-shell .assist-compose input::placeholder { color: var(--t4); }
+.plan-shell .assist-compose .btn { flex: none; }
+@keyframes plan-assist-in { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+@keyframes plan-assist-spin { to { transform: rotate(360deg); } }
