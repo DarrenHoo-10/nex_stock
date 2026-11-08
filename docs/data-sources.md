@@ -102,7 +102,7 @@ BIYING_TIMEOUT_SECONDS=8   # 可选，单次请求超时（秒）
 
 **在 Web 里的用处**
 
-- 个股行情窗口 / 个股计划页：双击日 K 查看当天分时（`GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD`）。当天先走 Tushare `rt_min_daily`，再走必盈当天 5 分钟线；历史交易日只走必盈历史 5 分钟线，并缓存 6 小时。**没有配置 `BIYING_LICENCE` 时，历史分时会返回 503，页面提示"分时读取失败"**。
+- 个股行情窗口 / 个股计划页：双击日 K 查看当天分时（`GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD`）。当天先走 Tushare `rt_min_daily`，再走必盈当天 5 分钟线；历史交易日只走必盈历史 5 分钟线，并缓存 6 小时。**没有配置 `BIYING_LICENCE` 时，历史分时会返回 503**。503 的 `error` 是 `intraday_unavailable`，`reason` 说明原因：`biying_not_configured`（历史交易日需要必盈证书）、`not_configured`（当天没有任何分钟线数据源）、`no_bars`（数据源没有这天的数据，如停牌、非交易日）、`source_failed`（数据源请求失败），`message` 是对应的中文说明，页面直接显示这条说明，不再显示通用的「检查代理、DNS」。
 - 助手：盘中全市场快照、个股报价、5 分钟线（Tushare 失败后用必盈兜底）。
 
 **确认它在工作**：行情窗口里双击一根历史日 K 能看到分时；或在日志里看到实时来源为 `biying`。证书错误时日志是 `Biying error: ***` 一类的打码信息，HTTP 非 200 为 `Biying HTTP <状态码>`。
@@ -280,7 +280,7 @@ tushare(-1，仅配置 Token 后) > efinance(0) > akshare(1) > tushare/pytdx/tic
 | 启动日志提示 Tushare Token 未配置 | 没填 `TUSHARE_TOKEN` | 填写后重启；不填则自动用免费渠道 |
 | 实时行情总是落到免费源 | Tushare 未开通 `rt_k`，或没配必盈 | 开通 RT 权限，或配置 `BIYING_LICENCE`；冷却期 10 分钟后会重试 |
 | 港股数据查不到 | Tushare 账号没有港股接口权限 | 配置 Futu / Longbridge，或依赖 AkShare / YFinance |
-| 双击日 K 提示“分时读取失败” | 未配置 `BIYING_LICENCE`；证书无效；该日非交易日；非 A 股或指数 | 配置有效证书；确认是 A 股个股 / ETF 的交易日；看后端日志里的 `intraday_unavailable` |
+| 双击日 K 提示“分时读取失败” | 页面上的说明对应 503 的 `reason`：提示配置必盈 licence 是 `biying_not_configured`；没有这天的分时是 `no_bars`（停牌、非交易日）；请求失败是 `source_failed`（证书无效、网络）；非 A 股或指数不提供 | 按提示配置有效证书；确认是 A 股个股 / ETF 的交易日；看后端日志里的 `分时行情不可用 ... (reason)` |
 | 日志里出现 `Biying HTTP 4xx/5xx` | 证书失效、超出频率或服务端异常 | 检查证书和额度，必要时调大 `BIYING_TIMEOUT_SECONDS` |
 | 东财类接口 `RemoteDisconnected` | 被东财限流 | 开启 `ENABLE_EASTMONEY_PATCH`，降低 Efinance 优先级，或配置 Tushare / TickFlow |
 | 美股日线 / 实时失败 | Longbridge 冷却中，或 YFinance 被限流 | 等冷却结束，配置 Longbridge 凭据 |

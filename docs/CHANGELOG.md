@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 双击日 K 看分时失败时，页面写明真实原因（历史交易日需要配置必盈 `BIYING_LICENCE`、没有可用的分钟线数据源、数据源没有这天的数据、数据源请求失败），不再一律显示「访问外部模型或数据接口失败，请检查代理、DNS」；`GET /api/v1/stocks/{code}/intraday` 的 503 响应新增 `reason` 字段，`error` 仍是 `intraday_unavailable`。
 - [新功能] 飞书推送改为扫码连接：Web「运行和推送」页点「扫码创建飞书机器人」，用飞书扫码确认后自动创建机器人、保存 App ID / Secret、开启长连接，并把你的私聊设为推送目标，不再需要到开放平台手动复制凭证（手动配置收进折叠区保留）。新增 `POST /api/v1/system/feishu/register`、`GET /api/v1/system/feishu/register/{session_id}`（凭证只在服务端保存）；Web 新增依赖 `qrcode.react`。
 - [新功能] 助手新增题材新闻工具 `search_market_news`：按关键词（如「寒潮」「天然气 涨价」）查资讯库里最近 1–7 天的快讯和公告，命中少时用已配置的搜索引擎补充，不再只能按单只股票搜新闻。
 - [改进] 助手没有讨论对象的问题（如「寒潮有哪些股票值得关注」）可以调用行情、K 线、筹码、个股新闻等工具查询候选股票，不再全部返回 `stock_scope_violation`；会话里已确认或抽屉选中了股票、对比和待澄清时仍只查这些对象。
