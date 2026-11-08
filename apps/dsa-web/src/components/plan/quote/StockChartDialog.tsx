@@ -18,6 +18,7 @@ import {
 } from './klineMath';
 import type { DailyBar, KlinePeriod } from './klineMath';
 import type { QuoteTarget } from './quoteTarget';
+import '../../../styles/plan-quote.css';
 
 /** Daily history to request: enough for monthly candles and a warmed-up chip distribution. */
 export const QUOTE_HISTORY_DAYS = 750;

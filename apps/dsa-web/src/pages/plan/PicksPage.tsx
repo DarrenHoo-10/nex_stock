@@ -6,6 +6,9 @@ import { toApiErrorMessage } from '../../api/error';
 import { systemConfigApi } from '../../api/systemConfig';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
+import { StockChartDialog } from '../../components/plan/quote/StockChartDialog';
+import { targetFromCode } from '../../components/plan/quote/quoteTarget';
+import type { QuoteTarget } from '../../components/plan/quote/quoteTarget';
 import { SegmentedControl, StaggerItem } from '../../components/plan/motion';
 import { PlanErrorPanel, PlanSkeleton, PlanUnavailablePanel, useBoardDetail } from '../../components/plan/boards';
 import {
@@ -151,6 +154,9 @@ const PicksPage: React.FC = () => {
     [watchlist],
   );
 
+  const [chartTarget, setChartTarget] = useState<QuoteTarget | null>(null);
+  const handleOpen = useCallback((pick: PickView) => setChartTarget(targetFromCode(pick.code, pick.name)), []);
+
   // A pick opens the assistant on that stock; the header opens it on the board scope, if any.
   const handleAsk = useCallback(
     (pick: PickView) =>
@@ -224,6 +230,7 @@ const PicksPage: React.FC = () => {
                 adding={adding.has(pick.code)}
                 onAdd={handleAdd}
                 onAsk={handleAsk}
+                onOpen={handleOpen}
               />
             ))}
           </ul>
@@ -357,6 +364,18 @@ const PicksPage: React.FC = () => {
           </div>
         </section>
       </StaggerItem>
+      <StockChartDialog
+        target={chartTarget}
+        onClose={() => setChartTarget(null)}
+        onAddWatch={(target) => {
+          const pick = candidates.find((item) => item.code === target.watchCode);
+          if (pick && !watchlist.codes.has(pick.code)) {
+            void handleAdd(pick);
+          } else if (pick) {
+            showPlanToast(`${pick.name} 已在自选`);
+          }
+        }}
+      />
     </>
   );
 };

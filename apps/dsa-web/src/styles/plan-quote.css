@@ -96,3 +96,15 @@
   .plan-shell .qc-chip small { display: inline; margin-left: 6px; color: var(--t4); }
   .plan-shell .qc-last { font-size: 24px; }
 }
+
+/* Stock identity that opens the chart window (pick cards, board representatives). */
+.plan-shell .stock-link {
+  display: block; width: 100%; margin: -6px; padding: 6px; border: 0; border-radius: 12px; background: none;
+  text-align: left; color: inherit; cursor: pointer; transition: background .2s;
+}
+.plan-shell .stock-link:hover, .plan-shell .stock-link:focus-visible { background: var(--fill); outline: none; }
+.plan-shell .stock-link:focus-visible { box-shadow: 0 0 0 2px rgba(169,202,255,.6); }
+.plan-shell .stock-link .nm, .plan-shell .stock-link b { text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 4px; transition: text-decoration-color .2s; }
+.plan-shell .stock-link:hover .nm, .plan-shell .stock-link:hover b { text-decoration-color: currentColor; }
+.plan-shell .stock-link .go { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 12px; color: var(--accent); }
+.plan-shell .reps .stock-link { display: inline; width: auto; margin: -4px -6px; padding: 4px 6px; }

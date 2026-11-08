@@ -48,3 +48,9 @@ export function targetFromRawCode(raw: string): QuoteTarget | null {
     assetType: isEtf ? 'etf' : 'stock',
   };
 }
+
+/** A symbol that comes from a plan page (pick, board representative) with a known name. */
+export function targetFromCode(code: string, name: string | null): QuoteTarget | null {
+  const target = targetFromRawCode(code);
+  return target ? { ...target, name: name && name !== code ? name : null } : null;
+}

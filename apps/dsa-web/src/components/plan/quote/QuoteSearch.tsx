@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { StockChartDialog } from './StockChartDialog';
 import { StockSearchBox } from './StockSearchBox';
 import type { QuoteTarget } from './quoteTarget';
-import '../../../styles/plan-quote.css';
 
 export interface QuoteSearchProps {
   /** Adds a symbol (watchlist code form) to the watchlist; omitted hides the dialog's button. */
