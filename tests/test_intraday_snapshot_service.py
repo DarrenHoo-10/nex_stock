@@ -297,6 +297,91 @@ class TestQuoteAndBars(unittest.TestCase):
         self.assertEqual(len(result2.bars), 1)  # only the latest session is returned
 
 
+def _bar(time_text, close=10.0):
+    return {"time": time_text, "open": close, "high": close, "low": close, "close": close,
+            "volume": 100, "amount": 1000.0}
+
+
+class TestSessionBars(unittest.TestCase):
+    """Bars of one given trading day (double-click on a daily candle)."""
+
+    def test_past_date_uses_biying_history_and_is_cached(self):
+        biying = MagicMock(spec=BiyingFetcher)
+        biying.get_history_bars.return_value = [
+            _bar("2026-11-05T09:35:00+08:00"), _bar("2026-11-05T15:00:00+08:00", 10.5),
+        ]
+        service, _, clock = _service(biying=biying)
+
+        first = service.get_session_bars("600000", "2026-11-05")
+        clock.advance(3600)  # far beyond the 60s live TTL: a finished session stays cached
+        second = service.get_session_bars("SH600000", "2026-11-05")
+
+        biying.get_history_bars.assert_called_once_with("600000", "2026-11-05")
+        self.assertEqual(first.trade_date, "2026-11-05")
+        self.assertEqual(first.source, "biying")
+        self.assertEqual(first.as_of, "2026-11-05T15:00:00+08:00")
+        self.assertFalse(first.is_stale)
+        self.assertEqual(len(second.bars), 2)
+
+    def test_past_date_never_touches_tushare_live_chain(self):
+        tushare = _tushare(_by_pattern(GOOD_FRAMES))
+        biying = MagicMock(spec=BiyingFetcher)
+        biying.get_history_bars.return_value = [_bar("2026-11-05T09:35:00+08:00")]
+        service, _, _ = _service(tushare=tushare, biying=biying)
+        service.get_session_bars("600000", "2026-11-05")
+        tushare._api.rt_min_daily.assert_not_called()
+
+    def test_today_uses_live_chain_and_keeps_only_that_day(self):
+        tushare = _tushare(_by_pattern(GOOD_FRAMES))
+        tushare._api.rt_min_daily.return_value = pd.DataFrame({
+            "ts_code": ["600000.SH"], "time": ["2026-11-06 09:35:00"],
+            "open": [10.0], "close": [10.1], "high": [10.2], "low": [9.9], "vol": [1000], "amount": [1e4],
+        })
+        biying = MagicMock(spec=BiyingFetcher)
+        service, _, _ = _service(tushare=tushare, biying=biying)
+        result = service.get_session_bars("600000", "2026-11-06")
+        self.assertEqual(result.source, "tushare")
+        self.assertEqual(result.trade_date, "2026-11-06")
+        biying.get_history_bars.assert_not_called()
+
+    def test_today_falls_back_to_history_when_live_chain_has_no_bars_for_the_day(self):
+        biying = MagicMock(spec=BiyingFetcher)
+        biying.get_intraday_bars.return_value = [_bar("2026-11-05T15:00:00+08:00")]  # latest session is yesterday
+        biying.get_history_bars.return_value = [_bar("2026-11-06T09:35:00+08:00")]
+        service, _, _ = _service(biying=biying)
+        result = service.get_session_bars("600000", "2026-11-06")
+        self.assertEqual(result.source, "biying")
+        self.assertEqual(result.bars[0]["time"], "2026-11-06T09:35:00+08:00")
+        biying.get_history_bars.assert_called_once_with("600000", "2026-11-06")
+
+    def test_unavailable_when_history_is_empty_or_failing(self):
+        biying = MagicMock(spec=BiyingFetcher)
+        biying.get_history_bars.return_value = []
+        service, _, _ = _service(biying=biying)
+        with self.assertRaises(IntradayDataUnavailable):
+            service.get_session_bars("600000", "2026-11-05")
+
+        failing = MagicMock(spec=BiyingFetcher)
+        failing.get_history_bars.side_effect = DataFetchError("Biying HTTP 500")
+        service2, _, _ = _service(biying=failing)
+        with self.assertRaises(IntradayDataUnavailable) as caught:
+            service2.get_session_bars("600000", "2026-11-05")
+        self.assertIn("Biying HTTP 500", str(caught.exception))
+
+    def test_missing_biying_is_unavailable_not_a_crash(self):
+        service, _, _ = _service()
+        with self.assertRaises(IntradayDataUnavailable):
+            service.get_session_bars("600000", "2026-11-05")
+
+    def test_malformed_and_future_dates_are_rejected_before_any_fetch(self):
+        biying = MagicMock(spec=BiyingFetcher)
+        service, _, _ = _service(biying=biying)
+        for bad in ("2026/11/05", "yesterday", "2026-13-40", "2026-11-07"):
+            with self.subTest(date=bad), self.assertRaises(ValueError):
+                service.get_session_bars("600000", bad)
+        biying.get_history_bars.assert_not_called()
+
+
 class TestPermissionError(unittest.TestCase):
     def test_realtime_permission_error_is_a_fetch_error(self):
         self.assertTrue(issubclass(RealtimePermissionError, DataFetchError))

@@ -984,7 +984,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "BIYING_LICENCE": {
         "title": "Biying Licence",
-        "description": "Licence for the optional Biying (biyingapi.com) realtime source, designed for the annual plan (3000 requests/min). Used as the second realtime source after Tushare rt_k and for the intraday full-market snapshot fallback. The licence appears in request URL paths and is masked in logs and errors.",
+        "description": "Licence for the optional Biying (biyingapi.com) realtime source, designed for the annual plan (3000 requests/min). Used as the second realtime source after Tushare rt_k, for the intraday full-market snapshot fallback, and for the 5-minute bars of past trading days (double-click a daily candle in the stock chart). The licence appears in request URL paths and is masked in logs and errors.",
         "category": "data_source",
         "data_type": "string",
         "ui_control": "password",

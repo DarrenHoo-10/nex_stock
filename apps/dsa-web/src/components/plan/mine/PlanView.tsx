@@ -18,6 +18,7 @@ import {
   VERDICT_LABEL,
 } from './format';
 import { buildLadderLevels } from './ladderLayout';
+import { PlanKline } from './PlanKline';
 import { PriceLadder } from './PriceLadder';
 import { SizingBlock } from './SizingBlock';
 import { SwitchCard } from './SwitchCard';
@@ -184,6 +185,8 @@ export const PlanView: React.FC<PlanViewProps> = ({
           {figuresFor(plan, horizonPlan, holding)}
         </dl>
       </div>
+
+      <PlanKline code={plan.code} name={plan.name} />
 
       <div className="body">
         <div className="plan">

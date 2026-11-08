@@ -15,6 +15,7 @@
     - 全市场（bulk） ``https://vip.biyingapi.com/hsrl/real/all/{licence}``
     - 买卖五档       ``hsstock/real/five/{code}/{licence}``
     - 5 分钟 K 线    ``hsstock/latest/{code}.{SH|SZ|BJ}/5/n/{licence}?lt=N``
+    - 历史 5 分钟线  ``hsstock/history/{code}.{SH|SZ|BJ}/5/n/{licence}?st=YYYYMMDD&et=YYYYMMDD``
     - 指数           ``hsindex/real/time/{code}/{licence}``
 
 单位换算（统一为 UnifiedRealtimeQuote 口径）：
@@ -369,6 +370,24 @@ class BiyingFetcher(BaseFetcher):
         payload = self._get_json(
             f"hsstock/latest/{suffixed}/5/n/{{licence}}", params={"lt": int(limit)}
         )
+        return self._rows_to_bars(payload)
+
+    def get_history_bars(self, stock_code: str, trade_date: str) -> List[Dict[str, Any]]:
+        """5-minute bars of one past session (``YYYY-MM-DD``), oldest first.
+
+        ``hsstock/history/{code}/5/n/{licence}?st=YYYYMMDD&et=YYYYMMDD``; same row shape as
+        :meth:`get_intraday_bars` (``volume`` in shares, ``amount`` in yuan). Rows outside
+        ``trade_date`` are dropped so a provider that pads the range cannot leak other days.
+        """
+        code = normalize_stock_code(stock_code)
+        suffixed = f"{code}.{_exchange_suffix(stock_code)}"
+        day = trade_date.replace("-", "")
+        payload = self._get_json(
+            f"hsstock/history/{suffixed}/5/n/{{licence}}", params={"st": day, "et": day}
+        )
+        return [bar for bar in self._rows_to_bars(payload) if bar["time"][:10] == trade_date]
+
+    def _rows_to_bars(self, payload: Any) -> List[Dict[str, Any]]:
         bars: List[Dict[str, Any]] = []
         for row in self._as_rows(payload):
             bars.append(

@@ -39,6 +39,8 @@ RT_K_BATCH_PATTERNS: Tuple[str, ...] = ("6*.SH", "0*.SZ", "3*.SZ", "9*.BJ")
 STALE_AFTER_SECONDS = 180.0
 MAX_STALE_SERVE_SECONDS = 600.0
 SINGLE_FLIGHT_WAIT_SECONDS = 120.0
+# A finished session never changes; keep it so repeated double-clicks cost no provider call.
+PAST_SESSION_TTL_SECONDS = 6 * 3600.0
 
 
 class IntradayDataUnavailable(RuntimeError):
@@ -94,6 +96,8 @@ class BarsResult:
     fetched_at: str
     is_stale: bool = False
     stale_reason: Optional[str] = None
+    #: Session date (``YYYY-MM-DD``) when the bars were requested for a given day.
+    trade_date: Optional[str] = None
 
 
 @dataclass
@@ -478,6 +482,72 @@ class IntradaySnapshotService:
         if fetcher is None:
             raise IntradayDataUnavailable("Biying is not configured")
         return self._latest_session(fetcher.get_intraday_bars(stock_code, limit=48))
+
+    # -- 5-minute bars of one given session --------------------------------
+
+    def get_session_bars(self, stock_code: str, trade_date: str) -> BarsResult:
+        """5-minute bars of ``trade_date`` (``YYYY-MM-DD``), oldest first.
+
+        Today's session reuses the live chain (Tushare ``rt_min_daily`` then Biying
+        ``latest``) and falls back to Biying history; any other date comes from Biying
+        history only. A finished session never changes, so past dates are cached for
+        ``PAST_SESSION_TTL_SECONDS``. Raises ``ValueError`` for a malformed or future date.
+        """
+        from data_provider.base import normalize_stock_code
+
+        try:
+            day = datetime.strptime(trade_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise ValueError(f"invalid date {trade_date!r}, expected YYYY-MM-DD") from None
+        now = self._now()
+        if day > now.date():
+            raise ValueError(f"date {trade_date} is in the future")
+
+        code = normalize_stock_code(stock_code)
+        is_today = day == now.date()
+        ttl = self.ttl_seconds if is_today else PAST_SESSION_TTL_SECONDS
+        (bars, source), served_stale = self._cache.get(
+            ("bars", code, "5MIN", trade_date),
+            lambda: self._load_session_bars(stock_code, code, trade_date, is_today),
+            ttl,
+        )
+        if is_today:
+            as_of = bars[-1]["time"] if bars else now.isoformat()
+            is_stale, reason = self._freshness(as_of, served_stale, now)
+        else:
+            as_of = bars[-1]["time"] if bars else trade_date
+            is_stale, reason = (True, "refresh_failed") if served_stale else (False, None)
+        return BarsResult(
+            code=code, bars=bars, source=source, as_of=as_of, fetched_at=now.isoformat(),
+            is_stale=is_stale, stale_reason=reason, trade_date=trade_date,
+        )
+
+    def _load_session_bars(
+        self, stock_code: str, code: str, trade_date: str, is_today: bool
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        errors: List[str] = []
+        if is_today:
+            try:
+                live, source = self._load_bars(stock_code, code)
+                bars = [bar for bar in live if bar["time"][:10] == trade_date]
+                if bars:
+                    return bars, source
+                errors.append("live: no bars for the date")
+            except IntradayDataUnavailable as exc:
+                errors.append(str(exc))
+        try:
+            fetcher = self._fetcher("BiyingFetcher")
+            if fetcher is None:
+                raise IntradayDataUnavailable("Biying is not configured")
+            bars = fetcher.get_history_bars(stock_code, trade_date)
+        except Exception as exc:
+            errors.append(f"biying: {exc}")
+            logger.info("[intraday] history bars via biying failed for %s %s: %s", code, trade_date, exc)
+        else:
+            if bars:
+                return bars, "biying"
+            errors.append("biying: no bars")
+        raise IntradayDataUnavailable(f"5-minute bars for {trade_date} unavailable (" + "; ".join(errors) + ")")
 
     @staticmethod
     def _latest_session(bars: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -170,6 +170,35 @@ class TestBiyingQuote(unittest.TestCase):
         self.assertEqual(index.volume, 500000000)
 
 
+class TestBiyingHistoryBars(unittest.TestCase):
+    def setUp(self):
+        self.fetcher = BiyingFetcher(licence=LICENCE)
+
+    def test_history_bars_request_one_day_and_normalise_rows(self):
+        rows = [
+            {"t": "2026-11-05 15:00:00", "o": 9.0, "h": 9.1, "l": 8.9, "c": 9.0, "v": 10, "a": 9000.0, "pc": 9.0},
+            {"t": "2026-11-06 09:35:00", "o": 8.51, "h": 8.64, "l": 8.35, "c": 8.51, "v": 123074.0,
+             "a": 104632755.19, "pc": 8.86},
+            {"t": "2026-11-06 09:40:00", "o": 8.5, "h": 8.6, "l": 8.4, "c": None, "v": 5, "a": 1.0},
+        ]
+        fake, ctx = _patch_http({"hsstock/history/": _response(rows)})
+        with ctx:
+            got = self.fetcher.get_history_bars("002029", "2026-11-06")
+        self.assertEqual(fake.urls[0], f"https://api.biyingapi.com/hsstock/history/002029.SZ/5/n/{LICENCE}")
+        self.assertEqual(fake.calls[0][1], {"st": "20261106", "et": "20261106"})
+        # other-day rows and rows without a close are dropped
+        self.assertEqual([bar["time"] for bar in got], ["2026-11-06T09:35:00+08:00"])
+        self.assertEqual(got[0]["volume"], 12307400)  # 手 -> 股
+        self.assertEqual(got[0]["amount"], 104632755.19)
+
+    def test_history_bars_error_does_not_leak_licence(self):
+        exc = requests.ConnectionError(f"Max retries exceeded with url: /hsstock/history/002029.SZ/5/n/{LICENCE}")
+        _, ctx = _patch_http({"hsstock/history/": exc})
+        with ctx, self.assertRaises(DataFetchError) as caught:
+            self.fetcher.get_history_bars("002029", "2026-11-06")
+        self.assertNotIn(LICENCE, str(caught.exception))
+
+
 class TestBiyingLicenceMasking(unittest.TestCase):
     def setUp(self):
         self.fetcher = BiyingFetcher(licence=LICENCE)
