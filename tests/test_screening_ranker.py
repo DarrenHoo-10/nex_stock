@@ -582,3 +582,112 @@ def test_rank_candidates_with_metadata_reports_all_invalid_models() -> None:
     assert result.failure_reason == "invalid_response"
     assert result.attempted_models == ["deepseek/deepseek-chat", "openai/gpt-4o"]
     assert len(result.errors) == 2
+
+
+def _topic_candidates(count: int) -> list[Pick]:
+    return [
+        Pick(rank=i + 1, code=f"6000{i:02d}", name=f"Fixture{i}", screen_score=90 - i, final_score=90 - i)
+        for i in range(count)
+    ]
+
+
+def test_topic_ranking_sizes_output_budget_by_candidate_count() -> None:
+    """Regression: a fixed 2048-token cap truncated the 12-candidate topic JSON."""
+    candidates = _topic_candidates(12)
+    calls = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        return _response(json.dumps({"ranked": [
+            {"code": c.code, "matched_topics": ["煤炭"], "topic_reason": "主营煤炭", "llm_score": 80}
+            for c in candidates
+        ]}, ensure_ascii=False))
+
+    with patch.dict(sys.modules, {"litellm": SimpleNamespace(completion=completion)}, clear=False):
+        result = rank_candidates_with_metadata(
+            candidates, "", "test-key", "openai/test-model", max_retries=0,
+            topic_scope=ScreeningScope(topics=[{"name": "煤炭"}]),
+        )
+
+    assert result.ranked and len(result.picks) == 12
+    assert calls[0]["max_tokens"] == 800 + 12 * 550
+    assert calls[0]["timeout"] == pytest.approx((800 + 12 * 550) / 40)
+
+
+def test_ranking_budget_keeps_explicit_values_and_caps_auto_budget() -> None:
+    from src.services.screening.ranker import _resolve_ranking_call_budget
+
+    assert _resolve_ranking_call_budget(30, topic=False, max_tokens=None, timeout_sec=None) == (14300, 14300 / 40)
+    assert _resolve_ranking_call_budget(70, topic=True, max_tokens=None, timeout_sec=None) == (32000, 800.0)
+    assert _resolve_ranking_call_budget(1, topic=False, max_tokens=None, timeout_sec=None) == (1250, 180.0)
+    assert _resolve_ranking_call_budget(12, topic=True, max_tokens=2048, timeout_sec=30) == (2048, 30.0)
+
+
+@pytest.mark.parametrize("message", [
+    "Invalid max_tokens value, the valid range of max_tokens is [1, 8192]",
+    "max_tokens is too large: 14300. This model supports at most 4096 completion tokens",
+])
+def test_output_budget_rejection_retries_once_with_fallback_budget(message) -> None:
+    candidates = _topic_candidates(30)
+    calls = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise ValueError(message)
+        return _response(_ranking_response(*(c.code for c in candidates)))
+
+    with patch.dict(sys.modules, {"litellm": SimpleNamespace(completion=completion)}, clear=False):
+        result = rank_candidates_with_metadata(
+            candidates, "", "test-key", "openai/test-model", max_retries=0,
+        )
+
+    assert result.ranked
+    assert [call["max_tokens"] for call in calls] == [14300, 8192]
+
+
+@pytest.mark.parametrize("message, max_tokens", [
+    ("upstream bad gateway", None),
+    ("Invalid max_tokens value, the valid range of max_tokens is [1, 4096]", 8192),
+])
+def test_output_budget_downgrade_skips_unrelated_errors_and_small_budgets(message, max_tokens) -> None:
+    calls = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        raise ValueError(message)
+
+    with patch.dict(sys.modules, {"litellm": SimpleNamespace(completion=completion)}, clear=False):
+        result = rank_candidates_with_metadata(
+            _topic_candidates(30), "", "test-key", "openai/test-model",
+            max_retries=0, max_tokens=max_tokens,
+        )
+
+    assert not result.ranked and result.failure_reason == "call_failed"
+    assert len(calls) == 1
+
+
+def test_screening_config_llm_budget_env_is_optional(monkeypatch) -> None:
+    from src.services.screening.config import Config
+
+    # Empty values (not delenv) so a local .env cannot leak into the assertion.
+    monkeypatch.setenv("LLM_MAX_TOKENS", "")
+    monkeypatch.setenv("LLM_TIMEOUT_SEC", "")
+    config = Config.from_env()
+    assert config.llm_max_tokens is None and config.llm_timeout_sec is None
+
+    monkeypatch.setenv("LLM_MAX_TOKENS", "4096")
+    monkeypatch.setenv("LLM_TIMEOUT_SEC", "90")
+    config = Config.from_env()
+    assert config.llm_max_tokens == 4096 and config.llm_timeout_sec == 90.0
+
+
+def test_topic_ranking_failure_message_reports_reason() -> None:
+    from src.services.screening.pipeline import _describe_topic_ranking_failure
+    from src.services.screening.ranker import LLMRankingResult
+
+    truncated = LLMRankingResult(picks=[], coverage=0.25, failure_reason="invalid_response")
+    assert "3/12" in _describe_topic_ranking_failure(truncated, 12)
+    assert "LLM_MAX_TOKENS" in _describe_topic_ranking_failure(truncated, 12)
+    timeout = LLMRankingResult(picks=[], failure_reason="timeout")
+    assert "LLM_TIMEOUT_SEC" in _describe_topic_ranking_failure(timeout, 12)

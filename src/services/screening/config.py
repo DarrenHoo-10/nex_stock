@@ -190,8 +190,9 @@ class Config:
     llm_max_retries: int = 1
     llm_min_coverage: float = 0.60
     llm_context_max_chars: int = 4000
-    llm_timeout_sec: float = 60.0
-    llm_max_tokens: int = 2048
+    # None = 按候选数量自动估算（见 ranker._resolve_ranking_call_budget）
+    llm_timeout_sec: float | None = None
+    llm_max_tokens: int | None = None
 
     # Snapshot data source priority
     snapshot_source_priority: list[str] = field(
@@ -326,8 +327,8 @@ class Config:
             llm_max_retries=max(0, int(os.getenv("LLM_MAX_RETRIES", "1"))),
             llm_min_coverage=_parse_float_env("LLM_MIN_COVERAGE", 0.60),
             llm_context_max_chars=max(500, int(os.getenv("LLM_CONTEXT_MAX_CHARS", "4000"))),
-            llm_timeout_sec=max(1.0, _parse_float_env("LLM_TIMEOUT_SEC", 60.0)),
-            llm_max_tokens=max(1, int(os.getenv("LLM_MAX_TOKENS", "2048"))),
+            llm_timeout_sec=_parse_optional_positive_env("LLM_TIMEOUT_SEC", minimum=1.0),
+            llm_max_tokens=_parse_optional_positive_int_env("LLM_MAX_TOKENS"),
             snapshot_source_priority=_resolve_snapshot_source_priority(),
             fallback_snapshot_path=fallback_snapshot_path,
             snapshot_cache_ttl_seconds=max(
@@ -420,6 +421,19 @@ def _parse_optional_float_env(name: str) -> float | None:
     if cleaned.lower() in {"", "none", "off", "false"}:
         return None
     return float(cleaned)
+
+
+def _parse_optional_positive_env(name: str, *, minimum: float) -> float | None:
+    """Unset / empty / 0 means auto; explicit values are clamped to ``minimum``."""
+    value = _parse_optional_float_env(name)
+    if value is None or value <= 0:
+        return None
+    return max(minimum, value)
+
+
+def _parse_optional_positive_int_env(name: str) -> int | None:
+    value = _parse_optional_positive_env(name, minimum=1.0)
+    return None if value is None else int(value)
 
 
 def _parse_llm_channels_env() -> list[dict[str, object]]:
