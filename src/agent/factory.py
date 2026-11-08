@@ -453,6 +453,33 @@ def get_tool_registry(config=None):
     return registry
 
 
+_CHAT_REGISTRY_CACHE: Optional[tuple] = None  # (base registry, chat registry)
+
+
+def get_chat_tool_registry(config=None):
+    """Tools of the Agent Chat assistant: every shared tool plus the API tools.
+
+    ``read_api_doc`` / ``call_api`` (``src/agent/tools/api_tools.py``) give the assistant the user's
+    full reach over ``/api/v1``. They are deliberately not in the shared registry, so report
+    analysis, scheduled runs and the multi-agent specialists never get write access to the API.
+    """
+    global _CHAT_REGISTRY_CACHE
+    from src.agent.tools.api_tools import ALL_API_TOOLS
+    from src.agent.tools.registry import ToolRegistry
+
+    base = get_tool_registry(config)
+    with _tool_registry_lock:
+        cached = _CHAT_REGISTRY_CACHE
+        if cached is not None and cached[0] is base:
+            return cached[1]
+    chat = ToolRegistry(category_timeout_map=dict(base._category_timeouts) or None)
+    for tool_def in base.list_tools() + ALL_API_TOOLS:
+        chat.register(tool_def)
+    with _tool_registry_lock:
+        _CHAT_REGISTRY_CACHE = (base, chat)
+    return chat
+
+
 def get_skill_manager(config=None):
     """Return a deepcopy-clone of the cached SkillManager prototype.
 
@@ -654,7 +681,7 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
     # Pass ``config`` explicitly so a reloaded ``Config`` instance observes
     # the new per-category timeout map (see ``build_agent_executor`` for the
     # same rationale).
-    registry = get_tool_registry(config)
+    registry = get_chat_tool_registry(config)
     prompt_state = resolve_skill_prompt_state(config, skills=skills)
     if backend_id == "litellm":
         from src.agent.llm_adapter import LLMToolAdapter

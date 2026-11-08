@@ -604,8 +604,13 @@ def prepare_agent_chat(
     scope_resolution: Optional[StockScopeResolution] = None,
     db_manager=None,
     source_snapshot: Optional[Dict[str, Any]] = None,
+    api_access: bool = False,
 ) -> PreparedAgentChat:
-    """Build the existing Chat prompt order without choosing an Agent backend."""
+    """Build the existing Chat prompt order without choosing an Agent backend.
+
+    ``api_access``: the tools include read_api_doc / call_api, so the prompt says where the API
+    document is (the document itself is only disclosed through the tool, layer by layer).
+    """
     if scope_resolution is None:
         scope_resolution = resolve_stock_scope(
             message,
@@ -636,6 +641,15 @@ def prepare_agent_chat(
         language_section=_build_language_section(report_language, chat_mode=True),
     )
     system_prompt += build_chat_market_phase_section(stock_code, report_language)
+    if api_access:
+        from src.agent.tools.api_tools import API_DOC_GUIDE
+
+        system_prompt = (
+            system_prompt.rstrip()
+            + "\n\n## 系统接口\n\n" + API_DOC_GUIDE
+            + "\n用户的持仓、自选、次日计划、板块、选股、报告、提醒、设置等数据都在这些接口里；"
+            "现有工具查不到时先查接口文档，不要说「没有这个接口」。\n"
+        )
     memory = build_memory_injection(
         message=message, effective_context=effective_context, db_manager=db_manager,
     )
