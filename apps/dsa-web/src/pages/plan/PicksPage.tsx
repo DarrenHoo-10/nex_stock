@@ -1,7 +1,7 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import type { ScreeningRunSummary, ScreeningScope } from '../../api/screening';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import type { ScreeningScope, ScreeningStrategy } from '../../api/screening';
 import { toApiErrorMessage } from '../../api/error';
 import { systemConfigApi } from '../../api/systemConfig';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -12,22 +12,30 @@ import type { QuoteTarget } from '../../components/plan/quote/quoteTarget';
 import { SegmentedControl, StaggerItem } from '../../components/plan/motion';
 import { PlanErrorPanel, PlanSkeleton, PlanUnavailablePanel, useBoardDetail } from '../../components/plan/boards';
 import {
+  BoardPicker,
   PickCard,
   PickProgress,
   StrategyChips,
+  formatPickTime,
+  isActiveTask,
   matchesHorizon,
-  strategyLabel,
+  scopeNames,
+  scopeText,
+  startPickTask,
+  strategyName,
+  taskStatus,
   toPickView,
-  usePickRun,
   usePickSetup,
+  usePickTask,
+  usePickTaskList,
   useWatchlist,
 } from '../../components/plan/picks';
-import type { HorizonFilter, PickView } from '../../components/plan/picks';
+import type { HorizonFilter, PickTask, PickView, PickedBoard } from '../../components/plan/picks';
 import { showPlanToast } from '../../stores/planToastStore';
 import { usePlanUiStore } from '../../stores/planUiStore';
 import '../../styles/plan-boards.css';
 
-/** Results per run requested from the screening API. */
+/** Results per task requested from the screening API. */
 const PICK_MAX_RESULTS = 10;
 
 const HORIZON_OPTIONS = [
@@ -36,28 +44,79 @@ const HORIZON_OPTIONS = [
   { value: 'swing' as const, label: '波段' },
 ];
 
-function formatRunTime(value: string | undefined): string | null {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+function toScope(boards: PickedBoard[]): ScreeningScope | undefined {
+  return boards.length
+    ? { boards: [], topics: boards.map((board) => ({ name: board.name, source: board.boardType })), topicMatch: 'any' }
+    : undefined;
 }
 
-function scopeTopicNames(scope: ScreeningScope | undefined): string[] {
-  return (scope?.topics ?? []).map((topic) => topic.name);
-}
+/** One row of the task list. */
+const TaskRow: React.FC<{ task: PickTask; strategies: ScreeningStrategy[]; onOpen: (taskId: string) => void }> = ({
+  task,
+  strategies,
+  onOpen,
+}) => {
+  const status = taskStatus(task);
+  const progress = Number(task.progress);
+  return (
+    <li>
+      <button type="button" className="task-row" onClick={() => onOpen(task.taskId)}>
+        <span className="task-time num">{formatPickTime(task.createdAt) ?? '—'}</span>
+        <span className="task-main">
+          <b>{strategyName(task.strategy, strategies)}</b>
+          <span className="task-scope">{scopeText(task.scope)}</span>
+        </span>
+        <span className={`task-status tone-${status.tone}`}>
+          {status.label}
+          {isActiveTask(task) ? (
+            <span className="task-bar" aria-hidden="true">
+              <i style={{ width: `${Number.isFinite(progress) ? Math.max(4, Math.min(100, progress)) : 4}%` }} />
+            </span>
+          ) : null}
+        </span>
+      </button>
+    </li>
+  );
+};
 
-/** 机会选股: strategy chips, optional board scope, run -> progress -> candidate cards. */
+/** 机会选股: start a task (strategy + optional boards), list persisted tasks, open one for its picks. */
 const PicksPage: React.FC = () => {
   const { t } = useUiLanguage();
-  const [enabling, setEnabling] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const boardId = searchParams.get('board');
+  const taskId = searchParams.get('task');
   const title = t('plan.page.picks.title');
   const openAssistant = usePlanUiStore((state) => state.openAssistant);
 
   const setup = usePickSetup();
+  const board = useBoardDetail(boardId);
+  const watchlist = useWatchlist();
+  const list = usePickTaskList();
+  const detail = usePickTask(taskId);
+
+  const [enabling, setEnabling] = useState(false);
+  const [chosenStrategy, setChosenStrategy] = useState<string | null>(null);
+  const [boards, setBoards] = useState<PickedBoard[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [horizon, setHorizon] = useState<HorizonFilter>('all');
+  const [adding, setAdding] = useState<ReadonlySet<string>>(new Set());
+
+  useEffect(() => {
+    document.title = `${title} - DSA`;
+  }, [title]);
+
+  // Arriving from a board page (?board=) preselects that board once, when it can be picked.
+  const boardReady = boardId !== null && board.status === 'ready' ? board.data : null;
+  const preselected = useRef<string | null>(null);
+  useEffect(() => {
+    if (!boardReady || !boardReady.canPick || preselected.current === boardReady.id) return;
+    preselected.current = boardReady.id;
+    setBoards((current) =>
+      current.some((item) => item.id === boardReady.id)
+        ? current
+        : [...current, { id: boardReady.id, name: boardReady.name, boardType: boardReady.boardType }],
+    );
+  }, [boardReady]);
 
   /** Switches SCREENING_ENABLED on in the config (same key the backend checks) and reloads the strategy list. */
   const enableScreening = async () => {
@@ -77,63 +136,44 @@ const PicksPage: React.FC = () => {
       setEnabling(false);
     }
   };
-  const board = useBoardDetail(boardId);
-  const watchlist = useWatchlist();
-  const { state: run, start, restoreLatest, skipRestore } = usePickRun();
-
-  const [chosenStrategy, setChosenStrategy] = useState<string | null>(null);
-  const [horizon, setHorizon] = useState<HorizonFilter>('all');
-  const [adding, setAdding] = useState<ReadonlySet<string>>(new Set());
-
-  useEffect(() => {
-    document.title = `${title} - DSA`;
-  }, [title]);
-
-  // The board scope: its name and type become a screening topic.
-  const boardReady = boardId !== null && board.status === 'ready' ? board.data : null;
-  const boardName = boardReady?.name ?? null;
-  const scopeSettled = boardId === null || board.status !== 'loading';
-
-  // Show the newest earlier run of the same scope on arrival (and when the scope changes).
-  useEffect(() => {
-    if (!scopeSettled) return;
-    if (boardId !== null && boardName === null) {
-      skipRestore();
-      return;
-    }
-    const matches = (item: ScreeningRunSummary) => {
-      const names = scopeTopicNames(item.scope);
-      return boardName === null ? names.length === 0 : names.includes(boardName);
-    };
-    void restoreLatest(matches);
-  }, [scopeSettled, boardId, boardName, restoreLatest, skipRestore]);
 
   const strategies = useMemo(() => (setup.status === 'ready' ? setup.strategies : []), [setup]);
-  const restoredStrategy = run.result?.strategy;
   const strategy =
-    chosenStrategy && strategies.some((item) => item.id === chosenStrategy)
-      ? chosenStrategy
-      : restoredStrategy && strategies.some((item) => item.id === restoredStrategy)
-        ? restoredStrategy
-        : (strategies[0]?.id ?? null);
+    chosenStrategy && strategies.some((item) => item.id === chosenStrategy) ? chosenStrategy : (strategies[0]?.id ?? null);
+  const canStart = setup.status === 'ready' && strategy !== null && !submitting;
 
-  const running = run.phase === 'starting' || run.phase === 'running';
-  const boardBlocked = boardId !== null && (boardReady === null || !boardReady.canPick);
-  const canStart = setup.status === 'ready' && strategy !== null && !running && !boardBlocked;
+  const openTask = useCallback(
+    (id: string | null) => {
+      const next = new URLSearchParams(searchParams);
+      if (id) next.set('task', id);
+      else next.delete('task');
+      setSearchParams(next);
+      setHorizon('all');
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const submit = useCallback(
+    async (strategyId: string, scope: ScreeningScope | undefined) => {
+      setSubmitting(true);
+      try {
+        await startPickTask({ market: 'cn', strategy: strategyId, maxResults: PICK_MAX_RESULTS, ...(scope ? { scope } : {}) });
+        showPlanToast('选股任务已开始，可以离开本页，完成后在任务列表里查看');
+        list.reload();
+        return true;
+      } catch (err) {
+        showPlanToast(toApiErrorMessage(err, '选股任务提交失败，请稍后重试'));
+        return false;
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [list],
+  );
 
   const handleStart = useCallback(() => {
-    if (!strategy) return;
-    const scope: ScreeningScope | undefined = boardReady
-      ? { boards: [], topics: [{ name: boardReady.name, source: boardReady.boardType }], topicMatch: 'any' }
-      : undefined;
-    void start({ market: 'cn', strategy, maxResults: PICK_MAX_RESULTS, ...(scope ? { scope } : {}) });
-  }, [strategy, boardReady, start]);
-
-  const clearBoardScope = useCallback(() => {
-    const next = new URLSearchParams(searchParams);
-    next.delete('board');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+    if (strategy) void submit(strategy, toScope(boards));
+  }, [strategy, boards, submit]);
 
   const handleAdd = useCallback(
     async (pick: PickView) => {
@@ -157,7 +197,6 @@ const PicksPage: React.FC = () => {
   const [chartTarget, setChartTarget] = useState<QuoteTarget | null>(null);
   const handleOpen = useCallback((pick: PickView) => setChartTarget(targetFromCode(pick.code, pick.name)), []);
 
-  // A pick opens the assistant on that stock; the header opens it on the board scope, if any.
   const handleAsk = useCallback(
     (pick: PickView) =>
       openAssistant({
@@ -171,139 +210,131 @@ const PicksPage: React.FC = () => {
   const handleHeaderAsk = useCallback(
     () =>
       openAssistant(
-        boardReady
-          ? { kind: 'board', boardId: boardReady.id, boardName: boardReady.name }
+        boards.length === 1
+          ? { kind: 'board', boardId: boards[0].id, boardName: boards[0].name }
           : { kind: 'none' },
       ),
-    [openAssistant, boardReady],
+    [openAssistant, boards],
   );
 
-  const candidates = useMemo(() => (run.result?.candidates ?? []).map(toPickView), [run.result]);
+  const task = taskId && detail.state.status === 'ready' ? detail.state.task : null;
+  const candidates = useMemo(() => (task?.result?.candidates ?? []).map(toPickView), [task]);
   const visible = useMemo(() => candidates.filter((pick) => matchesHorizon(pick, horizon)), [candidates, horizon]);
 
-  const resultStrategy = strategies.find((item) => item.id === run.result?.strategy);
-  const resultStrategyName = resultStrategy ? strategyLabel(resultStrategy) : (run.result?.strategy ?? '');
-  const resultScopeNames = scopeTopicNames(run.result?.scope);
-  const runTime = formatRunTime(run.result?.createdAt);
-  const warnings = (run.result?.warnings ?? []).filter((line) => line.trim() !== '');
-
-  let results: React.ReactNode;
-  if (run.phase === 'restoring') {
-    results = (
-      <div className="cand-skel">
-        <PlanSkeleton rows={4} label="正在查找上次的选股结果" />
-      </div>
-    );
-  } else if (running) {
-    results = <PickProgress progress={run.progress} message={run.message} />;
-  } else if (run.phase === 'failed') {
-    results = (
-      <PlanErrorPanel
-        message={run.error ?? '选股任务失败，请稍后重试。'}
-        onRetry={handleStart}
-        title="选股没有完成"
-      />
-    );
-  } else if (run.phase === 'done' && run.result) {
-    results = (
-      <>
-        <p className="cond-line">
-          策略 <b>{resultStrategyName || '未记录'}</b>，范围 <b>{resultScopeNames.join('、') || '全部 A 股'}</b>
-          {runTime ? `，运行于 ${runTime}` : ''}。共 {candidates.length} 只
-          {horizon !== 'all' ? `，当前周期显示 ${visible.length} 只` : ''}。
-          {run.fromHistory ? <span className="tag line">上次结果</span> : null}
-        </p>
-        {warnings.length ? (
-          <p className="notice picks-notice" role="note">
-            <b>提示</b>
-            <span>{warnings.join('；')}</span>
-          </p>
-        ) : null}
-        {visible.length ? (
-          <ul className="cands" key={`${run.result.runId ?? run.result.createdAt ?? 'run'}-${horizon}`}>
-            {visible.map((pick, index) => (
-              <PickCard
-                key={pick.code}
-                pick={pick}
-                index={index}
-                inWatchlist={watchlist.codes.has(pick.code)}
-                adding={adding.has(pick.code)}
-                onAdd={handleAdd}
-                onAsk={handleAsk}
-                onOpen={handleOpen}
-              />
-            ))}
-          </ul>
-        ) : (
-          <div className="empty">
-            <h3>{candidates.length ? '这个周期下没有候选股' : '今天没有满足条件的股票'}</h3>
-            <p>
-              {candidates.length
-                ? '换成「全部」或另一个周期看看。'
-                : '条件没有放宽，空结果也是一种结论。可以换个策略或板块，也可以明天 16:00 再看。'}
+  // ---------- task detail (?task=) ----------
+  let detailView: React.ReactNode = null;
+  if (taskId) {
+    let body: React.ReactNode;
+    if (detail.state.status === 'loading') {
+      body = (
+        <div className="cand-skel">
+          <PlanSkeleton rows={4} label="正在读取选股任务" />
+        </div>
+      );
+    } else if (detail.state.status === 'missing') {
+      body = (
+        <div className="empty">
+          <h3>找不到这个选股任务</h3>
+          <p>任务可能已被清理。回到任务列表重新发起一次。</p>
+        </div>
+      );
+    } else if (detail.state.status === 'error') {
+      body = <PlanErrorPanel message={detail.state.message} onRetry={detail.reload} title="选股任务读取失败" />;
+    } else if (task && isActiveTask(task)) {
+      body = (
+        <PickProgress
+          progress={typeof task.progress === 'number' ? task.progress : null}
+          message={task.message || (task.status === 'pending' ? '排队中，前面的任务完成后开始' : '正在选股…')}
+        />
+      );
+    } else if (task && task.status !== 'completed') {
+      body = (
+        <PlanErrorPanel
+          message={task.error || task.message || '选股任务没有完成。'}
+          onRetry={() => {
+            if (task.strategy) {
+              void submit(task.strategy, task.scope && scopeNames(task.scope).length ? task.scope : undefined).then((ok) => {
+                if (ok) openTask(null);
+              });
+            }
+          }}
+          title={task.status === 'interrupted' ? '选股任务被中断' : '选股没有完成'}
+        />
+      );
+    } else if (task) {
+      const warnings = (task.result?.warnings ?? []).filter((line) => line.trim() !== '');
+      body = (
+        <>
+          {warnings.length ? (
+            <p className="notice picks-notice" role="note">
+              <b>提示</b>
+              <span>{warnings.join('；')}</span>
             </p>
+          ) : null}
+          {!task.result ? (
+            <div className="empty">
+              <h3>结果没有保存下来</h3>
+              <p>任务完成了，但服务端没有找到对应的结果记录。可以重新发起一次。</p>
+            </div>
+          ) : visible.length ? (
+            <ul className="cands" key={`${task.taskId}-${horizon}`}>
+              {visible.map((pick, index) => (
+                <PickCard
+                  key={pick.code}
+                  pick={pick}
+                  index={index}
+                  inWatchlist={watchlist.codes.has(pick.code)}
+                  adding={adding.has(pick.code)}
+                  onAdd={handleAdd}
+                  onAsk={handleAsk}
+                  onOpen={handleOpen}
+                />
+              ))}
+            </ul>
+          ) : (
+            <div className="empty">
+              <h3>{candidates.length ? '这个周期下没有候选股' : '没有满足条件的股票'}</h3>
+              <p>
+                {candidates.length
+                  ? '换成「全部」或另一个周期看看。'
+                  : '条件没有放宽，空结果也是一种结论。可以换个策略或板块再发起一次。'}
+              </p>
+            </div>
+          )}
+        </>
+      );
+    }
+
+    const status = task ? taskStatus(task) : null;
+    detailView = (
+      <StaggerItem>
+        <section className="win picks-win" aria-label="选股任务详情">
+          <div className="toolbar">
+            <button type="button" className="btn quiet sm" onClick={() => openTask(null)}>
+              ← 全部任务
+            </button>
+            {task?.status === 'completed' && task.result ? (
+              <SegmentedControl options={HORIZON_OPTIONS} value={horizon} onChange={setHorizon} ariaLabel="周期" />
+            ) : null}
           </div>
-        )}
-      </>
-    );
-  } else {
-    results = (
-      <div className="empty">
-        <h3>还没有选股结果</h3>
-        <p>
-          {boardName
-            ? `选好策略后点「开始选股」，会在「${boardName}」板块的成分股里筛选。`
-            : '选好策略后点「开始选股」，会在全部 A 股里筛选。列出的是值得关注的股票，不是涨跌预测。'}
-        </p>
-      </div>
-    );
-  }
-
-  let scopeControl: React.ReactNode;
-  if (boardId === null) {
-    scopeControl = (
-      <Link className="btn quiet sm" to="/boards">
-        从异动板块里选
-      </Link>
-    );
-  } else if (board.status === 'loading') {
-    scopeControl = <span className="scope-pill" aria-busy="true">正在读取板块…</span>;
-  } else if (boardReady) {
-    scopeControl = (
-      <span className="scope-pill" data-testid="pick-scope">
-        <span>范围：{boardReady.name}板块</span>
-        <button type="button" className="btn quiet sm" onClick={clearBoardScope}>
-          清除范围
-        </button>
-      </span>
-    );
-  } else {
-    scopeControl = (
-      <span className="scope-pill" data-testid="pick-scope">
-        <span>板块范围不可用</span>
-        <button type="button" className="btn quiet sm" onClick={clearBoardScope}>
-          清除范围
-        </button>
-      </span>
+          {task ? (
+            <p className="cond-line task-head" data-testid="task-head">
+              策略 <b>{strategyName(task.strategy, strategies)}</b>，范围 <b>{scopeText(task.scope)}</b>
+              {formatPickTime(task.createdAt) ? `，发起于 ${formatPickTime(task.createdAt)}` : ''}
+              {formatPickTime(task.finishedAt) && !isActiveTask(task) ? `，结束于 ${formatPickTime(task.finishedAt)}` : ''}
+              {status ? <span className={`tag task-tag tone-${status.tone}`}>{status.label}</span> : null}
+              {task.status === 'completed' && horizon !== 'all' ? `，当前周期显示 ${visible.length} 只` : ''}
+            </p>
+          ) : null}
+          <div aria-live="polite" className="pick-results">
+            {body}
+          </div>
+        </section>
+      </StaggerItem>
     );
   }
 
-  let boardNotice: React.ReactNode = null;
-  if (boardId !== null && board.status === 'unavailable') {
-    boardNotice = <PlanUnavailablePanel compact headingLevel={3} />;
-  } else if (boardId !== null && board.status === 'error') {
-    boardNotice = (
-      <PlanErrorPanel compact message={board.message} onRetry={board.reload} title="板块信息加载失败，无法限定选股范围" />
-    );
-  } else if (boardReady && !boardReady.canPick) {
-    boardNotice = (
-      <p className="notice picks-notice" role="note">
-        <b>不按板块选股</b>
-        <span>{boardReady.name}的涨幅主要来自个别股票，或历史数据不足，所以不按板块机会选股。可以清除范围后按策略在全市场选。</span>
-      </p>
-    );
-  }
-
+  // ---------- new task + task list ----------
   let setupBlock: React.ReactNode;
   if (setup.status === 'loading') {
     setupBlock = (
@@ -337,7 +368,56 @@ const PicksPage: React.FC = () => {
       </div>
     );
   } else {
-    setupBlock = <StrategyChips strategies={strategies} value={strategy} onChange={setChosenStrategy} disabled={running} />;
+    setupBlock = <StrategyChips strategies={strategies} value={strategy} onChange={setChosenStrategy} disabled={submitting} />;
+  }
+
+  let boardNotice: React.ReactNode = null;
+  if (boardId !== null && board.status === 'unavailable') {
+    boardNotice = <PlanUnavailablePanel compact headingLevel={3} />;
+  } else if (boardId !== null && board.status === 'error') {
+    boardNotice = <PlanErrorPanel compact message={board.message} onRetry={board.reload} title="板块信息加载失败" />;
+  } else if (boardReady && !boardReady.canPick) {
+    boardNotice = (
+      <p className="notice picks-notice" role="note">
+        <b>没有自动带入板块</b>
+        <span>{boardReady.name}的涨幅主要来自个别股票，或历史数据不足，所以没有自动带入。仍然可以在上面手动选择。</span>
+      </p>
+    );
+  }
+
+  let listBody: React.ReactNode;
+  if (list.state.status === 'loading') {
+    listBody = (
+      <div className="cand-skel">
+        <PlanSkeleton rows={3} label="正在读取选股任务" />
+      </div>
+    );
+  } else if (list.state.status === 'error') {
+    listBody = <PlanErrorPanel compact message={list.state.message} onRetry={list.reload} title="选股任务读取失败" />;
+  } else if (list.state.tasks.length === 0) {
+    listBody = (
+      <div className="empty">
+        <h3>还没有选股任务</h3>
+        <p>在上面选好策略和板块后点「开始选股」。任务在后台运行，可以离开本页，完成后点进任务查看结果。</p>
+      </div>
+    );
+  } else {
+    listBody = (
+      <>
+        <ul className="task-list" aria-label="选股任务列表">
+          {list.state.tasks.map((item) => (
+            <TaskRow key={item.taskId} task={item} strategies={strategies} onOpen={openTask} />
+          ))}
+        </ul>
+        {list.state.total > list.state.tasks.length ? (
+          <div className="actions task-more">
+            <button type="button" className="btn quiet sm" onClick={list.loadMore}>
+              加载更早的任务（还有 {list.state.total - list.state.tasks.length} 个）
+            </button>
+          </div>
+        ) : null}
+      </>
+    );
   }
 
   return (
@@ -347,23 +427,38 @@ const PicksPage: React.FC = () => {
         subtitle="列出的是值得关注的股票，不是涨跌预测；每条都带买入条件和失效条件"
         onOpenAssistant={handleHeaderAsk}
       />
-      <StaggerItem>
-        <section className="win picks-win" aria-label="选股结果">
-          <div className="toolbar">
-            {scopeControl}
-            <SegmentedControl options={HORIZON_OPTIONS} value={horizon} onChange={setHorizon} ariaLabel="周期" />
-            <span className="spacer" aria-hidden="true" />
-            <button type="button" className="btn primary" disabled={!canStart} onClick={handleStart}>
-              {running ? '选股中…' : '开始选股'}
-            </button>
-          </div>
-          {setupBlock}
-          {boardNotice}
-          <div aria-live="polite" className="pick-results">
-            {results}
-          </div>
-        </section>
-      </StaggerItem>
+      {taskId ? (
+        detailView
+      ) : (
+        <>
+          <StaggerItem>
+            <section className="win picks-win" aria-labelledby="picks-new-title">
+              <div className="toolbar">
+                <h2 className="picks-title" id="picks-new-title">
+                  新建选股
+                </h2>
+                <span className="spacer" aria-hidden="true" />
+                <button type="button" className="btn primary" disabled={!canStart} onClick={handleStart}>
+                  {submitting ? '正在提交…' : '开始选股'}
+                </button>
+              </div>
+              {setupBlock}
+              <BoardPicker value={boards} onChange={setBoards} disabled={submitting} />
+              {boardNotice}
+            </section>
+          </StaggerItem>
+          <StaggerItem>
+            <section className="win picks-win" aria-labelledby="picks-list-title">
+              <div className="toolbar">
+                <h2 className="picks-title" id="picks-list-title">
+                  选股任务
+                </h2>
+              </div>
+              <div aria-live="polite">{listBody}</div>
+            </section>
+          </StaggerItem>
+        </>
+      )}
       <StockChartDialog
         target={chartTarget}
         onClose={() => setChartTarget(null)}

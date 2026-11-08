@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { getParsedApiError } from '../../api/error';
 import { systemConfigApi } from '../../api/systemConfig';
@@ -12,6 +12,8 @@ import { StockList } from '../../components/plan/mine/StockList';
 import { useMineOverview, useStockPlanDetail } from '../../components/plan/mine/useMineData';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
 import { QuoteSearch } from '../../components/plan/quote/QuoteSearch';
+import { watchlistCodeOf } from '../../utils/watchlistCode';
+import { useStockIndex } from '../../hooks/useStockIndex';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { showPlanToast } from '../../stores/planToastStore';
 import { usePlanUiStore } from '../../stores/planUiStore';
@@ -60,6 +62,56 @@ const StatePanel: React.FC<{ title: string; text: string; onRetry: () => void }>
   </section>
 );
 
+/**
+ * Shown while the next-day plan service is not available: the watchlist itself (codes from
+ * `/stocks/watchlist`, names from the bundled stock index) so added stocks are visible and removable.
+ */
+const WatchlistFallback: React.FC<{
+  codes: string[] | null;
+  busy: boolean;
+  onRemove: (code: string) => void;
+  onRetry: () => void;
+}> = ({ codes, busy, onRemove, onRetry }) => {
+  const stockIndex = useStockIndex(true);
+  const names = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of stockIndex.index) map.set(watchlistCodeOf(item), item.nameZh);
+    return map;
+  }, [stockIndex.index]);
+  return (
+    <section className="win watch-fallback" aria-labelledby="plan-page-title">
+      <div className="wf-head">
+        <h2 id="plan-page-title">我的自选</h2>
+        {codes ? <span className="wf-count">{codes.length} 只</span> : null}
+      </div>
+      <p className="notice wf-notice" role="note">
+        <b>次日计划还没有就绪</b>
+        <span>后端的次日计划模块还没有就绪，暂时只能维护自选列表；就绪后这里会出现每只股票的计划。</span>
+        <button type="button" className="btn sm" onClick={onRetry}>
+          重试
+        </button>
+      </p>
+      {codes === null ? (
+        <p className="note">正在读取自选…</p>
+      ) : codes.length === 0 ? (
+        <p className="note">还没有自选股。用右上角的搜索框找到股票，在走势图里点「加入自选」。</p>
+      ) : (
+        <ul className="wf-list" aria-label="自选列表">
+          {codes.map((code) => (
+            <li key={code}>
+              <span className="wf-name">{names.get(code.toUpperCase()) ?? '—'}</span>
+              <span className="num wf-code">{code}</span>
+              <button type="button" className="btn quiet sm" disabled={busy} onClick={() => onRemove(code)}>
+                移出
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+};
+
 const MinePage: React.FC = () => {
   const { t } = useUiLanguage();
   const title = t('plan.page.mine.title');
@@ -81,10 +133,30 @@ const MinePage: React.FC = () => {
   const [recordKey, setRecordKey] = useState(0);
   const [recordPrefill, setRecordPrefill] = useState<RecordBuyPrefill | null>(null);
   const [busy, setBusy] = useState(false);
+  const [watchCodes, setWatchCodes] = useState<string[] | null>(null);
+  const [watchKey, setWatchKey] = useState(0);
 
   useEffect(() => {
     document.title = `${title} - DSA`;
   }, [title]);
+
+  // The watchlist itself (independent of the plan service): marks searched stocks already added and backs the
+  // fallback list while the plan service is not ready.
+  useEffect(() => {
+    let cancelled = false;
+    systemConfigApi
+      .getWatchlist()
+      .then((codes) => {
+        if (!cancelled) setWatchCodes(codes);
+      })
+      .catch(() => {
+        if (!cancelled) setWatchCodes((current) => current ?? []);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [watchKey]);
+  const reloadWatch = useCallback(() => setWatchKey((key) => key + 1), []);
 
   // Compact layout: opening a stock moves focus to the back button, going back returns it to the row.
   const previousParam = useRef(paramCode);
@@ -147,12 +219,13 @@ const MinePage: React.FC = () => {
         await systemConfigApi.addToWatchlist(code);
         showPlanToast('已加入自选');
         reload(true);
+        reloadWatch();
         return null;
       } catch (error: unknown) {
         return getParsedApiError(error).message || '加入自选失败，请稍后重试。';
       }
     },
-    [reload],
+    [reload, reloadWatch],
   );
 
   const addWatchFromDetail = useCallback(
@@ -175,13 +248,14 @@ const MinePage: React.FC = () => {
         showPlanToast('已移出自选');
         navigate({ pathname: location.pathname, search: '' }, { replace: true });
         reload(true);
+        reloadWatch();
       } catch (error: unknown) {
         showPlanToast(getParsedApiError(error).message || '移出自选失败，请稍后重试。');
       } finally {
         setBusy(false);
       }
     },
-    [location.pathname, navigate, reload],
+    [location.pathname, navigate, reload, reloadWatch],
   );
 
   const openHoldings = () => {
@@ -208,8 +282,8 @@ const MinePage: React.FC = () => {
     <PlanPageHeader
       title={title}
       subtitle={subtitle}
-      actions={<QuoteSearch onAddWatch={(code) => void addWatchFromDetail(code)} />}
       onOpenAssistant={() => openAssistant()}
+      actions={<QuoteSearch onAddWatch={(code) => void addWatchFromDetail(code)} />}
     />
   );
 
@@ -217,9 +291,10 @@ const MinePage: React.FC = () => {
     return (
       <>
         {header}
-        <StatePanel
-          title="次日计划服务未就绪"
-          text="后端的次日计划模块还没有就绪，所以读不到持仓和计划。服务就绪后重试即可，已有的自选和持仓不受影响。"
+        <WatchlistFallback
+          codes={watchCodes}
+          busy={busy}
+          onRemove={(code) => void removeWatch(code)}
           onRetry={() => overview.reload()}
         />
       </>

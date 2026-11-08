@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from src.repositories.board_analysis_repo import BoardAnalysisRepository
@@ -159,6 +159,30 @@ class BoardAnomalyService:
             "boards": rows,
             "history_note": self._history_note(day, run),
         }
+
+    def board_rows(self, refs: List[str], trade_date: Optional[date] = None) -> Tuple[Optional[date], Dict[str, Dict[str, Any]]]:
+        """List rows (same shape as ``list_anomalies``) of the given board ids in the latest completed run.
+
+        Boards without a signal that day get state ``none``; unknown ids are left out. Returns the run's
+        trade date (None without a completed run) and ``{board id: row}``.
+        """
+        wanted = {ref for ref in refs if ref}
+        if not wanted:
+            return None, {}
+        run = self.repo.latest_completed_run(trade_date)
+        if run is None:
+            return None, {}
+        catalog = [b for b in self.repo.list_catalog(("industry", "concept")) if b["ref"] in wanted]
+        day: date = run["trade_date"]
+        ids = {b["id"] for b in catalog}
+        daily = self.repo.get_board_daily_range([day], list(ids))
+        signals = {sig["board_id"]: sig for sig in self.repo.get_signals(run["id"]) if sig["board_id"] in ids}
+        empty = {"signal_type": "none", "flags": {}, "evidence": {}, "driver": "unknown", "reason": ""}
+        rows = {
+            b["ref"]: self._board_row(b, daily.get((day, b["id"])), signals.get(b["id"], empty))
+            for b in catalog
+        }
+        return day, rows
 
     # ------------------------------------------------------------------
     # detail

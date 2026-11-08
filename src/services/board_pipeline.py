@@ -4,7 +4,7 @@
 Designed to run at 17:00 on D, when ``daily_basic`` / ``limit_list_d`` / ``dc_*`` of D are not
 published yet (they arrive 17:00-19:00 / 18:30-19:30 / 20:30):
 
-    previous  ->  membership  ->  ingest  ->  metrics  ->  signals  ->  us_link
+    previous  ->  membership  ->  ingest  ->  metrics  ->  signals  ->  us_link  ->  recommend
 
 * ``previous``: complete D-1 (the previous session): its real ``daily_basic`` / ``limit_list_d``
   replace the values derived the day before, and its ``dc_index`` / ``dc_daily`` are fetched.
@@ -25,6 +25,9 @@ published yet (they arrive 17:00-19:00 / 18:30-19:30 / 20:30):
   that crossed their threshold. A failure only marks the step ``partial`` / ``failed`` (a warning);
   states and reasons are not touched. It runs when ``us_service`` is given, or by default when the
   pipeline does its own live ingestion (no ``ingest_service`` injected and not ``skip_ingest``).
+* ``recommend`` (non-fatal, last): the analysis model picks 3-5 boards worth following next session from the
+  run's signalled boards (``board_recommendation_service``; rule ranking when the model is unavailable). Runs
+  when ``recommender`` is given, or by default on a live ingestion (same rule as ``us_link``).
 
 and one ``daily_runs`` row carrying the per-step results and the threshold snapshot.
 Every step is idempotent: re-running a date re-uses ingested data, writes the same metric
@@ -81,6 +84,7 @@ def run_board_pipeline(
     signal_service: Optional[BoardSignalService] = None,
     calendar_fn: Optional[CalendarFn] = default_calendar_fn,
     us_service: Any = _AUTO_US,
+    recommender: Any = _AUTO_US,
 ) -> Dict[str, Any]:
     """Run previous -> membership -> ingest -> metrics -> signals for ``trade_date`` (default: today in CN).
 
@@ -90,8 +94,11 @@ def run_board_pipeline(
     daily flow.
     """
     day = as_date(trade_date) if trade_date is not None else _china_today()
+    live = ingest_service is None and not skip_ingest
     if us_service is _AUTO_US:
-        us_service = _AUTO_US if (ingest_service is None and not skip_ingest) else None
+        us_service = _AUTO_US if live else None
+    if recommender is _AUTO_US:
+        recommender = _AUTO_US if live else None
     repo = repo or BoardAnalysisRepository()
     signal_service = signal_service or BoardSignalService(repo=repo)
     metrics_service = metrics_service or BoardMetricsService(repo=repo, thresholds=signal_service.thresholds)
@@ -203,6 +210,10 @@ def run_board_pipeline(
         if "failed" in statuses or "partial" in statuses:
             run_status = "partial"
     repo.update_run(run_id, status=run_status, steps=steps, error=error, finished=True)
+    if recommender is not None and run_status in ("succeeded", "partial"):
+        # 6. recommend (non-fatal): needs the run to be completed, so it runs after the status is written.
+        steps.append(_recommend_step(day, None if recommender is _AUTO_US else recommender))
+        repo.update_run(run_id, steps=steps)
     return {"status": run_status, "run_id": run_id, "trade_date": day.isoformat(), "steps": steps, "error": error}
 
 
@@ -259,6 +270,21 @@ def _us_link_step(run_id: int, day: date, repo: BoardAnalysisRepository, us_serv
 
     status, detail, data = attach_us_link(run_id, day, repo, us_service=us_service)
     return _step("us_link", "隔夜美股联动", status, detail, data)
+
+
+def _recommend_step(day: date, recommender: Any) -> Dict[str, Any]:
+    try:
+        if recommender is None:
+            from src.services.board_recommendation_service import BoardRecommendationService
+
+            recommender = BoardRecommendationService()
+        result = recommender.generate(day)
+    except Exception as exc:  # noqa: BLE001 - recommendations never fail the run
+        logger.warning("[BoardPipeline] %s recommendation failed: %s", day, exc, exc_info=True)
+        return _step("recommend", "推荐板块", "failed", str(exc)[:200])
+    source = "模型" if result.get("source") == "model" else "规则"
+    detail = f"{result.get('count', 0)} 个（{source}）" + (f"；{result['note']}" if result.get("note") else "")
+    return _step("recommend", "推荐板块", result.get("status") or "succeeded", detail, result)
 
 
 class _NoData(RuntimeError):

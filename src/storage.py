@@ -379,6 +379,33 @@ class ScreeningRun(Base):
     )
 
 
+class ScreeningTask(Base):
+    """One screening task started from the Web picks page (persisted from submit to finish).
+
+    ``status``: pending / processing / completed / failed / interrupted (the process restarted
+    while the task was running). A completed task points at its ``screening_runs`` row via ``run_id``.
+    """
+
+    __tablename__ = 'screening_tasks'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(64), nullable=False, unique=True, index=True)
+    status = Column(String(16), nullable=False, default='pending', index=True)
+    progress = Column(Integer, nullable=False, default=0)
+    message = Column(Text)
+    error = Column(Text)
+    strategy = Column(String(64), nullable=False)
+    market = Column(String(16), nullable=False, default='cn')
+    max_results = Column(Integer, nullable=False, default=10)
+    scope_json = Column(Text)
+    run_id = Column(String(64), index=True)
+    candidate_count = Column(Integer)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    updated_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
 class AnalysisHistory(Base):
     """
     分析结果历史记录模型
@@ -1677,6 +1704,111 @@ class BoardSignal(Base):
     __table_args__ = (
         UniqueConstraint('run_id', 'board_id', name='uix_board_signal_run_board'),
         Index('ix_board_signal_date_board', 'trade_date', 'board_id'),
+    )
+
+
+class BoardFollow(Base):
+    """用户关注的板块（按 API 板块 id 记录，例如 concept:BK1036；名称和类型是关注时的快照）。"""
+
+    __tablename__ = 'board_follow'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    board_ref = Column(String(64), nullable=False, unique=True)
+    board_name = Column(String(64), nullable=False)
+    board_type = Column(String(16), nullable=False)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class BoardRecommendation(Base):
+    """某次板块运行之后推荐重点关注的板块（模型挑选，模型不可用时按规则排序）。"""
+
+    __tablename__ = 'board_recommendation'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('daily_runs.id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    rank = Column(Integer, nullable=False)
+    board_ref = Column(String(64), nullable=False)
+    board_name = Column(String(64), nullable=False)
+    board_type = Column(String(16), nullable=False)
+    reason = Column(Text)
+    source = Column(String(16), nullable=False, default='model')  # model / rule
+    model = Column(String(128))
+    note = Column(Text)  # why the rule fallback was used, if it was
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+# === 次日计划（docs/daily-plan-api.md，src/services/daily_plan_service.py）===
+
+class DailyPlanAccount(Base):
+    """手动录入的账户现金（单行，id 固定为 1）；持仓在 plan_holding。"""
+
+    __tablename__ = 'plan_account'
+
+    id = Column(Integer, primary_key=True)
+    cash = Column(Float, nullable=False, default=0.0)  # 元
+    updated_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class DailyPlanHolding(Base):
+    """当前持仓快照；PUT /plan/holdings 整体覆盖。"""
+
+    __tablename__ = 'plan_holding'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, unique=True)  # 6 位 A 股代码
+    shares = Column(Integer, nullable=False)
+    cost = Column(Float, nullable=False)  # 持仓成本价，元
+    buy_date = Column(Date)  # 选填，用于 T+1 判断
+    horizon = Column(String(8))  # short / swing，空表示未指定
+    position = Column(Integer, nullable=False, default=0)  # 录入顺序
+
+
+class DailyPlanRun(Base):
+    """次日计划的一次运行（定时或手动）。"""
+
+    __tablename__ = 'plan_run'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    status = Column(String(16), nullable=False, default='running')  # running / succeeded / partial / failed / skipped
+    trigger = Column(String(16), nullable=False, default='manual')  # schedule / manual
+    started_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    finished_at = Column(DateTime)
+    steps_json = Column(Text)
+    stock_total = Column(Integer, nullable=False, default=0)
+    stock_succeeded = Column(Integer, nullable=False, default=0)
+    stock_failed = Column(Integer, nullable=False, default=0)
+    failures_json = Column(Text)
+    push_json = Column(Text)
+    push_preview = Column(Text)
+    model_calls_json = Column(Text)
+    data_gaps_json = Column(Text)
+    error = Column(Text)
+
+
+class DailyPlanStock(Base):
+    """每只股票生成的次日计划（payload 是 StockPlan 的 JSON）；同一股票同一交易日取 id 最大的一行。
+
+    ``run_id`` 为空表示打开详情时按需生成（该股票没有已存计划，例如刚加入自选）。
+    ``fingerprint`` 记录生成时的持仓状态，持仓变化后已存计划视为过期。
+    """
+
+    __tablename__ = 'plan_stock'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), index=True)
+    trade_date = Column(Date, nullable=False)
+    code = Column(String(10), nullable=False)
+    status = Column(String(16), nullable=False, default='ready')  # ready / failed
+    fingerprint = Column(String(255))
+    payload_json = Column(Text, nullable=False)
+    meta_json = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        Index('ix_plan_stock_date_code', 'trade_date', 'code'),
     )
 
 
@@ -3279,6 +3411,115 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         if include_result:
             payload["result"] = result
         return payload
+
+    # ------------------------------------------------------------------ screening tasks
+
+    _SCREENING_TASK_FIELDS = frozenset({
+        "status", "progress", "message", "error", "run_id", "candidate_count", "started_at", "finished_at",
+    })
+    SCREENING_TASK_ACTIVE_STATUSES = ("pending", "processing")
+
+    def create_screening_task(
+        self,
+        *,
+        task_id: str,
+        strategy: str,
+        market: str,
+        max_results: int,
+        scope: Optional[Dict[str, Any]],
+        message: str = "",
+    ) -> None:
+        """Insert a new screening task row (raises on failure: a task that cannot be recorded is not started)."""
+        def _write(session: Session) -> int:
+            now = utc_naive_now()
+            session.add(ScreeningTask(
+                task_id=task_id,
+                status="pending",
+                progress=0,
+                message=message or None,
+                strategy=strategy,
+                market=market,
+                max_results=int(max_results),
+                scope_json=self._safe_json_dumps(scope or {}),
+                created_at=now,
+                updated_at=now,
+            ))
+            return 1
+
+        self._run_write_transaction(f"create_screening_task[{task_id}]", _write)
+
+    def update_screening_task(self, task_id: str, **fields: Any) -> bool:
+        """Update progress / status fields of a task. Fail-open: a lost progress write must not stop the task."""
+        values = {key: value for key, value in fields.items() if key in self._SCREENING_TASK_FIELDS}
+        if not values:
+            return False
+        values["updated_at"] = utc_naive_now()
+        try:
+            def _write(session: Session) -> int:
+                row = session.execute(
+                    select(ScreeningTask).where(ScreeningTask.task_id == task_id)
+                ).scalar_one_or_none()
+                if row is None:
+                    return 0
+                for key, value in values.items():
+                    setattr(row, key, value)
+                return 1
+
+            return bool(self._run_write_transaction(f"update_screening_task[{task_id}]", _write))
+        except Exception as exc:
+            logger.warning("选股任务状态写入失败（fail-open）: task_id=%s err=%s", task_id, exc)
+            return False
+
+    def list_screening_tasks(self, *, limit: int = 20, offset: int = 0) -> Tuple[List[Dict[str, Any]], int]:
+        """Newest tasks first, plus the total count."""
+        normalized_limit = max(1, min(int(limit), 100))
+        normalized_offset = max(0, int(offset))
+        with self.get_session() as session:
+            total = session.execute(select(func.count(ScreeningTask.id))).scalar_one()
+            rows = session.execute(
+                select(ScreeningTask)
+                .order_by(desc(ScreeningTask.created_at), desc(ScreeningTask.id))
+                .offset(normalized_offset)
+                .limit(normalized_limit)
+            ).scalars().all()
+            return [self._screening_task_to_dict(row) for row in rows], int(total or 0)
+
+    def get_screening_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        normalized = str(task_id or "").strip()
+        if not normalized:
+            return None
+        with self.get_session() as session:
+            row = session.execute(
+                select(ScreeningTask).where(ScreeningTask.task_id == normalized)
+            ).scalar_one_or_none()
+            return self._screening_task_to_dict(row) if row is not None else None
+
+    @staticmethod
+    def _utc_iso(value: Optional[datetime]) -> Optional[str]:
+        return f"{value.isoformat()}Z" if value is not None else None
+
+    @classmethod
+    def _screening_task_to_dict(cls, row: ScreeningTask) -> Dict[str, Any]:
+        try:
+            scope = json.loads(row.scope_json or "{}")
+        except (TypeError, ValueError):
+            scope = {}
+        return {
+            "task_id": row.task_id,
+            "status": row.status,
+            "progress": int(row.progress or 0),
+            "message": row.message,
+            "error": row.error,
+            "strategy": row.strategy,
+            "market": row.market,
+            "max_results": row.max_results,
+            "scope": scope if isinstance(scope, dict) else {},
+            "run_id": row.run_id,
+            "candidate_count": row.candidate_count,
+            "created_at": cls._utc_iso(row.created_at),
+            "started_at": cls._utc_iso(row.started_at),
+            "finished_at": cls._utc_iso(row.finished_at),
+        }
 
     def get_recent_news(self, code: str, days: int = 7, limit: int = 20) -> List[NewsIntel]:
         """

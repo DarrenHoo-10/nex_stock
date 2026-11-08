@@ -22,13 +22,16 @@ export interface BoardDetailPanelProps {
   onBack: () => void;
   onPick: (boardId: string) => void;
   onAsk: () => void;
+  followed: boolean;
+  followPending: boolean;
+  onToggleFollow: () => void;
   /** Opens the K-line / chip chart of a representative stock. */
   onOpenStock?: (code: string, name: string) => void;
 }
 
 /** Detail window of a board: verdict, six metrics, excess-return chart, representatives and the reasons. */
 export const BoardDetailPanel = forwardRef<HTMLHeadingElement, BoardDetailPanelProps>(
-  ({ detail, tradeDate, benchmark, onBack, onPick, onAsk, onOpenStock }, headingRef) => {
+  ({ detail, tradeDate, benchmark, onBack, onPick, onAsk, followed, followPending, onToggleFollow, onOpenStock }, headingRef) => {
     const stateLabel = BOARD_STATE_LABEL[detail.state];
     const quiet = detail.state === 'ebbing' || detail.state === 'abnormal_drop';
     const unknownDriver = detail.driverKind === 'unknown' || detail.drivers.startsWith('原因未明');
@@ -50,6 +53,16 @@ export const BoardDetailPanel = forwardRef<HTMLHeadingElement, BoardDetailPanelP
                 </span>
               ))}
             </div>
+            <button
+              type="button"
+              className={`btn sm follow-btn${followed ? ' on' : ''}`}
+              aria-pressed={followed}
+              disabled={followPending}
+              onClick={onToggleFollow}
+            >
+              <span aria-hidden="true">{followed ? '★' : '☆'}</span>
+              {followed ? '已关注' : '关注'}
+            </button>
           </header>
           <div className="hero">
             <div>

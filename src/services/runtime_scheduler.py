@@ -694,7 +694,7 @@ class RuntimeSchedulerService:
         }]
 
     def _current_daily_jobs(self, config: Config) -> List[Dict[str, Any]]:
-        """Independent daily jobs (own time): the 17:00 board pipeline, the weekly industry membership refresh, the 08:15 pre-open push and the news daily fetch."""
+        """Independent daily jobs (own time): the 17:00 board pipeline, the weekly industry membership refresh, the next-day plan run (at SCHEDULE_TIME, own thread), the 08:15 pre-open push and the news daily fetch."""
         jobs: List[Dict[str, Any]] = []
         try:
             from src.services.board_pipeline_schedule import build_board_pipeline_jobs
@@ -708,6 +708,12 @@ class RuntimeSchedulerService:
             jobs.extend(build_industry_membership_jobs(config, config_provider=self._config_provider))
         except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
             logger.warning("Failed to build industry membership weekly job: %s", exc)
+        try:
+            from src.services.daily_plan_schedule import build_daily_plan_jobs
+
+            jobs.extend(build_daily_plan_jobs(config, config_provider=self._config_provider))
+        except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
+            logger.warning("Failed to build daily plan job: %s", exc)
         try:
             from src.services.preopen_push_schedule import build_preopen_push_jobs
 

@@ -15,7 +15,9 @@ from src.config import Config
 from src.services.screening.config import Config as ScreeningRuntimeConfig
 from src.services.screening.filter import check_hard_filters, validate_check_snapshot
 from src.services.screening.strategy import load_all_strategies_with_extra
+from src.services import screening_task_service
 from src.services.screening_service import ScreeningService, _ensure_screening_enabled
+from src.services.screening_task_service import ScreeningTaskTracker
 from src.services.task_queue import TaskStatus as QueueTaskStatus
 from src.services.task_queue import get_task_queue
 from src.storage import DatabaseManager
@@ -104,11 +106,36 @@ class ScreeningScreenTaskStatus(BaseModel):
     message: Optional[str] = None
     error: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
+    # Persisted task fields (absent for tasks started before task persistence existed).
+    strategy: Optional[str] = None
+    market: Optional[str] = None
+    max_results: Optional[int] = None
+    scope: Optional[Dict[str, Any]] = None
+    run_id: Optional[str] = None
+    candidate_count: Optional[int] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
+class ScreeningTaskListResponse(BaseModel):
+    tasks: List[ScreeningScreenTaskStatus]
+    total: int
 
 
 def _service(config: Config, db_manager: Any = None) -> ScreeningService:
     usable_db = db_manager if callable(getattr(db_manager, "save_screening_run", None)) else None
     return ScreeningService(config=config, db_manager=usable_db)
+
+
+def _task_store(db_manager: Any) -> Any:
+    """The database manager when it can persist screening tasks (tests may inject a bare stub)."""
+    return db_manager if callable(getattr(db_manager, "create_screening_task", None)) else None
+
+
+def _queue_knows(task_id: str) -> bool:
+    task = get_task_queue().get_task(task_id)
+    return task is not None and task.report_type == "screening_screen"
 
 
 def _screening_task_not_found(task_id: str) -> HTTPException:
@@ -220,31 +247,46 @@ def screening_start_screen_task(
 ) -> ScreeningScreenAccepted:
     task_id = uuid.uuid4().hex
     task_queue = get_task_queue()
-
-    def run_screen() -> Dict[str, Any]:
-        task_queue.update_task_progress(
-            task_id,
-            20,
-            "正在执行选股，外部数据源较慢时会持续后台运行",
-        )
-
-        def report_progress(progress: int, message: str) -> None:
-            task_queue.update_task_progress(task_id, progress, message)
-
-        result = _service(config, db_manager).screen(
+    store = _task_store(db_manager)
+    tracker = ScreeningTaskTracker(store, task_id) if store is not None else None
+    if store is not None:
+        store.create_screening_task(
+            task_id=task_id,
             strategy=request.strategy,
             market=request.market,
             max_results=request.max_results,
-            selection_seed=request.variant_seed,
-            scope=request.scope,
-            progress_callback=report_progress,
+            scope=request.scope.model_dump(),
+            message="选股任务已提交",
         )
-        task_queue.update_task_progress(
-            task_id,
-            98,
-            f"选股已完成，正在整理 {result.get('candidate_count', 0)} 条候选",
-        )
-        return result
+
+    def run_screen() -> Dict[str, Any]:
+        started_message = "正在执行选股，外部数据源较慢时会持续后台运行"
+        task_queue.update_task_progress(task_id, 20, started_message)
+        if tracker is not None:
+            tracker.started(20, started_message)
+
+        def report_progress(progress: int, message: str) -> None:
+            task_queue.update_task_progress(task_id, progress, message)
+            if tracker is not None:
+                tracker.progress(progress, message)
+
+        def job() -> Dict[str, Any]:
+            result = _service(config, db_manager).screen(
+                strategy=request.strategy,
+                market=request.market,
+                max_results=request.max_results,
+                selection_seed=request.variant_seed,
+                scope=request.scope,
+                progress_callback=report_progress,
+            )
+            task_queue.update_task_progress(
+                task_id,
+                98,
+                f"选股已完成，正在整理 {result.get('candidate_count', 0)} 条候选",
+            )
+            return result
+
+        return tracker.run(job) if tracker is not None else job()
 
     task = task_queue.submit_background_task(
         run_screen,
@@ -266,22 +308,49 @@ def screening_start_screen_task(
     )
 
 
-@router.get("/screen/tasks/{task_id}", response_model=ScreeningScreenTaskStatus)
-def screening_screen_task_status(task_id: str) -> ScreeningScreenTaskStatus:
-    task = get_task_queue().get_task(task_id)
-    if task is None or task.report_type != "screening_screen":
-        raise _screening_task_not_found(task_id)
-
-    result = task.result if task.status == QueueTaskStatus.COMPLETED and isinstance(task.result, dict) else None
-    return ScreeningScreenTaskStatus(
-        task_id=task.task_id,
-        trace_id=task.trace_id or task.task_id,
-        status=task.status.value if isinstance(task.status, QueueTaskStatus) else str(task.status),
-        progress=task.progress,
-        message=task.message,
-        error=task.error,
-        result=result,
+@router.get("/screen/tasks", response_model=ScreeningTaskListResponse)
+def screening_list_screen_tasks(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> ScreeningTaskListResponse:
+    """Persisted screening tasks, newest first (no results; open one task for its candidates)."""
+    store = _task_store(db_manager)
+    if store is None:
+        return ScreeningTaskListResponse(tasks=[], total=0)
+    tasks, total = screening_task_service.list_tasks(store, limit=limit, offset=offset, is_live=_queue_knows)
+    return ScreeningTaskListResponse(
+        tasks=[ScreeningScreenTaskStatus(trace_id=task["task_id"], **task) for task in tasks],
+        total=total,
     )
+
+
+@router.get("/screen/tasks/{task_id}", response_model=ScreeningScreenTaskStatus)
+def screening_screen_task_status(
+    task_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> ScreeningScreenTaskStatus:
+    store = _task_store(db_manager)
+    persisted = (
+        screening_task_service.get_task(store, task_id, is_live=_queue_knows) if store is not None else None
+    )
+    task = get_task_queue().get_task(task_id)
+    if task is not None and task.report_type == "screening_screen":
+        result = task.result if task.status == QueueTaskStatus.COMPLETED and isinstance(task.result, dict) else None
+        fields = {key: value for key, value in (persisted or {}).items() if key not in {"status", "progress", "message", "error", "result", "task_id"}}
+        return ScreeningScreenTaskStatus(
+            task_id=task.task_id,
+            trace_id=task.trace_id or task.task_id,
+            status=task.status.value if isinstance(task.status, QueueTaskStatus) else str(task.status),
+            progress=task.progress,
+            message=task.message,
+            error=task.error,
+            result=result if result is not None else (persisted or {}).get("result"),
+            **fields,
+        )
+    if persisted is None:
+        raise _screening_task_not_found(task_id)
+    return ScreeningScreenTaskStatus(trace_id=persisted["task_id"], **persisted)
 
 
 @router.post("/screen")

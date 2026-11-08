@@ -93,7 +93,8 @@ Tushare 的接口能力能够覆盖“题材 ∩ 沪深主板 ∩ 策略”：[`
 | `/api/v1/screening/screen/check` | POST | 用调用方提供的单条快照，逐项检查策略硬过滤条件；不抓取行情 |
 | `/api/v1/screening/screen` | POST | 同步执行选股；可传匿名 `variant_seed` 在每次运行中生成有界的近分候选组合 |
 | `/api/v1/screening/screen/tasks` | POST | 提交后台选股任务；请求字段与同步接口一致 |
-| `/api/v1/screening/screen/tasks/{task_id}` | GET | 查询任务进度、错误或最终结果 |
+| `/api/v1/screening/screen/tasks` | GET | 已保存的选股任务列表（新到旧，`limit` / `offset` 分页，返回 `tasks` 与 `total`，不含结果） |
+| `/api/v1/screening/screen/tasks/{task_id}` | GET | 查询任务进度、错误或最终结果；任务同时写入 `screening_tasks` 表（状态 `pending` / `processing` / `completed` / `failed` / `interrupted`，完成后用 `run_id` 关联 `screening_runs` 的结果），服务重启后仍可查询，重启时未完成的任务标为 `interrupted` |
 | `/api/v1/screening/history` | GET | 按策略、市场查询最近完成的选股运行摘要 |
 | `/api/v1/screening/history/{run_id}` | GET | 读取一条持久化的完整选股结果 |
 | `/api/v1/screening/source-history` | GET | 汇总历史运行中的快照源命中、错误和降级次数 |

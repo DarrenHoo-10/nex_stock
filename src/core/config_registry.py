@@ -106,6 +106,14 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "US_MOVE_INDEX_PCT",
     "PREOPEN_PUSH_ENABLED",
     "PREOPEN_PUSH_TIME",
+    # Next-day plan (daily plan): position rules and the auto-run switch are edited on the new
+    # Preferences page (/preferences), not the generic settings form. The run time is SCHEDULE_TIME.
+    "DAILY_PLAN_ENABLED",
+    "POSITION_STOP_LOSS_PCT",
+    "POSITION_MAX_TOTAL_PCT",
+    "POSITION_MAX_HOLDINGS",
+    "POSITION_MAX_SINGLE_PCT",
+    "POSITION_STOP_MODE",
     # AKShare news pool knobs (cadence, retention tiers, dedup, announcement mode, classification
     # batching, board-driver threshold) are ops-level, read by the news scheduler jobs and services;
     # NEWS_INTEL_AUTO_FETCH_ENABLED keeps its existing switch semantics.

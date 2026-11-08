@@ -44,6 +44,11 @@ TOOL_DISPLAY_NAMES: Dict[str, str] = {
 
 logger = logging.getLogger(__name__)
 
+# Chat SSE: a keep-alive comment every 15 s while no event arrives; the stream still ends with
+# "分析超时" after 300 s without any progress event (Codex keeps its own deadline).
+_STREAM_HEARTBEAT_SECONDS = 15.0
+_STREAM_IDLE_TIMEOUT_SECONDS = 300.0
+
 router = APIRouter()
 
 _ACTIVE_CODEX_STREAMS: Dict[str, threading.Event] = {}
@@ -687,19 +692,25 @@ async def agent_chat_stream(
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                 return
             fut = loop.run_in_executor(None, run_sync, executor, turn)
+            idle_seconds = 0.0
             while True:
                 try:
-                    if backend_id == "codex_app_server":
-                        # Codex owns one authoritative backend deadline.  A
-                        # second API timeout would race it and could emit a
-                        # terminal event before process cleanup finishes.
-                        event = await queue.get()
-                    else:
-                        event = await asyncio.wait_for(queue.get(), timeout=300.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=_STREAM_HEARTBEAT_SECONDS)
                 except asyncio.TimeoutError:
-                    event = {"type": "error", "message": "分析超时"}
-                    yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
-                    break
+                    idle_seconds += _STREAM_HEARTBEAT_SECONDS
+                    # Codex owns one authoritative backend deadline; a second API
+                    # timeout would race it and could emit a terminal event before
+                    # process cleanup finishes.
+                    if backend_id != "codex_app_server" and idle_seconds >= _STREAM_IDLE_TIMEOUT_SECONDS:
+                        event = {"type": "error", "message": "分析超时"}
+                        yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                        break
+                    # SSE comment: keeps proxies (Cloudflare drops a response after
+                    # ~100 s without bytes) from closing the stream during one long
+                    # model call; clients ignore lines that start with ':'.
+                    yield ": keepalive\n\n"
+                    continue
+                idle_seconds = 0.0
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                 if event.get("type") in ("done", "error"):
                     break

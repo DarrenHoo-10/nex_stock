@@ -315,6 +315,32 @@ def get_light_reasoning_effort(config: Any) -> str:
     return llm_generation_params.normalize_reasoning_effort(getattr(config, "litellm_light_reasoning_effort", ""))
 
 
+def _parse_optional_pct(value: Optional[str], *, field_name: str) -> Optional[float]:
+    """Parse an optional percentage in (0, 100]; blank or invalid -> ``None`` (invalid logs a warning)."""
+    text = (value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = float(text)
+    except ValueError:
+        parsed = 0.0
+    if not 0 < parsed <= 100:
+        logger.warning("%s=%r is not a percentage in (0, 100]; ignoring it", field_name, value)
+        return None
+    return parsed
+
+
+def _parse_stop_mode(value: Optional[str]) -> str:
+    """``POSITION_STOP_MODE``: ``fixed`` (default) or ``nearer``; unknown -> warning + ``fixed``."""
+    text = (value or '').strip().lower()
+    if not text:
+        return 'fixed'
+    if text not in ('fixed', 'nearer'):
+        logger.warning("POSITION_STOP_MODE=%r is not fixed / nearer; falling back to fixed", value)
+        return 'fixed'
+    return text
+
+
 def _parse_weekday(value: Optional[str], default: int, *, field_name: str) -> int:
     """Parse an ISO weekday (1=Monday ... 7=Sunday); blank -> default, invalid / out of range -> warning + default."""
     text = (value or '').strip()
@@ -1429,6 +1455,13 @@ class Config:
     us_move_index_pct: float = 1.5  # 美股指数单日涨跌幅达到该绝对值（%）视为异动
     preopen_push_enabled: bool = False  # 定时模式下是否在交易日推送盘前版（隔夜美股 + 自选股盘前分析）
     preopen_push_time: str = "08:15"  # 盘前版开始运行时间（HH:MM，本机时区；约 8:45 送达）
+    # === 次日计划（docs/daily-plan-api.md）：仓位规则与自动运行开关 ===
+    daily_plan_enabled: bool = False  # 定时模式下是否在交易日按 SCHEDULE_TIME 自动生成次日计划并推送飞书
+    position_stop_loss_pct: float = 10.0  # 止损幅度（%），从买入价或持仓成本起算
+    position_max_total_pct: float = 100.0  # 总仓位上限（%，占总资金）
+    position_max_holdings: int = 1  # 最多持股数
+    position_max_single_pct: Optional[float] = None  # 单只仓位上限（%）；空 = 总仓位上限 ÷ 最多持股数
+    position_stop_mode: str = "fixed"  # fixed 固定比例 / nearer 固定比例与技术支撑取较近者
 
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
@@ -2609,6 +2642,22 @@ class Config:
                 default='08:15',
                 field_name='PREOPEN_PUSH_TIME',
             ),
+            daily_plan_enabled=parse_env_bool(os.getenv('DAILY_PLAN_ENABLED'), default=False),
+            position_stop_loss_pct=parse_env_float(
+                os.getenv('POSITION_STOP_LOSS_PCT'), 10.0, field_name='POSITION_STOP_LOSS_PCT',
+                minimum=0.1, maximum=99.9,
+            ),
+            position_max_total_pct=parse_env_float(
+                os.getenv('POSITION_MAX_TOTAL_PCT'), 100.0, field_name='POSITION_MAX_TOTAL_PCT',
+                minimum=0.1, maximum=100.0,
+            ),
+            position_max_holdings=parse_env_int(
+                os.getenv('POSITION_MAX_HOLDINGS'), 1, field_name='POSITION_MAX_HOLDINGS', minimum=1,
+            ),
+            position_max_single_pct=_parse_optional_pct(
+                os.getenv('POSITION_MAX_SINGLE_PCT'), field_name='POSITION_MAX_SINGLE_PCT',
+            ),
+            position_stop_mode=_parse_stop_mode(os.getenv('POSITION_STOP_MODE')),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
             backtest_eval_window_days=parse_env_int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS'), 10, field_name='BACKTEST_EVAL_WINDOW_DAYS', minimum=1),
