@@ -38,12 +38,14 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 from src.repositories.intelligence_repo import IntelligenceRepository
 from src.services import news_akshare_source as ak_source
+from src.services import news_cninfo_source as cninfo_source
 from src.services.news_akshare_source import (
     CN_TZ,
     FALLBACK_FLASH_SOURCES,
     PRIMARY_FLASH_SOURCES,
     SOURCE_CJZC,
     SOURCE_CLS,
+    SOURCE_CNINFO,
     SOURCE_NOTICE,
     NewsRecord,
     NewsSourceBusy,
@@ -63,6 +65,34 @@ _NOTICE_MAX_LOOKBACK_DAYS = 5
 
 _POLL_LOCK = threading.Lock()
 _DAILY_LOCK = threading.Lock()
+
+
+class _SourceTally:
+    """Calls, records and errors of one announcement source in one daily run."""
+
+    def __init__(self) -> None:
+        self.successes = 0
+        self.count = 0
+        self.errors: List[str] = []
+
+    @property
+    def attempted(self) -> int:
+        return self.successes + len(self.errors)
+
+    def ok(self, count: int) -> None:
+        self.successes += 1
+        self.count += count
+
+    def fail(self, error: str) -> None:
+        self.errors.append(error)
+
+    def status(self) -> str:
+        if self.errors:
+            return "partial" if self.successes else "failed"
+        return "ok" if self.count else "empty"
+
+    def summary(self) -> Dict[str, Any]:
+        return {"status": self.status(), "calls": self.attempted, "fetched": self.count, "errors": self.errors}
 
 
 def china_now() -> datetime:
@@ -344,66 +374,121 @@ class NewsPoolService:
             return mode
         return "by_code" if code_count <= int(self.config.news_announcement_by_code_max) else "market"
 
+    def _announcement_window_begin(self, day: date) -> date:
+        """From the last day any announcement source succeeded, within the lookback cap."""
+        successes = []
+        for key in (SOURCE_CNINFO, SOURCE_NOTICE):
+            state = self.repo.get_fetch_state(key)
+            if state and state.get("last_success_at"):
+                successes.append(state["last_success_at"])
+        begin = max(successes).date() if successes else day - timedelta(days=1)
+        return min(max(begin, day - timedelta(days=_NOTICE_MAX_LOOKBACK_DAYS)), day - timedelta(days=1))
+
     def _fetch_announcements(self, day: date, now: datetime) -> Dict[str, Any]:
+        """Watchlist + holdings announcements: 巨潮 per code first, 东方财富 as the fallback.
+
+        ``by_code``: each code tries 巨潮, then 东方财富 for that code only. ``market`` (many codes):
+        the 东方财富 one-day listing (巨潮 has no affordable market-wide listing); if every day fails,
+        巨潮 per code instead. Each source keeps its own fetch state, so the data-status panel shows
+        which one is failing; a code counts as failed only when every source failed for it.
+        """
         codes = self.wanted_codes()
         if not codes:
-            self._save_daily_state(SOURCE_NOTICE, now, status="empty", count=0)
+            self._save_daily_state(SOURCE_CNINFO, now, status="empty", count=0)
             return {"status": "empty", "reason": "no_codes", "mode": None, "codes": 0}
         timeout = float(self.config.news_fetch_timeout_sec)
         mode = self._announcement_mode(len(codes))
-        state = self.repo.get_fetch_state(SOURCE_NOTICE)
-        last_ok = state.get("last_success_at") if state else None
-        begin = (last_ok.date() if last_ok else day - timedelta(days=1))
-        begin = min(max(begin, day - timedelta(days=_NOTICE_MAX_LOOKBACK_DAYS)), day - timedelta(days=1))
+        begin = self._announcement_window_begin(day)
 
         records: List[NewsRecord] = []
-        errors: List[str] = []
-        requests_made = 0
-        if mode == "by_code":
+        errors: List[str] = []  # codes / days no source could cover
+        tallies: Dict[str, _SourceTally] = {SOURCE_CNINFO: _SourceTally(), SOURCE_NOTICE: _SourceTally()}
+
+        def per_code(fallback_to_em: bool) -> None:
             consecutive = 0
             for index, code in enumerate(codes):
                 if index:
                     self._sleep(_BY_CODE_PAUSE_SEC)
-                requests_made += 1
-                try:
-                    records.extend(ak_source.fetch_notices_by_code(code, begin, day, timeout_sec=timeout))
-                    consecutive = 0
-                except Exception as exc:  # noqa: BLE001
+                got = self._code_announcements(code, begin, day, timeout, tallies, fallback_to_em=fallback_to_em)
+                if got is None:
                     consecutive += 1
-                    errors.append(f"{code}: {_sanitize(exc)}")
+                    errors.append(f"{code}: 所有公告来源都失败")
                     if consecutive >= _MAX_CONSECUTIVE_CODE_FAILURES:
                         errors.append("连续失败，停止本次公告抓取以避免触发频控")
                         break
+                else:
+                    consecutive = 0
+                    records.extend(got)
+
+        if mode == "by_code":
+            per_code(fallback_to_em=True)
         else:
             span = (day - begin).days
             dates = [begin + timedelta(days=i) for i in range(span + 1)][-_MARKET_MODE_MAX_DAYS:]
+            day_errors: List[str] = []
             for index, target in enumerate(dates):
                 if index:
                     self._sleep(_MARKET_DAY_PAUSE_SEC)
-                requests_made += 1
                 try:
-                    records.extend(ak_source.fetch_notices_market(target, timeout_sec=timeout, wanted_codes=codes))
+                    got = ak_source.fetch_notices_market(target, timeout_sec=timeout, wanted_codes=codes)
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{target}: {_sanitize(exc)}")
+                    tallies[SOURCE_NOTICE].fail(f"{target}: {_sanitize(exc)}")
+                    day_errors.append(f"{target}: 东方财富全市场公告失败")
+                    continue
+                tallies[SOURCE_NOTICE].ok(len(got))
+                records.extend(got)
+            if day_errors and not tallies[SOURCE_NOTICE].successes:
+                per_code(fallback_to_em=False)
+            else:
+                errors.extend(day_errors)
 
         stored = self.repo.upsert_news_records(
             records, fetched_at=now, dedup_window_minutes=int(self.config.news_dedup_window_minutes)
         )
-        if errors and not records:
+        covered = tallies[SOURCE_CNINFO].successes + tallies[SOURCE_NOTICE].successes
+        if errors and not covered:
             status = "failed"
         elif errors:
             status = "partial"
         else:
             status = "ok" if records else "empty"
-        self._save_daily_state(
-            SOURCE_NOTICE, now, status=status, count=len(records),
-            error="; ".join(errors)[:500] if errors else None, success=status in ("ok", "empty"),
-        )
+        for key, tally in tallies.items():
+            if tally.attempted:
+                source_status = tally.status()
+                self._save_daily_state(
+                    key, now, status=source_status, count=tally.count,
+                    error="; ".join(tally.errors)[:500] if tally.errors else None,
+                    success=source_status in ("ok", "empty"),
+                )
         return {
             "status": status, "mode": mode, "codes": len(codes), "window": [begin.isoformat(), day.isoformat()],
-            "api_calls": requests_made, "fetched": len(records), "inserted": len(stored["inserted"]),
-            "errors": errors,
+            "api_calls": sum(tally.attempted for tally in tallies.values()),
+            "fetched": len(records), "inserted": len(stored["inserted"]), "errors": errors,
+            "sources": {key: tally.summary() for key, tally in tallies.items() if tally.attempted},
         }
+
+    def _code_announcements(
+        self, code: str, begin: date, day: date, timeout: float, tallies: Dict[str, "_SourceTally"],
+        *, fallback_to_em: bool,
+    ) -> Optional[List[NewsRecord]]:
+        """Announcements of one code from 巨潮, else 东方财富; ``None`` when every source failed."""
+        try:
+            got = cninfo_source.fetch_notices_by_code(code, begin, day, timeout_sec=timeout)
+        except Exception as exc:  # noqa: BLE001
+            tallies[SOURCE_CNINFO].fail(f"{code}: {_sanitize(exc)}")
+            logger.info("[News] 巨潮公告失败 %s，%s: %s", code, "改用东方财富" if fallback_to_em else "跳过", exc)
+        else:
+            tallies[SOURCE_CNINFO].ok(len(got))
+            return got
+        if not fallback_to_em:
+            return None
+        try:
+            got = ak_source.fetch_notices_by_code(code, begin, day, timeout_sec=timeout)
+        except Exception as exc:  # noqa: BLE001
+            tallies[SOURCE_NOTICE].fail(f"{code}: {_sanitize(exc)}")
+            return None
+        tallies[SOURCE_NOTICE].ok(len(got))
+        return got
 
     def _fetch_morning_brief(self, day: date, now: datetime) -> Dict[str, Any]:
         timeout = float(self.config.news_fetch_timeout_sec)

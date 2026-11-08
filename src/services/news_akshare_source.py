@@ -47,6 +47,7 @@ SOURCE_SINA = "sina"
 SOURCE_FUTU = "futu"
 SOURCE_THS = "ths"
 SOURCE_NOTICE = "notice"
+SOURCE_CNINFO = "cninfo"  # 巨潮资讯公告, fetched in news_cninfo_source (direct HTTP, not AKShare)
 SOURCE_CJZC = "cjzc"
 
 PRIMARY_FLASH_SOURCES = (SOURCE_CLS, SOURCE_EM)
@@ -58,6 +59,7 @@ SOURCE_LABELS: Dict[str, str] = {
     SOURCE_SINA: "新浪财经快讯",
     SOURCE_FUTU: "富途快讯",
     SOURCE_THS: "同花顺快讯",
+    SOURCE_CNINFO: "巨潮资讯公告",
     SOURCE_NOTICE: "东方财富公告",
     SOURCE_CJZC: "东方财富财经早餐",
 }

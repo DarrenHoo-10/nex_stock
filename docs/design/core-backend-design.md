@@ -511,7 +511,7 @@ Tushare 兜底（本账号 `us_daily` 每分钟 1 次）：
   | --- | --- | --- |
   | 全市场突发快讯 | `stock_info_global_cls`（财联社电报，可只取「重点」） | 交易日定时轮询，按发布时间和内容去重写入资讯池 |
   | 快讯备用 | `stock_info_global_em`、`stock_info_global_sina`、`stock_info_global_futu`、`stock_info_global_ths` | 财联社失败时按顺序切换 |
-  | 自选股公告 | `stock_notice_report(symbol, date)` | 每天按日期取一次全市场公告，再按自选股和持仓过滤；`stock_individual_notice_report` 用于单只补历史 |
+  | 自选股公告 | 巨潮资讯公开公告检索（`src/services/news_cninfo_source.py`，逐只、主来源）；东方财富 `stock_notice_report(symbol, date)` 作备用 | 每天按日期取一次全市场公告，再按自选股和持仓过滤；`stock_individual_notice_report` 用于单只补历史 |
   | 个股新闻 | `stock_news_em` | 已在选股中使用，助手按需调用 |
   | 盘前材料 | `stock_info_cjzc_em`（财经早餐） | 8:45 推送的盘前摘要 |
   | 研报 | `stock_research_report_em` | 可选 |

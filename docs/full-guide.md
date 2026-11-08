@@ -1577,7 +1577,7 @@ python main.py --debug
 | `NEWS_COMPANY_RETENTION_DAYS` | `30` | 公告等个股事件保留天数（按发布日期） |
 | `NEWS_DEDUP_WINDOW_MINUTES` | `30` | 跨来源按标题近似去重的时间窗（分钟） |
 | `NEWS_FETCH_TIMEOUT_SEC` | `30` | 单次 AKShare 调用超时（秒）；超时或上一次调用未结束的来源本轮跳过 |
-| `NEWS_ANNOUNCEMENT_MODE` | `auto` | 公告取数方式：`auto` 在自选股 + 持仓不超过 `NEWS_ANNOUNCEMENT_BY_CODE_MAX` 只时逐只取（每只约 2 次请求，一次覆盖整个日期区间），否则取全市场当日公告再过滤（每天约 20–60 次请求）；也可固定为 `by_code` / `market` |
+| `NEWS_ANNOUNCEMENT_MODE` | `auto` | 公告取数方式：`auto` 在自选股 + 持仓不超过 `NEWS_ANNOUNCEMENT_BY_CODE_MAX` 只时逐只取，否则取全市场当日公告再过滤（每天约 20–60 次请求）；也可固定为 `by_code` / `market`。逐只取时先查巨潮资讯（`cninfo.com.cn` 公开公告检索，每只 1 次请求覆盖整个日期区间，股票 orgId 用巨潮官方映射表、每天取一次），失败的股票再改用东方财富（每只约 2 次请求）；全市场模式用东方财富当日列表，全部失败时改为逐只查巨潮。巨潮和东方财富在数据状态里分别显示状态，一只股票只有两个来源都失败才算失败 |
 | `NEWS_ANNOUNCEMENT_BY_CODE_MAX` | `12` | `auto` 模式下逐只取公告的代码数上限 |
 | `NEWS_CLASSIFY_ENABLED` | `true` | 是否用轻量模型（`LITELLM_LIGHT_MODEL`，留空用主模型）给新资讯分类：范围、重要程度 1–5、关联板块（映射到板块目录）、美股龙头、是否突发 |
 | `NEWS_CLASSIFY_BATCH_SIZE` | `20` | 每次模型调用分类的条数 |
