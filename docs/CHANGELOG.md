@@ -107,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 选股策略新增 `screening.setup_scan` 全市场形态预扫描（`surge_pullback`：放量大涨→回踩 MA10），按交易日缓存 Tushare 全市场日线，候选附带大涨日、下一交易日买入价格线、取消线与市场开关状态；开关关闭时默认只给观察名单并标注，可配置为空名单。
 - [新功能] 选股评分新增 `small_cap` 小市值优先因子（流通市值越小分越高，原 `size` 仍为大市值优先）。
 - [修复] 选股的 Tushare 快照与日 K 改用 DSA 数据源层的 Tushare HTTP 客户端：默认请求官方经典端点 `http://api.tushare.pro`，`TUSHARE_HTTP_URL` 与数据源层含义一致。修复 tushare SDK 1.4 下覆盖接入地址后每次请求都静默返回空表、即使配置了 `TUSHARE_TOKEN` 也总是回退到 Sina 的问题。HTTP 错误、接口错误码和空表现在按来源失败处理并继续降级；选股不再读取未文档化的 `TUSHARE_API_URL`。
+- [文档] 生产后端迁至 Mac：新增 `deploy/mac/`（原生 Python 3.11 + launchd 的部署说明与 plist 模板，含迁移与回滚步骤）；东京 Docker 部署改为备用/回滚说明并补充主机资源警告、改为从 main 部署；首尔 nginx 文档改正为 sites-available 路径并新增「切换后端」步骤。
 
 ## [3.33.0] - 2026-10-15
 

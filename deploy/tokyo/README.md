@@ -1,4 +1,8 @@
-# 东京后端部署（nex-stock）
+# 东京后端部署（nex-stock，备用 / 回滚）
+
+> **当前状态（2026-11-08 起）**：生产后端已迁到 Mac，见 `deploy/mac/README.md`。东京的 `nex-stock` 容器已停止，`/data/nex-stock` 下的代码和数据保留，用于回滚。
+>
+> **资源警告**：东京主机内存 3.8 GB、没有 swap，同机还运行 hindsight 等服务。在上面直接执行 `docker compose up -d --build` 曾导致整机失去响应，只能在 AWS 控制台重启。回滚到这里之前，先加 swap，或在其他机器上构建好镜像再导入；切换回来前，先把 Mac 上的数据同步回东京。
 
 FastAPI 后端 + 全部定时任务跑在东京主机的**一个** Docker 容器里；前端静态文件和 nginx 在首尔（见 `deploy/seoul/README.md`）。
 
@@ -34,7 +38,7 @@ sudo mkdir -p /data/nex-stock/{app,config,data,logs,reports}
 sudo chown -R 1000:1000 /data/nex-stock/{config,data,logs,reports}
 
 cd /data/nex-stock
-sudo git clone --branch claude/core-redesign-design <仓库地址> app
+sudo git clone --branch main <仓库地址> app      # 生产只从 main 部署
 # 以后更新：cd /data/nex-stock/app && sudo git pull --ff-only
 ```
 
