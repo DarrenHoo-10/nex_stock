@@ -161,6 +161,42 @@ describe('PicksPage', () => {
     expect(await screen.findByRole('list', { name: '选股任务列表' })).toBeInTheDocument();
   });
 
+  it('shows engine notes in plain Chinese and hides internal ones', async () => {
+    api.getScreenTask.mockResolvedValue({
+      ...DONE,
+      result: {
+        enabled: true,
+        candidateCount: 1,
+        candidates: [{ rank: 1, code: '000988', name: '华工科技', reason: '放量', raw: {} }],
+        warnings: ['DSA provider context applied 3 of 3 candidates', 'LLM ranking skipped: no LLM config'],
+      },
+    });
+    renderPage();
+
+    fireEvent.click(within(await screen.findByRole('list', { name: '选股任务列表' })).getAllByRole('button')[1]);
+    expect(await screen.findByText('华工科技')).toBeInTheDocument();
+    const note = screen.getByRole('note');
+    expect(note).toHaveTextContent('未配置智能重排模型，当前使用确定性因子排序。');
+    expect(note).not.toHaveTextContent('DSA provider context');
+  });
+
+  it('shows no notice when every engine note is internal', async () => {
+    api.getScreenTask.mockResolvedValue({
+      ...DONE,
+      result: {
+        enabled: true,
+        candidateCount: 1,
+        candidates: [{ rank: 1, code: '000988', name: '华工科技', reason: '放量', raw: {} }],
+        warnings: ['DSA provider context applied 3 of 3 candidates'],
+      },
+    });
+    renderPage();
+
+    fireEvent.click(within(await screen.findByRole('list', { name: '选股任务列表' })).getAllByRole('button')[1]);
+    expect(await screen.findByText('华工科技')).toBeInTheDocument();
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+  });
+
   it('starts a task scoped to the chosen boards and refreshes the list', async () => {
     api.startScreen.mockResolvedValue({ taskId: 't-new', status: 'pending', message: '已提交' });
     renderPage();

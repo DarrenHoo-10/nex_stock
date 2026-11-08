@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import and_, delete, desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -41,6 +41,11 @@ def _titles_near_duplicate(left: str, right: str) -> bool:
         return True
     short, long_ = (left, right) if len(left) <= len(right) else (right, left)
     return len(short) >= _NEAR_DUP_MIN_CONTAINED_CHARS and short in long_
+
+
+def _escape_like(text: str) -> str:
+    """Escape LIKE wildcards; queries using it pass ``escape='\\\\'``."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class IntelligenceRepository:
@@ -535,6 +540,43 @@ class IntelligenceRepository:
                 select(IntelligenceItem)
                 .where(and_(*conditions))
                 .order_by(desc(age), desc(IntelligenceItem.id))
+            ).scalars().all()
+            return list(rows)
+
+    def list_stock_news(
+        self,
+        *,
+        code: str,
+        name: str = "",
+        since: datetime,
+        kinds: Optional[Sequence[str]] = None,
+        limit: int = 10,
+    ) -> List[IntelligenceItem]:
+        """Stored news about one A-share, newest first.
+
+        An item matches when it is linked to ``code`` (classifier ``stock_codes``, or an announcement
+        stored with ``scope_type='symbol'``) or names the stock in its title.
+        """
+        code = str(code or "").strip()
+        if not code:
+            return []
+        age = func.coalesce(IntelligenceItem.published_at, IntelligenceItem.fetched_at)
+        matches = [
+            IntelligenceItem.stock_codes.like(f'%"{_escape_like(code)}"%', escape="\\"),
+            and_(IntelligenceItem.scope_type == "symbol", IntelligenceItem.scope_value == code),
+        ]
+        name = str(name or "").strip()
+        if name and name != code:
+            matches.append(IntelligenceItem.title.like(f"%{_escape_like(name)}%", escape="\\"))
+        conditions = [age >= since, or_(*matches)]
+        if kinds:
+            conditions.append(IntelligenceItem.item_kind.in_(list(kinds)))
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(IntelligenceItem)
+                .where(and_(*conditions))
+                .order_by(desc(age), desc(IntelligenceItem.id))
+                .limit(max(1, int(limit)))
             ).scalars().all()
             return list(rows)
 

@@ -33,6 +33,7 @@ import {
 import type { HorizonFilter, PickTask, PickView, PickedBoard } from '../../components/plan/picks';
 import { showPlanToast } from '../../stores/planToastStore';
 import { usePlanUiStore } from '../../stores/planUiStore';
+import { formatScreenMessages } from '../../utils/screeningMessages';
 import '../../styles/plan-boards.css';
 
 /** Results per task requested from the screening API. */
@@ -262,7 +263,8 @@ const PicksPage: React.FC = () => {
         />
       );
     } else if (task) {
-      const warnings = (task.result?.warnings ?? []).filter((line) => line.trim() !== '');
+      // Engine notes in plain Chinese; internal ones (e.g. "DSA provider context applied …") are hidden.
+      const warnings = formatScreenMessages(task.result?.warnings);
       body = (
         <>
           {warnings.length ? (
