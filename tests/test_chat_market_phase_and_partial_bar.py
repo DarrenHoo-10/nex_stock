@@ -85,6 +85,35 @@ class TestChatPhaseInjection(unittest.TestCase):
         self.assertIn("2026-11-06T16:05", later)
         self.assertIn("盘后", later)
 
+    def test_drawer_daily_plan_object_reaches_the_prompt(self):
+        context = {
+            "stock_code": "000938", "stock_name": "紫光股份",
+            "daily_plan": {"trade_date": "2026-11-06", "kind": "stock", "board_id": None,
+                           "stock_code": "000938", "horizon": "short"},
+        }
+        with patch.object(executor, "build_agent_chat_context_bundle") as bundle, _freeze(SATURDAY):
+            bundle.return_value = SimpleNamespace(context_messages=[])
+            prepared = executor.prepare_agent_chat(
+                message="你对明天的走势怎么看呢？", session_id="s1", context=context,
+                config=SimpleNamespace(), context_llm_adapter=MagicMock(), skill_instructions="",
+                default_skill_policy="", use_legacy_default_prompt=False, use_codex_prompt=False,
+                include_provider_trace=True,
+                scope_resolution=StockScopeResolution(context, None),
+            )
+        injected = "\n".join(m["content"] for m in prepared.history_messages if m["role"] == "user")
+        self.assertIn("股票代码: 000938", injected)
+        self.assertIn("紫光股份", injected)
+        self.assertIn("2026-11-06 收盘数据，短线 1–5 天", injected)
+        self.assertIn("问题没说明对象时，都指这只股票", injected)
+
+    def test_daily_plan_line_for_board_and_none(self):
+        board = executor.format_daily_plan_context_line(
+            {"trade_date": "2026-11-06", "kind": "board", "board_id": "concept:BK1184", "stock_code": None})
+        self.assertIn("板块 concept:BK1184", board)
+        self.assertIn("get_board_signal", board)
+        self.assertEqual(executor.format_daily_plan_context_line({"kind": "none", "trade_date": "2026-11-06"}), "")
+        self.assertEqual(executor.format_daily_plan_context_line(None), "")
+
     def test_phase_failure_never_breaks_chat(self):
         with patch("src.core.trading_calendar.build_market_phase_context", side_effect=RuntimeError("boom")):
             prompt = self._prepare().system_prompt

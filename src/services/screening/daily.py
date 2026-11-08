@@ -53,7 +53,6 @@ _DAILY_HISTORY_CACHE_TTL_SECONDS = 24 * 60 * 60
 _SOURCE_HEALTH_FAILURE_THRESHOLD = 3
 _SOURCE_HEALTH_COOLDOWN_SECONDS = 5 * 60
 _DAILY_CALL_TIMEOUT_SECONDS = 20.0
-_DEFAULT_TUSHARE_HTTP_URL = "http://api.waditu.com"
 _BAOSTOCK_LOCK = threading.Lock()
 _BAOSTOCK_OUTAGE_ERROR: str | None = None
 _SOURCE_HEALTH: dict[str, dict[str, object]] = {}
@@ -773,10 +772,7 @@ def _fetch_daily_tushare(code: str, *, lookback_days: int) -> pd.DataFrame:
     if not token:
         raise RuntimeError("tushare requires TUSHARE_TOKEN")
 
-    import tushare as ts
-
-    pro = ts.pro_api(token)
-    _configure_tushare_client(pro, token=token)
+    pro = _build_tushare_client(token)
 
     start_date = (datetime.now() - timedelta(days=max(lookback_days * 2, 90))).strftime("%Y%m%d")
     end_date = datetime.now().strftime("%Y%m%d")
@@ -815,21 +811,18 @@ def _has_tushare_token() -> bool:
     return bool(_tushare_token())
 
 
-def _configure_tushare_client(pro: object, *, token: str) -> None:
-    try:
-        setattr(pro, "_DataApi__token", token)
-    except Exception:
-        pass
+def _build_tushare_client(token: str):
+    """Return DSA's Tushare Pro HTTP client, as in ``snapshot._build_tushare_client``.
 
-    http_url = (
-        os.getenv("TUSHARE_API_URL", "").strip()
-        or os.getenv("TUSHARE_HTTP_URL", "").strip()
-        or _DEFAULT_TUSHARE_HTTP_URL
-    )
-    try:
-        setattr(pro, "_DataApi__http_url", http_url)
-    except Exception:
-        pass
+    ``TUSHARE_HTTP_URL`` keeps its ``data_provider`` meaning (classic
+    endpoint), and HTTP/API errors raise instead of returning an empty frame.
+    """
+    from data_provider.tushare_fetcher import _TushareHttpClient, _resolve_tushare_http_url
+
+    api_url = _resolve_tushare_http_url()
+    if api_url:
+        return _TushareHttpClient(token=token, api_url=api_url)
+    return _TushareHttpClient(token=token)
 
 
 def _normalize_tushare_daily_frame(df: pd.DataFrame) -> pd.DataFrame:

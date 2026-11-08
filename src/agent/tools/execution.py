@@ -348,6 +348,9 @@ def _validated_chat_tool_target(stock_scope: Any, value: str, registry: Any) -> 
         raise ValueError("Tool target cannot be validated")
     target = parse_analysis_target(value, registry)
     requested = StockIdentity.from_target(target, registry)
+    if getattr(stock_scope, "is_open", False):
+        # No discussion object this turn: any identity that validated above is in scope.
+        return ToolStockAccess(requested, replace(target, raw_input=requested.stock_code))
     if requested not in stock_scope.identities:
         # Detect a requested accepted index that has silently become a stock.
         # Unrelated scope members are deliberately not revalidated here.

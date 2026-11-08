@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [新功能] 飞书推送改为扫码连接：Web「运行和推送」页点「扫码创建飞书机器人」，用飞书扫码确认后自动创建机器人、保存 App ID / Secret、开启长连接，并把你的私聊设为推送目标，不再需要到开放平台手动复制凭证（手动配置收进折叠区保留）。新增 `POST /api/v1/system/feishu/register`、`GET /api/v1/system/feishu/register/{session_id}`（凭证只在服务端保存）；Web 新增依赖 `qrcode.react`。
+- [新功能] 助手新增题材新闻工具 `search_market_news`：按关键词（如「寒潮」「天然气 涨价」）查资讯库里最近 1–7 天的快讯和公告，命中少时用已配置的搜索引擎补充，不再只能按单只股票搜新闻。
+- [改进] 助手没有讨论对象的问题（如「寒潮有哪些股票值得关注」）可以调用行情、K 线、筹码、个股新闻等工具查询候选股票，不再全部返回 `stock_scope_violation`；会话里已确认或抽屉选中了股票、对比和待澄清时仍只查这些对象。
+- [修复] 助手抽屉选中股票后，没点名股票的提问（如「你对明天的走势怎么看」「风险呢」）现在按抽屉里的股票回答，不再当成大盘问题或要求补代码；`context.daily_plan` 的交易日、周期和板块也会带进提示词。抽屉里的对象只作用于当次提问，不写入会话状态，问题里点名的股票仍然优先。
 - [新功能] 左侧导航新增「助手」页（`/assistant`）：左栏显示历史会话（切换、删除、新对话），右侧对话可选模型和思考强度（只作用于本次请求，记在浏览器里，助手抽屉共用），可查看上下文用量（历史 token、模型上下文窗口、摘要覆盖、自动压缩阈值）并手动「压缩会话」。新增 `GET /api/v1/agent/chat/sessions/{id}/context`、`POST /api/v1/agent/chat/sessions/{id}/compact`；`/agent/chat` 与 `/chat/stream` 新增可选 `model`、`reasoning_effort`，`/agent/models` 追加 `route_model`、默认模型与思考强度字段。会话有摘要后，即使自动压缩关闭也按「摘要 + 最近 20 条」带历史；YAML 路由别名的模型现在能正确标记为主模型。
 - [新功能] 次日计划后端服务（`DailyPlanService`，`/api/v1/plan/*` 不再返回 503）：账户与持仓快照（新表 `plan_account`、`plan_holding`）、按 `POSITION_*` 仓位规则确定性计算股数与止损（主板 / 创业板 / 科创板 / 北交所的申报单位与涨跌停、`fixed` / `nearer` 止损）、每只股票短线 / 波段两个周期的条件计划（模型决定买不买和价位，模型不可用时按规则生成）、持股数已满时的换股判断、运行记录与飞书摘要推送（新表 `plan_run`、`plan_stock`）；`DAILY_PLAN_ENABLED=true` 时在定时模式下按 `SCHEDULE_TIME` 每个交易日独立运行一次；新增配置项 `DAILY_PLAN_ENABLED`、`POSITION_STOP_LOSS_PCT`、`POSITION_MAX_TOTAL_PCT`、`POSITION_MAX_HOLDINGS`、`POSITION_MAX_SINGLE_PCT`、`POSITION_STOP_MODE`，详见 `docs/daily-plan-api.md`。
 - [改进] 我的股票：次日计划服务未就绪时，页面改为显示自选列表（名称、代码，可移出），不再只显示错误；页头搜索打开走势图后「加入自选」会同步刷新这份列表。
@@ -80,6 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [文档] 新增[个股研究报告交互设计稿](design/stock-research/stock-research-report.html)，附财务证据展示、交易图示与内部分析快照设计说明。
 
+- [修复] 选股题材筛选不再因模型输出被截断而失败：`LLM_MAX_TOKENS` / `LLM_TIMEOUT_SEC` 留空时按候选数量自动估算输出预算（最多 32000 tokens）与超时（至少 180 秒），原固定 2048 tokens / 60 秒只够 3-4 只候选；渠道拒绝过大的 `max_tokens` 时自动降到 8192 重试一次；失败提示补充超时或有效判断覆盖数。
 - [改进] 选股支持直接添加自定义题材与点击热门推荐，按板块/策略收集候选后由模型过滤题材并排序，保存匹配理由；推荐按来源涨停池内去重股票数排序并标注日期和覆盖范围。
 
 - [文档] 明确外部数据接口测试频控规则：最多一次必要的真实采样，后续使用 mock / fixture，禁止测试脚本高频调用真实接口。
@@ -99,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 选股硬过滤新增可选字段 `board_whitelist`（按代码前缀过滤沪深主板/创业板/科创板/北交所）与 `concept_keywords`（概念题材关键词包含匹配，快照缺概念列时放行），新增 `SCREENING_EXTRA_STRATEGIES_DIR` 用户自定义选股策略目录（与内置策略合并、同名覆盖）。
 - [新功能] 选股策略新增 `screening.setup_scan` 全市场形态预扫描（`surge_pullback`：放量大涨→回踩 MA10），按交易日缓存 Tushare 全市场日线，候选附带大涨日、下一交易日买入价格线、取消线与市场开关状态；开关关闭时默认只给观察名单并标注，可配置为空名单。
 - [新功能] 选股评分新增 `small_cap` 小市值优先因子（流通市值越小分越高，原 `size` 仍为大市值优先）。
+- [修复] 选股的 Tushare 快照与日 K 改用 DSA 数据源层的 Tushare HTTP 客户端：默认请求官方经典端点 `http://api.tushare.pro`，`TUSHARE_HTTP_URL` 与数据源层含义一致。修复 tushare SDK 1.4 下覆盖接入地址后每次请求都静默返回空表、即使配置了 `TUSHARE_TOKEN` 也总是回退到 Sina 的问题。HTTP 错误、接口错误码和空表现在按来源失败处理并继续降级；选股不再读取未文档化的 `TUSHARE_API_URL`。
 
 ## [3.33.0] - 2026-10-15
 
