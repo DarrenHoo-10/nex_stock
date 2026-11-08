@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared offline fixtures for the AKShare news pool tests (no network: ``ak.*`` is a stub)."""
+"""Shared offline fixtures for the news pool tests (no network: ``ak.*`` and the 巨潮 HTTP calls are stubs)."""
 
 from __future__ import annotations
 
@@ -7,9 +7,15 @@ from datetime import date, datetime, time as dtime
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence
 
+import json
+from pathlib import Path
+
 import pandas as pd
 
 from src.services import news_akshare_source as ak_source
+from src.services import news_cninfo_source as cninfo_source
+
+CNINFO_FIXTURES = Path(__file__).parent / "fixtures" / "cninfo"
 
 NOW = datetime(2026, 11, 9, 10, 0, 0)  # a Monday, inside the 08:00-15:30 trading window
 
@@ -106,6 +112,12 @@ class StubAkshare:
         self.notice_by_code: Dict[str, Any] = {}
         self.notice_by_day: Dict[str, Any] = {}
         self.notice_calls: List[Dict[str, Any]] = []
+        # 巨潮: code -> query payload (dict) | Exception; codes not listed fail, so by-code runs fall back to
+        # 东方财富 unless a test opts in.
+        self.cninfo_by_code: Dict[str, Any] = {}
+        self.cninfo_requests: List[Dict[str, Any]] = []
+        self.cninfo_orgid_map: Any = json.loads((CNINFO_FIXTURES / "szse_stock_sample.json").read_text(encoding="utf-8"))
+        self.http = _StubCninfoHttp(self)
 
     def _flash(self, key: str, **kwargs: Any) -> pd.DataFrame:
         self.calls.append(key + (f":{kwargs['symbol']}" if "symbol" in kwargs else ""))
@@ -155,10 +167,52 @@ class StubAkshare:
         return outcome
 
 
+class _StubResponse:
+    def __init__(self, payload: Any) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class _StubCninfoHttp:
+    """Stands in for ``requests`` inside ``news_cninfo_source``."""
+
+    def __init__(self, stub: "StubAkshare") -> None:
+        self._stub = stub
+
+    def get(self, url: str, **_kwargs: Any) -> _StubResponse:
+        self._stub.calls.append("cninfo_orgids")
+        if isinstance(self._stub.cninfo_orgid_map, Exception):
+            raise self._stub.cninfo_orgid_map
+        return _StubResponse(self._stub.cninfo_orgid_map)
+
+    def post(self, url: str, data: Dict[str, Any], **_kwargs: Any) -> _StubResponse:
+        code = str(data.get("stock", "")).split(",")[0]
+        self._stub.calls.append(f"cninfo:{code}")
+        self._stub.cninfo_requests.append(dict(data))
+        outcome = self._stub.cninfo_by_code.get(code, ConnectionError("cninfo not stubbed"))
+        if callable(outcome):
+            outcome = outcome(data)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return _StubResponse(outcome)
+
+
+def cninfo_fixture(name: str = "his_announcement_600089.json") -> Dict[str, Any]:
+    """Real 巨潮 query response (trimmed), sampled once on 2026-11-09."""
+    return json.loads((CNINFO_FIXTURES / name).read_text(encoding="utf-8"))
+
+
 def install_stub(monkeypatch: Any, stub: Optional[StubAkshare] = None) -> StubAkshare:
     stub = stub or StubAkshare()
     monkeypatch.setattr(ak_source, "_akshare", lambda: stub)
+    monkeypatch.setattr(cninfo_source, "_session", lambda: stub.http)
     ak_source.reset_inflight_for_tests()
+    cninfo_source.reset_cache_for_tests()
     return stub
 
 
