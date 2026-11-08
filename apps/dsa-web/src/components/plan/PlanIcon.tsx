@@ -31,6 +31,9 @@ const ICON_PATHS = {
     </>
   ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
+  chat: <path d="M5.5 18.5V7.5a3 3 0 0 1 3-3h7a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H9z" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  trash: <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" />,
   logout: <path d="M14 4.5h3.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H14M10 16l-4-4 4-4M6 12h10" />,
 } satisfies Record<string, React.ReactNode>;
 

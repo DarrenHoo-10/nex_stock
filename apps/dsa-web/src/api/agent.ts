@@ -26,6 +26,51 @@ export interface ChatStreamRequest extends ChatRequest {
   session_generation?: string;
   request_id?: string;
   context?: unknown;
+  /** A `route_model` from GET /agent/models; omitted = configured Agent model. */
+  model?: string;
+  /** low|medium|high|xhigh|max, or 'none' to send none; omitted = configured AGENT_REASONING_EFFORT. */
+  reasoning_effort?: string;
+}
+
+export interface AgentModelDeployment {
+  deployment_id: string;
+  model: string;
+  provider: string;
+  source: string;
+  api_base: string | null;
+  deployment_name: string | null;
+  route_model: string | null;
+  is_primary: boolean;
+  is_fallback: boolean;
+}
+
+export interface AgentModelsResponse {
+  models: AgentModelDeployment[];
+  default_model: string | null;
+  default_reasoning_effort: string;
+  reasoning_effort_options: string[];
+}
+
+export interface ChatContextInfo {
+  session_id: string;
+  model: string | null;
+  context_window: number | null;
+  message_count: number;
+  history_tokens: number;
+  history_message_count: number;
+  compression_enabled: boolean;
+  trigger_tokens: number;
+  protected_turns: number;
+  compactable_message_count: number;
+  summary: { covered_message_count: number; estimated_tokens: number; updated_at: string | null } | null;
+}
+
+export interface ChatCompactResponse {
+  status: 'compacted' | 'nothing_to_compact';
+  summarized_message_count: number;
+  tokens_before: number;
+  tokens_after: number;
+  context: ChatContextInfo;
 }
 
 export interface CancelChatStreamResponse {
@@ -154,6 +199,25 @@ export const agentApi = {
   },
   async getSkills(): Promise<SkillsResponse> {
     const response = await apiClient.get<SkillsResponse>('/api/v1/agent/skills');
+    return response.data;
+  },
+  async getModels(): Promise<AgentModelsResponse> {
+    const response = await apiClient.get<AgentModelsResponse>('/api/v1/agent/models');
+    return response.data;
+  },
+  async getChatContext(sessionId: string, model?: string): Promise<ChatContextInfo> {
+    const response = await apiClient.get<ChatContextInfo>(
+      `/api/v1/agent/chat/sessions/${encodeURIComponent(sessionId)}/context`,
+      { params: model ? { model } : undefined },
+    );
+    return response.data;
+  },
+  async compactChatSession(sessionId: string, model?: string): Promise<ChatCompactResponse> {
+    const response = await apiClient.post<ChatCompactResponse>(
+      `/api/v1/agent/chat/sessions/${encodeURIComponent(sessionId)}/compact`,
+      model ? { model } : {},
+      { timeout: 120000 },
+    );
     return response.data;
   },
   async getStatus(): Promise<AgentStatusResponse> {

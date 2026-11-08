@@ -62,7 +62,7 @@ describe('PlanShell', () => {
     expect(screen.queryByRole('button', { name: '更多' })).not.toBeInTheDocument();
     const nav = screen.getByRole('navigation', { name: '主导航' });
     const hrefs = Array.from(nav.querySelectorAll('a')).map((link) => link.getAttribute('href'));
-    expect(hrefs).toEqual(['/boards', '/picks', '/mine', '/preferences']);
+    expect(hrefs).toEqual(['/boards', '/picks', '/mine', '/assistant', '/preferences']);
     await screen.findByText('还没有运行记录');
   });
 

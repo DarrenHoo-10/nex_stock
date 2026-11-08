@@ -37,6 +37,7 @@ const BoardsPage = lazy(() => import('./pages/plan/BoardsPage'));
 const PicksPage = lazy(() => import('./pages/plan/PicksPage'));
 const MinePage = lazy(() => import('./pages/plan/MinePage'));
 const PreferencesPage = lazy(() => import('./pages/plan/PreferencesPage'));
+const AssistantPage = lazy(() => import('./pages/plan/AssistantPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -109,6 +110,7 @@ const planRouteChildren = [
   { path: '/picks', element: <PicksPage /> },
   { path: '/mine', element: <MinePage /> },
   { path: '/preferences', element: <PreferencesPage /> },
+  { path: '/assistant', element: <AssistantPage /> },
 ];
 
 const legacyRouteChildren = [

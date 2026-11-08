@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 左侧导航新增「助手」页（`/assistant`）：左栏显示历史会话（切换、删除、新对话），右侧对话可选模型和思考强度（只作用于本次请求，记在浏览器里，助手抽屉共用），可查看上下文用量（历史 token、模型上下文窗口、摘要覆盖、自动压缩阈值）并手动「压缩会话」。新增 `GET /api/v1/agent/chat/sessions/{id}/context`、`POST /api/v1/agent/chat/sessions/{id}/compact`；`/agent/chat` 与 `/chat/stream` 新增可选 `model`、`reasoning_effort`，`/agent/models` 追加 `route_model`、默认模型与思考强度字段。会话有摘要后，即使自动压缩关闭也按「摘要 + 最近 20 条」带历史；YAML 路由别名的模型现在能正确标记为主模型。
 - [改进] 设置页「模型」改为渠道列表 + 编辑区：在同一页添加、编辑、停用、删除渠道（名称、接口地址、API 格式、API Key），获取模型、手动添加、搜索并逐个打开模型；用途里新增轻量模型和三项推理强度；正在使用的模型不能关闭，所在渠道不能停用或删除。
 - [改进] 模型列表获取支持 Anthropic Messages 格式（`{base}/v1/models`，`x-api-key` + `anthropic-version`）。
 - [改进] 新页面不再跳转旧页面：去掉导航「更多」、模型页「高级设置」、助手「在问股页打开」和选股页「去选股工具开启」；飞书应用机器人、群 Webhook 与开启选股改为在新页面直接设置，用户中心登录时导航提供「退出」。
