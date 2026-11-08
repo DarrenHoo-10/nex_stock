@@ -3,8 +3,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { dataCapabilityApi } from '../../../api/dataCapability';
 import { useLatestPlanRun } from '../../../hooks/useLatestPlanRun';
 import type { DataCapabilityOverview, DatasetQualityStatus, ProviderCapabilityStatus } from '../../../types/dataCapability';
+import { DataSourceConfigForm } from './DataSourceConfigForm';
 import { formatDateClock } from './format';
 import { PanelHead } from './shared';
+import type { ConfigView, SaveOutcome } from './usePreferencesConfig';
 
 type OverviewState =
   | { status: 'loading' }
@@ -36,8 +38,16 @@ function statusOf<T extends string>(
   return table[status] ?? { label: String(status || '未知'), tone: 'line' };
 }
 
-export const DataStatusPanel: React.FC = () => {
+export interface DataStatusPanelProps {
+  /** Settings shared by the page; ``null`` while loading or when it failed (sources are then read-only). */
+  config?: ConfigView | null;
+  onSave?: (items: Array<{ key: string; value: string }>) => Promise<SaveOutcome>;
+  onReload?: () => void;
+}
+
+export const DataStatusPanel: React.FC<DataStatusPanelProps> = ({ config = null, onSave, onReload }) => {
   const [state, setState] = useState<OverviewState>({ status: 'loading' });
+  const [editing, setEditing] = useState<string | null>(null);
   const latest = useLatestPlanRun();
 
   const fetchOverview = useCallback(async () => {
@@ -185,7 +195,7 @@ export const DataStatusPanel: React.FC = () => {
             {state.overview.providers.length === 0 ? (
               <p className="note">没有数据源记录。</p>
             ) : (
-              <ul className="data-list">
+              <ul className="data-list src-list">
                 {state.overview.providers.map((provider) => {
                   const info = statusOf(PROVIDER_STATUS, provider.status);
                   const detail = [
@@ -195,11 +205,45 @@ export const DataStatusPanel: React.FC = () => {
                     provider.lastError,
                     ...provider.warnings,
                   ].filter(Boolean);
+                  const keys = provider.configKeys ?? [];
+                  const name = provider.label || provider.name;
+                  const canEdit = keys.length > 0 && config !== null && onSave !== undefined;
+                  const open = editing === provider.name && canEdit;
                   return (
                     <li key={provider.name}>
-                      <span>{provider.label || provider.name}</span>
+                      <span>{name}</span>
                       <span className={`tag ${info.tone}`}>{info.label}</span>
                       <span className="data-detail">{detail.join('；') || '—'}</span>
+                      {canEdit ? (
+                        <button
+                          type="button"
+                          className="btn sm"
+                          aria-expanded={open}
+                          aria-label={`配置 ${name}`}
+                          onClick={() => setEditing(open ? null : provider.name)}
+                        >
+                          {open ? '收起' : provider.configured ? '修改' : '配置'}
+                        </button>
+                      ) : (
+                        <span aria-hidden="true" />
+                      )}
+                      {open && config && onSave ? (
+                        <div className="src-config-row">
+                          <DataSourceConfigForm
+                            label={name}
+                            keys={keys}
+                            config={config}
+                            onSave={onSave}
+                            onReload={() => onReload?.()}
+                            onDone={(saved) => {
+                              setEditing(null);
+                              if (saved) {
+                                void fetchOverview();
+                              }
+                            }}
+                          />
+                        </div>
+                      ) : null}
                     </li>
                   );
                 })}

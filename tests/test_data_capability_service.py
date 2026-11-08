@@ -107,6 +107,46 @@ def test_overview_marks_tickflow_priority_gap_without_leaking_secret() -> None:
     assert secret not in json.dumps(overview, ensure_ascii=False)
 
 
+def test_providers_list_the_config_keys_the_settings_page_edits() -> None:
+    from src.core.config_registry import get_field_definition
+
+    overview = DataCapabilityService(config=_config(), fetcher_manager=_FetcherManager([])).get_overview()
+    keys = {provider["name"]: provider["config_keys"] for provider in overview["providers"]}
+
+    assert keys["biying"] == ["BIYING_LICENCE", "BIYING_TIMEOUT_SECONDS"]
+    assert keys["tushare"] == ["TUSHARE_TOKEN"]
+    assert keys["longbridge"][:3] == ["LONGBRIDGE_APP_KEY", "LONGBRIDGE_APP_SECRET", "LONGBRIDGE_ACCESS_TOKEN"]
+    assert keys["akshare"] == [] and keys["pytdx"] == []  # built-in sources need no config
+    # Every credential the page can write is masked by the config API, registered or not.
+    for name, provider_keys in keys.items():
+        for key in provider_keys:
+            if key.endswith(("TOKEN", "KEY", "SECRET", "LICENCE")):
+                assert get_field_definition(key)["is_sensitive"] is True, (name, key)
+
+    configured = DataCapabilityService(
+        config=_config(biying_licence="licence-value"), fetcher_manager=_FetcherManager([]),
+    ).get_overview()
+    assert _provider(configured, "biying")["configured"] is True
+    assert "licence-value" not in json.dumps(configured, ensure_ascii=False)
+
+
+def test_realtime_only_provider_is_probed_with_its_capability() -> None:
+    """Biying refuses capability-less probes by design; the overview must not call it unavailable."""
+    biying = _Fetcher("BiyingFetcher", 1, is_available=True)
+    biying.is_available_for_request = lambda capability="": capability == "realtime_quote"
+    tushare = _Fetcher("TushareFetcher", 0)
+    tushare.is_available_for_request = lambda capability="": False  # genuinely down for every capability
+
+    overview = DataCapabilityService(
+        config=_config(biying_licence="licence", tushare_token="token"),
+        fetcher_manager=_FetcherManager([biying, tushare]),
+    ).get_overview()
+
+    assert _provider(overview, "biying")["status"] == "ok"
+    assert _provider(overview, "biying")["warnings"] == []
+    assert _provider(overview, "tushare")["status"] == "unavailable"
+
+
 def test_realtime_dataset_degrades_when_first_priority_source_is_unconfigured() -> None:
     manager = _FetcherManager([
         _Fetcher("EfinanceFetcher", 0, available=True),
@@ -964,6 +1004,7 @@ def test_data_capability_api_paths_return_valid_contract() -> None:
                 "warnings": [],
                 "last_error": None,
                 "cooldown": None,
+                "config_keys": [],
             }
         ],
         "datasets": [
