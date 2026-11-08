@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.config import get_config
+from src.agent.assistant_memory import MemoryInjection, build_memory_injection, retain_chat_turn
 from src.agent.chat_context import build_agent_chat_context_bundle, build_visible_chat_history
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.provider_trace import persist_provider_trace_turns
@@ -533,6 +534,36 @@ class PreparedAgentChat:
     system_prompt: str
     history_messages: List[Dict[str, Any]]
     stock_scope: Optional[StockScope]
+    # Assistant memory injected into the system prompt (notes + recall status).
+    memory: Optional[MemoryInjection] = None
+
+
+_CHAT_DATA_TIME_RULE_ZH = (
+    "- 数据时效：本轮之前的对话里出现的价格、涨跌幅等数字都是历史数字，引用前必须重新调用工具获取；"
+    "回答中的实时数字要写明数据时间（如“截至 10:32”），数据延迟或缺失时如实说明，不要当作最新值。\n"
+)
+_CHAT_DATA_TIME_RULE_EN = (
+    "- Data freshness: numbers quoted in earlier turns of this conversation are historical; re-fetch them "
+    "with tools before quoting. State the data time for every live number (e.g. \"as of 10:32\") and say so "
+    "when data is delayed or missing instead of presenting it as current.\n"
+)
+
+
+def build_chat_market_phase_section(stock_code: str, report_language: str) -> str:
+    """Market phase + local time + data-freshness rule, rebuilt for every chat turn."""
+    from src.core.trading_calendar import build_market_phase_context, get_market_for_stock
+
+    market = get_market_for_stock(str(stock_code or "")) or "cn"
+    try:
+        phase_context = build_market_phase_context(market=market, trigger_source="chat").to_dict()
+    except Exception as exc:  # fail open: phase context must never break chat
+        logger.warning("chat market phase context unavailable: %s", exc)
+        return ""
+    section = format_market_phase_prompt_section(phase_context, report_language=report_language)
+    if not section:
+        return ""
+    rule = _CHAT_DATA_TIME_RULE_EN if report_language in ("en", "ko") else _CHAT_DATA_TIME_RULE_ZH
+    return section + rule
 
 
 def prepare_agent_chat(
@@ -582,6 +613,12 @@ def prepare_agent_chat(
         skills_section=skills_section,
         language_section=_build_language_section(report_language, chat_mode=True),
     )
+    system_prompt += build_chat_market_phase_section(stock_code, report_language)
+    memory = build_memory_injection(
+        message=message, effective_context=effective_context, db_manager=db_manager,
+    )
+    if memory.section:
+        system_prompt = system_prompt.rstrip() + "\n\n" + memory.section
 
     if include_provider_trace:
         history_messages = list(
@@ -651,6 +688,7 @@ def prepare_agent_chat(
         system_prompt=system_prompt,
         history_messages=history_messages,
         stock_scope=scope_resolution.stock_scope,
+        memory=memory,
     )
 
 
@@ -774,7 +812,11 @@ class AgentExecutor:
         run_id = str(uuid.uuid4())
 
         # Persist the user turn immediately so the session appears in history during processing
-        accepted = conversation_manager.commit_user_turn(db, snapshot, message, state_disposition=disposition)
+        memory_snapshot = prepared.memory.context_snapshot if prepared.memory is not None else None
+        snapshot_kwargs = {"context_snapshot": memory_snapshot} if memory_snapshot else {}
+        accepted = conversation_manager.commit_user_turn(
+            db, snapshot, message, state_disposition=disposition, **snapshot_kwargs,
+        )
         user_message_id = accepted["user_message_id"]
 
         tool_decls = self.tool_registry.to_openai_tools()
@@ -790,8 +832,13 @@ class AgentExecutor:
         if result.success:
             assistant_message_id = conversation_manager.add_message(
                 session_id, "assistant", result.content, accepted_turn=accepted, db_manager=db,
+                **snapshot_kwargs,
             )
             if assistant_message_id is not None:
+                retain_chat_turn(
+                    session_id=session_id, user_message_id=user_message_id, user_text=message,
+                    assistant_text=result.content, memory=prepared.memory,
+                )
                 self._persist_provider_trace(
                     session_id=session_id,
                     run_id=run_id,
@@ -918,6 +965,10 @@ class AgentExecutor:
             )
             if daily_market_context_section:
                 parts.append(daily_market_context_section)
+
+            extra_context_section = context.get("extra_context_section")
+            if isinstance(extra_context_section, str) and extra_context_section.strip():
+                parts.append(extra_context_section.strip())
 
             market_structure_section = format_market_structure_prompt_section(
                 context.get("market_structure_context"),

@@ -686,7 +686,7 @@ const SchedulerSettingsCard: React.FC<SchedulerSettingsCardProps> = ({
 };
 
 const SettingsPage: React.FC = () => {
-  const { authEnabled, passwordChangeable } = useAuth();
+  const { authMode, authEnabled, passwordChangeable } = useAuth();
   const location = useLocation();
   const { language: uiLanguage, t } = useUiLanguage();
   const [envBackupActionError, setEnvBackupActionError] = useState<ParsedApiError | null>(null);
@@ -1422,7 +1422,7 @@ const SettingsPage: React.FC = () => {
                 ) : null}
               </SettingsSectionCard>
             ) : null}
-            {activeCategory === 'system' ? <AuthSettingsCard /> : null}
+            {activeCategory === 'system' && authMode !== 'user_center' ? <AuthSettingsCard /> : null}
             {activeCategory === 'system' || schedulerOverrideFromUi !== null ? (
               <div hidden={activeCategory !== 'system'}>
               <SchedulerSettingsCard

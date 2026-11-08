@@ -387,7 +387,11 @@ def test_agent_status_exposes_only_compatibility_fields() -> None:
          patch("api.v1.endpoints.agent._get_agent_chat_status", return_value=payload):
         response = asyncio.run(agent_endpoint.get_agent_status())
 
-    assert response.model_dump() == {
+    dumped = response.model_dump()
+    # ``recall`` is the additive long-term recall status; disabled when no provider is configured.
+    recall = dumped.pop("recall")
+    assert recall["provider"] == "none" and recall["status"] == "disabled"
+    assert dumped == {
         "backend": "codex_app_server",
         "available": True,
         "experimental": True,

@@ -144,7 +144,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 > Compatibility note: `REPORT_SHOW_LLM_MODEL` keeps the previous default-visible behavior (`true`) and only changes report footer rendering. It does not alter provider/model/Base URL, LiteLLM routing, or runtime model persistence/migration/cleanup semantics. Rollback is to remove the variable or set it back to `true`.
 
 > `REPORT_LANGUAGE` affects report text, report-page fixed copy, and Agent Chat replies that do not explicitly select a language. Web UI chrome language (navigation, login, settings, shell labels, shared controls) is intentionally independent and stored in browser `localStorage` as `dsa.uiLanguage`.
-> UI language resolution is: explicit localStorage value (`zh` or `en`) -> browser language (`navigator.languages` / `navigator.language`) -> default `zh`.
+> UI language resolution is: explicit localStorage value (`zh` or `en`) -> default `zh` (the browser language is not used).
 
 #### Other Configuration
 
@@ -230,11 +230,15 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `AGENT_ACTION_TOOL_TIMEOUT_S` | Default timeout (seconds) for Agent `action`-category tools; `0` disables and falls back to the global budget | `0` | No |
 | `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.1-pro-preview`), recommended | - | No |
 | `AGENT_LITELLM_MODEL` | Optional primary model for **Default model** ask-stock; empty inherits the primary model and bare names become `openai/<model>`; Codex does not use this setting | - | No |
+| `LITELLM_LIGHT_MODEL` | Optional light model shared by cheap chores (news classification, tagging, short summaries); same value format as `LITELLM_MODEL` (channel model names from `LLM_CHANNELS` also work); empty uses the primary model, and a failed light call is retried once with the primary model; no existing feature switches to it | - | No |
 | `AGENT_CONTEXT_COMPRESSION_ENABLED` | LLM compression for visible **Default model** ask-stock history; Codex uses the 20 most recent visible messages and retains this setting | `false` | No |
 | `AGENT_CONTEXT_COMPRESSION_PROFILE` | Default model ask-stock compression profile: `cost`, `balanced`, or `long_context_raw_first` | `balanced` | No |
 | `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | Estimated-history token threshold; blank follows the selected profile preset | - | No |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | Number of recent user turns and following replies kept verbatim; blank follows the selected profile preset | - | No |
 | `LITELLM_FALLBACK_MODELS` | Fallback models, comma-separated | - | No |
+| `LLM_REASONING_EFFORT` | Standard `reasoning_effort` request parameter for the primary analysis model and its fallbacks (single-stock analysis, market review): empty = not sent (model default); `low` / `medium` / `high` / `xhigh` / `max`; an invalid value logs a warning and is treated as empty. Higher effort is slower and uses more tokens; the project sends no `max_tokens`, so thinking is not cut off by an output budget. This is the preferred way to set effort; a model-name suffix such as `:high` still works (interpreted by the gateway; model names are never rewritten). When the server explicitly rejects the parameter, the request is retried once without it and the event is logged | empty | No |
+| `AGENT_REASONING_EFFORT` | `reasoning_effort` for assistant (agent) chat; empty follows `LLM_REASONING_EFFORT`; same values | empty | No |
+| `LITELLM_LIGHT_REASONING_EFFORT` | `reasoning_effort` for light-model chores (news classification); empty = not sent; same values. A light call that falls back to the primary model uses `LLM_REASONING_EFFORT` for that attempt | empty | No |
 | `LLM_CHANNELS` | Channel names (comma-separated), use with `LLM_{NAME}_*`, see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | No |
 | `MODELFLARE_KEY` | Modelflare one-key setup; enables the default channel automatically; Actions reads it from Secrets only | - | For Modelflare |
 | `LLM_MODELFLARE_API_KEY` | Advanced channel key, overrides MODELFLARE_KEY; use `LLM_MODELFLARE_API_KEYS` for multiple keys | - | No |
@@ -324,6 +328,9 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 |--------|------|:----:|
 | `FEISHU_APP_ID` | Feishu App ID | Optional |
 | `FEISHU_APP_SECRET` | Feishu App Secret | Optional |
+| `FEISHU_STREAM_ENABLED` | Enable the Feishu app bot long connection (default `false`; started in serve and `--schedule` modes; plain text is answered by the assistant, messages starting with `/` run commands) | Optional |
+| `FEISHU_CHAT_ID` | Fallback bot push target (`oc_` group chat_id or `ou_` open_id); a chat bound with `/bind` takes priority | Optional |
+| `FEISHU_RECEIVE_ID_TYPE` | Type of `FEISHU_CHAT_ID`: `chat_id` (default) / `open_id` | Optional |
 | `FEISHU_FOLDER_TOKEN` | Feishu Cloud Drive Folder Token | Optional |
 | `FEISHU_SEND_AS_FILE` | Send reports as files via Feishu App Bot (default `false`) | Optional |
 
@@ -335,7 +342,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 >
 > Note: `FEISHU_APP_ID` / `FEISHU_APP_SECRET` are for Feishu app mode, cloud documents, or Stream Bot mode. They do not enable group webhook notifications by themselves. For simple group push notifications, use `FEISHU_WEBHOOK_URL` first.
 >
-> Supplement: When `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, and `FEISHU_CHAT_ID` are all configured, they enable the Feishu App Bot active notification channel without relying on group webhooks. `FEISHU_RECEIVE_ID_TYPE` defaults to `chat_id`; set it to `open_id` for P2P delivery. This uses the Feishu OpenAPI Bot session route, which is independent of the group webhook path.
+> Supplement: once `FEISHU_APP_ID` / `FEISHU_APP_SECRET` are set, the push target resolves as: the chat bound by sending `/bind` > `FEISHU_CHAT_ID` > `FEISHU_WEBHOOK_URL` (legacy fallback, not recommended). When an app bot target resolves, every push (stock reports, pre-open brief, board/plan results, alerts, system errors) is sent under the bot identity and recorded into that chat's assistant context, so replying to a push asks a follow-up. `FEISHU_RECEIVE_ID_TYPE` defaults to `chat_id`; set it to `open_id` for P2P delivery. For app permissions, the long-connection subscription and the self-check script see [Feishu bot config](bot/feishu-bot-config.md) (Chinese).
 
 ### Search Service Configuration
 
@@ -420,6 +427,10 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | Variable | Description | Default |
 |--------|------|--------|
 | `STOCK_LIST` | Watchlist codes (comma-separated) | - |
+| `AUTH_MODE` | Authentication mode: `local` (default, built-in admin password controlled by `ADMIN_AUTH_ENABLED`) or `user_center` (sign in with the NexorAI user center, administrator accounts only). In `user_center` mode the local password login, change-password and auth-toggle endpoints answer `409 auth_mode_user_center`; every `/api/*` route except the health checks and `/api/session`, `/api/login`, `/api/logout` needs a valid `user_session` cookie (verified on each request against `{USER_CENTER_URL}/v1/session`, never cached), and non-GET requests also need `Origin` equal to `PUBLIC_ORIGIN` plus an `X-CSRF-Token` header. An unrecognised value is treated as `user_center` (fail closed). Change it only in `.env`/the deployment environment and restart. See [deploy/tokyo/README.md](../deploy/tokyo/README.md) | `local` |
+| `USER_CENTER_URL` | User-center base URL (`AUTH_MODE=user_center`): the browser is sent to `{URL}/login` and `{URL}/logout`, sessions are verified with `{URL}/v1/session` (3 s timeout, concurrency 2, retry on 429) | `https://user.nexorai.com.cn` |
+| `PUBLIC_ORIGIN` | Public origin of the site (required when `AUTH_MODE=user_center`; scheme, host and optional port, no path): the return URL after login/logout and the only `Origin` accepted for non-GET requests; it must be on the user center return-URL allowlist. When unset, protected endpoints answer `503 AUTH_MISCONFIGURED` | empty |
+| `USER_CENTER_REQUIRED_ROLE` | Minimum user-center role allowed to use the app: `admin` (administrators only) or `user` (regular users and administrators). Without it the API answers `403 ADMIN_REQUIRED` and the Web shows the no-permission page | `admin` |
 | `MAX_WORKERS` | Concurrent threads | `3` |
 | `MARKET_REVIEW_ENABLED` | Enable market review | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
@@ -600,6 +611,16 @@ If you override the runtime user with `--user` or Compose `user:`, or use read-o
 Optional static asset override:
 
 - `./static:/app/static:ro`
+
+### Public deployment (user-center login + single container)
+
+The split deployment (static frontend behind nginx in Seoul, backend in Tokyo) with `AUTH_MODE=user_center` (NexorAI user center, administrators only) is documented step by step in:
+
+- Backend (Tokyo): [deploy/tokyo/README.md](../deploy/tokyo/README.md) - one container runs the Web/API and every scheduled job (`python main.py --serve --schedule --no-run-immediately`), and the Feishu long connection starts once; do not start the `analyzer` and `server` services of `docker/docker-compose.yml` together.
+- Frontend and nginx (Seoul): [deploy/seoul/README.md](../deploy/seoul/README.md)
+- Production `.env` key template: `deploy/tokyo/env.production.example`
+
+Runtime behaviour in `user_center` mode: every `/api/*` route (including `/docs` and `/openapi.json`) needs a valid user-center administrator session, except the health checks (`/health`, `/api/health`, `/api/v1/health`) and `/api/session`, `/api/login`, `/api/logout`, `/api/v1/auth/status`. The in-process scheduler and the Feishu long connection do not go through HTTP and are unaffected; external clients that call `/api/v1/*` over HTTP (for example the MCP service) have no service-token channel and receive 401.
 
 ### Common Commands
 
@@ -1030,7 +1051,7 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
    - **Keyword enabled**: copy the exact same keyword into `FEISHU_WEBHOOK_KEYWORD`. The app will prepend it to every message automatically; no need to change report templates.
    - **IP allowlist enabled**: make sure the outbound IP of your runtime (local / Docker / GitHub Actions each have different IPs) is on the allowlist.
 4. `FEISHU_APP_ID` / `FEISHU_APP_SECRET` are for Feishu app / Stream Bot / cloud document flows only. They do **not** trigger group webhook notifications and must not be used alone instead of `FEISHU_WEBHOOK_URL`.
-5. If `FEISHU_APP_ID` / `FEISHU_APP_SECRET` are configured together with `FEISHU_CHAT_ID`, the Feishu App Bot can push notifications directly to a specified chat or user, no group webhook required. `FEISHU_RECEIVE_ID_TYPE` defaults to `chat_id`; set it to `open_id` for P2P delivery. This uses the Feishu OpenAPI Bot session route, independent of the group webhook path.
+5. Recommended instead: the app bot. Configure `FEISHU_APP_ID` / `FEISHU_APP_SECRET` and `FEISHU_STREAM_ENABLED=true`, add the bot to the target chat and send `/bind` (or set the fallback target `FEISHU_CHAT_ID`). Target order: the `/bind` chat > `FEISHU_CHAT_ID` > webhook; once an app bot target resolves the webhook is no longer used. `FEISHU_RECEIVE_ID_TYPE` defaults to `chat_id`; set it to `open_id` for P2P delivery.
 6. The App Bot send path reuses the existing `lark-oapi>=1.0.0` dependency already listed in `requirements.txt`; standard source installs, Docker, the GitHub Actions daily workflow, and desktop builds all install it through `pip install -r requirements.txt`. References: [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create), [lark-oapi PyPI](https://pypi.org/project/lark-oapi/), [SDK repo](https://github.com/larksuite/oapi-sdk-python).
 
 **Common failure causes:**
@@ -1350,6 +1371,39 @@ You can tune the behavior in `.env`:
 | `SQLITE_BUSY_TIMEOUT_MS` | `5000` | SQLite lock wait timeout in milliseconds |
 | `SQLITE_WRITE_RETRY_MAX` | `3` | Max retries for `database is locked` / `database table is locked` errors |
 | `SQLITE_WRITE_RETRY_BASE_DELAY` | `0.1` | Base backoff delay in seconds for exponential write retries |
+| `MARKET_SNAPSHOT_RETENTION_DAYS` | `250` | Trading days of the `market_stock_daily` board/market snapshot to keep (minimum 30) |
+| `MARKET_SNAPSHOT_BACKFILL_DAYS` | `60` | Trading days of stock snapshots and board quotes backfilled by `scripts/backfill_market_snapshot.py` |
+| `MARKET_BENCHMARK_CODE` | `000985.CSI` | Benchmark index (Tushare code) used by `market_daily` |
+| `MARKET_SNAPSHOT_REQUESTS_PER_MINUTE` | `60` | Tushare requests-per-minute cap for snapshot fetching |
+| `MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE` | `200` | Requests-per-minute cap for the per-board `dc_member` membership calls (minimum 1). Each call returns only dozens to hundreds of rows, so ~530 concept boards take about 3 minutes; it applies only inside the membership refresh loop, every other snapshot interface keeps the conservative `MARKET_SNAPSHOT_REQUESTS_PER_MINUTE` |
+| `BOARD_ANOMALY_THRESHOLDS` | empty | Board anomaly threshold overrides as a JSON object (empty = all defaults); normally edited from the Web settings page or `PUT /api/v1/boards/thresholds`. Keys and defaults: [daily plan API](daily-plan-api.md) (Chinese) |
+| `BOARD_PIPELINE_ENABLED` | `true` | In schedule mode (`SCHEDULE_ENABLED=true` or `--schedule`), run the daily board anomaly pipeline on every trading day; also needs `TUSHARE_TOKEN` (without it the run is skipped with a log line) |
+| `BOARD_PIPELINE_SCHEDULE_TIME` | `17:00` | Run time of the daily board pipeline (`HH:MM`, host local time); does not change `SCHEDULE_TIME` of the daily analysis. `daily_basic`, `limit_list_d` and `dc_*` are not published yet at that time, so the pipeline derives today's values and completes them the next day; see the [core backend design](design/core-backend-design.md) 2.9 (Chinese) |
+| `BOARD_INDUSTRY_MEMBERSHIP_ENABLED` | `true` | When the board pipeline is on (`BOARD_PIPELINE_ENABLED=true`), refresh industry-board membership once a week. Concept boards are not affected: the 17:00 pipeline refreshes them every trading day, one `dc_member(ts_code, trade_date=D-1)` call per board; a board whose call fails or returns nothing keeps its membership. Needs `TUSHARE_TOKEN` (without it the run is skipped with a log line) |
+| `BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY` | `6` | Weekday of the weekly industry membership refresh, ISO numbering: `1` Monday ... `6` Saturday ... `7` Sunday; it runs regardless of trading days and folds the latest trading day before the run day; invalid values fall back to `6` |
+| `BOARD_INDUSTRY_MEMBERSHIP_TIME` | `10:00` | Run time of the weekly industry membership refresh (`HH:MM`, host local time like `SCHEDULE_TIME`); invalid values fall back to `10:00`. On demand: `python scripts/run_board_pipeline.py --industry-membership` |
+| `BOARD_MEMBERSHIP_FULL_DAY_FALLBACK` | `false` | Optional fallback: when the per-board concept refresh folds no board at all for the day, try one all-boards `dc_member` query without `ts_code`. Tushare caps the paging offset at 100000 ("offset不能大于100000") and one day has more than 105k rows, so the all-boards query usually cannot finish; leave it off |
+| `US_LEADERS` | empty | Overnight US leaders as a JSON array of `{"symbol","name","kind":"stock\|etf\|index","boards":["A-share board name"],"em":"Eastmoney code (optional)"}`; empty = the built-in 14-entry default (NVDA/AVGO/AMD/TSM/SOXX/TSLA/AAPL/MSFT/META/GOOGL/AMZN/PGJ/SPX/NDX), `[]` = no leaders. `symbol` is also the `stock_daily` code. `em` switches on the Eastmoney (AKShare) source: stocks / ETFs use `<market>.<ticker>` (`105.NVDA` NASDAQ, `106.TSM` NYSE, via `stock_us_hist`), indices use the code of `index_global_spot_em` (`SPX` / `NDX` / `DJIA`); entries without `em` only use Tushare / yfinance. Source order: 08:15 pre-open = Eastmoney -> yfinance; 17:00 board run = Eastmoney -> Tushare -> yfinance (Tushare `us_daily` is limited to 1 call/minute on this account, so it is only a fallback: at most one by-trade-date call per run, skipped immediately on a frequency-limit error), and rows are written to `stock_daily` with priority Tushare > Eastmoney > yfinance (a lower-priority source never overwrites a higher-priority row). Eastmoney has no Philadelphia Semiconductor or Nasdaq Golden Dragon index, so the default list uses the ETFs `SOXX` / `PGJ` as proxies (`kind=etf`, judged with the index threshold); Tushare `index_global` only has SPX/IXIC/DJI, NDX/SOX/HXC/RUT/VIX come from Eastmoney (needs `em`) or yfinance only. Board names map to `board_catalog` by exact, then normalised, then contains match and unresolved names are only logged. The 17:00 board pipeline adds an "overnight US" evidence entry to boards mapped from leaders that crossed their threshold |
+| `US_MOVE_STOCK_PCT` | `4.0` | A US stock whose one-day move reaches this absolute value (%) counts as a mover |
+| `US_MOVE_INDEX_PCT` | `1.5` | Same for US indices |
+| `PREOPEN_PUSH_ENABLED` | `false` | In schedule mode, run and push a "pre-open edition" on every trading day: fetch the overnight US bars via yfinance into `stock_daily`, run the existing per-stock analysis for `STOCK_LIST` with the overnight US moves, mapped boards and news digest injected as extra context, and push through the existing notification channels. `SCHEDULE_TIME` analysis is unchanged |
+| `PREOPEN_PUSH_TIME` | `08:15` | Start time of the pre-open edition (`HH:MM`, host local time); analysis takes a while, so 08:15 lands around 08:45. The news digest depends on the news-ingestion module and shows "资讯暂不可用" when it is missing; everything else still runs |
+| `NEWS_INTEL_AUTO_FETCH_ENABLED` | `false` | Master switch: when on (in schedule mode, `SCHEDULE_ENABLED=true` or `--schedule`) AKShare news is fetched and classified on a schedule, and the lazy pre-analysis refresh of rss / newsnow sources keeps working; `NEWS_INTEL_RETENTION_DAYS` still only governs rss / atom / newsnow items, AKShare items use the two tiered keys below |
+| `NEWS_POLL_INTERVAL_MINUTES` | `10` | Trading days 08:00-15:30 (China time): fetch the CLS telegraph and Eastmoney flash together every N minutes, merged and deduplicated; Sina / Futu / THS are used only when one of the two fails |
+| `NEWS_POLL_OFFHOURS_INTERVAL_MINUTES` | `30` | Polling interval at other times and on non-trading days |
+| `NEWS_DAILY_FETCH_TIME` | `08:05` | Time of the daily fetch of announcements (watchlist `STOCK_LIST` + current holdings) and the Eastmoney morning brief on trading days (`HH:MM`, host local time; keep it before 08:15) |
+| `NEWS_AKSHARE_CLS_SYMBOL` | `全部` | CLS telegraph scope: `全部` (default, gap-checked) or `重点` (only level A/B among the latest 20 rows, usually very few; not gap-checked) |
+| `NEWS_FLASH_RETENTION_DAYS` | `3` | Days to keep market flashes and the morning brief (by publish time) |
+| `NEWS_COMPANY_RETENTION_DAYS` | `30` | Days to keep announcements and other company events (by publish date) |
+| `NEWS_DEDUP_WINDOW_MINUTES` | `30` | Time window for cross-source near-duplicate detection by normalised title |
+| `NEWS_FETCH_TIMEOUT_SEC` | `30` | Timeout of one AKShare call; a source that times out, or whose previous call is still running, is skipped for the round |
+| `NEWS_ANNOUNCEMENT_MODE` | `auto` | Announcement fetch mode: `auto` fetches per code when watchlist + holdings has at most `NEWS_ANNOUNCEMENT_BY_CODE_MAX` codes (about 2 requests per code for the whole date range), otherwise the market-wide listing of the day filtered locally (about 20-60 requests per day); or force `by_code` / `market` |
+| `NEWS_ANNOUNCEMENT_BY_CODE_MAX` | `12` | Code-count limit for per-code announcement fetching in `auto` mode |
+| `NEWS_CLASSIFY_ENABLED` | `true` | Classify new items with the light model (`LITELLM_LIGHT_MODEL`, primary model when empty): scope, importance 1-5, related boards (mapped to the board catalog), US tickers, breaking flag |
+| `NEWS_CLASSIFY_BATCH_SIZE` | `20` | Items classified per model call |
+| `NEWS_CLASSIFY_MAX_ITEMS_PER_RUN` | `60` | Maximum items classified per run |
+| `NEWS_CLASSIFY_MAX_ATTEMPTS` | `5` | Retry cap per item after failed classifications; afterwards the item stays unclassified |
+| `NEWS_BOARD_DRIVER_MIN_IMPORTANCE` | `4` | Minimum importance of board-linked news for a board anomaly's driver to become "news"; the headline is copied into the signal evidence so it stays readable after the news is purged |
 
 ---
 

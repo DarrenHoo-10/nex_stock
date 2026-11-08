@@ -2,7 +2,6 @@ import type React from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Link } from 'react-router-dom';
 import { useLatestPlanRun } from '../../../hooks/useLatestPlanRun';
 import { useAgentChatStore } from '../../../stores/agentChatStore';
 import { ASSISTANT_NO_CONTEXT, usePlanUiStore } from '../../../stores/planUiStore';
@@ -155,9 +154,6 @@ export const AssistantDrawer: React.FC = () => {
           ) : null}
         </span>
         {tradeLabel ? <span className="assist-date">{tradeLabel} 收盘计划</span> : null}
-        <Link className="assist-open-chat" to="/chat" onClick={close}>
-          在问股页打开
-        </Link>
       </div>
 
       <div className="msgs assist-msgs" ref={messagesRef} aria-live="polite" aria-label="对话">

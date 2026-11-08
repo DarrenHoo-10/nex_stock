@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
@@ -7,12 +7,14 @@ import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { PlanPageHeader } from '../PlanPageHeader';
 import { PlanShell } from '../PlanShell';
 
-const { getLatestRun, isPlanServiceUnavailable } = vi.hoisted(() => ({
+const { getLatestRun, isPlanServiceUnavailable, authState } = vi.hoisted(() => ({
   getLatestRun: vi.fn(),
   isPlanServiceUnavailable: vi.fn(),
+  authState: { value: { authMode: 'local', userCenter: null } as Record<string, unknown> },
 }));
 
 vi.mock('../../../api/dailyPlan', () => ({ getLatestRun, isPlanServiceUnavailable }));
+vi.mock('../../../contexts/AuthContext', () => ({ useAuth: () => authState.value }));
 
 function renderShell(path = '/mine') {
   return render(
@@ -22,7 +24,6 @@ function renderShell(path = '/mine') {
           <Route element={<PlanShell />}>
             <Route path="/mine" element={<PlanPageHeader title="我的股票" />} />
             <Route path="/boards" element={<h1>板块异动页</h1>} />
-            <Route path="/home" element={<h1>旧首页</h1>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -36,6 +37,7 @@ beforeEach(() => {
   isPlanServiceUnavailable.mockReturnValue(false);
   usePlanUiStore.setState({ assistantOpen: false, runDialogOpen: false, runRefreshToken: 0 });
   localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+  authState.value = { authMode: 'local', userCenter: null };
 });
 
 describe('PlanShell', () => {
@@ -54,41 +56,28 @@ describe('PlanShell', () => {
     await screen.findByText('还没有运行记录');
   });
 
-  it('lists the old pages in the more popover and closes on Escape', async () => {
+  it('has no links to the old pages', async () => {
     getLatestRun.mockResolvedValue(null);
     renderShell('/mine');
-    const more = screen.getByRole('button', { name: '更多' });
-    expect(more).toHaveAttribute('aria-expanded', 'false');
-
-    fireEvent.click(more);
-    const popover = await screen.findByRole('navigation', { name: '更多页面' });
-    const hrefs = Array.from(popover.querySelectorAll('a')).map((link) => link.getAttribute('href'));
-    expect(hrefs).toEqual([
-      '/home',
-      '/chat',
-      '/portfolio',
-      '/decision-signals',
-      '/screening',
-      '/backtest',
-      '/alerts',
-      '/data',
-      '/usage',
-      '/settings',
-    ]);
-    expect(more).toHaveAttribute('aria-expanded', 'true');
-
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('navigation', { name: '更多页面' })).not.toBeInTheDocument());
-    expect(more).toHaveFocus();
+    expect(screen.queryByRole('button', { name: '更多' })).not.toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: '主导航' });
+    const hrefs = Array.from(nav.querySelectorAll('a')).map((link) => link.getAttribute('href'));
+    expect(hrefs).toEqual(['/boards', '/picks', '/mine', '/preferences']);
+    await screen.findByText('还没有运行记录');
   });
 
-  it('closes the popover after navigating to an old page', async () => {
+  it('offers a user-center logout link in the nav only in user_center mode', async () => {
     getLatestRun.mockResolvedValue(null);
+    authState.value = {
+      authMode: 'user_center',
+      userCenter: { logoutUrl: 'https://user.example.test/logout?return=https%3A%2F%2Fstock.example.test%2F' },
+    };
     renderShell('/mine');
-    fireEvent.click(screen.getByRole('button', { name: '更多' }));
-    fireEvent.click(await screen.findByRole('link', { name: '首页' }));
-    expect(await screen.findByRole('heading', { name: '旧首页' })).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole('navigation', { name: '更多页面' })).not.toBeInTheDocument());
+    expect(screen.getByRole('link', { name: '退出' })).toHaveAttribute(
+      'href',
+      'https://user.example.test/logout?return=https%3A%2F%2Fstock.example.test%2F',
+    );
+    await screen.findByText('还没有运行记录');
   });
 });
 

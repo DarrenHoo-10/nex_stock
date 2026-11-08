@@ -23,6 +23,7 @@ from src.auth import (
     is_auth_enabled,
     is_password_changeable,
     is_password_set,
+    is_user_center_mode,
     record_login_failure,
     refresh_auth_state,
     rotate_session_secret,
@@ -94,6 +95,17 @@ def _cookie_params(request: Request) -> dict:
     }
 
 
+def _user_center_mode_error() -> JSONResponse:
+    """Local-password endpoints are disabled while login is delegated to the user center."""
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": "auth_mode_user_center",
+            "message": "Local password authentication is disabled (AUTH_MODE=user_center); sign in via the user center",
+        },
+    )
+
+
 def _apply_auth_enabled(enabled: bool, request: Request | None = None) -> bool:
     """Persist auth toggle to .env and reload runtime config."""
     manager_applied = False
@@ -156,6 +168,18 @@ def _set_session_cookie(response: Response, session_value: str, request: Request
 
 def _get_auth_status_dict(request: Request | None = None) -> dict:
     """Helper to build consistent auth status response body."""
+    if is_user_center_mode():
+        # No user-center round trip here: the SPA calls GET /api/session for the
+        # actual session. loggedIn stays false so legacy clients never treat the
+        # status response as proof of login.
+        return {
+            "authEnabled": True,
+            "loggedIn": False,
+            "passwordSet": False,
+            "passwordChangeable": False,
+            "setupState": "enabled",
+            "authMode": "user_center",
+        }
     auth_enabled = is_auth_enabled()
     logged_in = False
     if auth_enabled and request:
@@ -179,6 +203,7 @@ def _get_auth_status_dict(request: Request | None = None) -> dict:
         "passwordSet": _password_set_for_response(auth_enabled),
         "passwordChangeable": is_password_changeable() if auth_enabled else False,
         "setupState": setup_state,
+        "authMode": "local",
     }
 
 
@@ -207,6 +232,8 @@ async def auth_status(request: Request):
 )
 async def auth_update_settings(request: Request, body: AuthSettingsRequest):
     """Manage auth enablement from the settings page."""
+    if is_user_center_mode():
+        return _user_center_mode_error()
     target_enabled = body.auth_enabled
     current_enabled = is_auth_enabled()
     stored_password_exists = has_stored_password()
@@ -366,6 +393,8 @@ async def auth_update_settings(request: Request, body: AuthSettingsRequest):
 )
 async def auth_login(request: Request, body: LoginRequest):
     """Verify password or set initial password, set cookie on success. Returns 401 or 429 on failure."""
+    if is_user_center_mode():
+        return _user_center_mode_error()
     if not is_auth_enabled():
         return JSONResponse(
             status_code=400,
@@ -435,6 +464,8 @@ async def auth_login(request: Request, body: LoginRequest):
 )
 async def auth_change_password(body: ChangePasswordRequest):
     """Change password. Requires login."""
+    if is_user_center_mode():
+        return _user_center_mode_error()
     if not is_password_changeable():
         return JSONResponse(
             status_code=400,
@@ -472,6 +503,8 @@ async def auth_change_password(body: ChangePasswordRequest):
 )
 async def auth_logout(request: Request):
     """Clear session cookie."""
+    if is_user_center_mode():
+        return _user_center_mode_error()
     if is_auth_enabled() and not rotate_session_secret():
         return JSONResponse(
             status_code=500,

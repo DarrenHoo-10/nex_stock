@@ -33,7 +33,8 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
-from .realtime_types import UnifiedRealtimeQuote, ChipDistribution
+from .realtime_types import UnifiedRealtimeQuote, ChipDistribution, format_cn_provider_timestamp
+from .tushare_market_data import TushareMarketDataMixin
 from src.config import get_config
 import os
 from zoneinfo import ZoneInfo
@@ -104,6 +105,30 @@ def _resolve_tushare_http_url() -> Optional[str]:
     return url
 
 
+# rt_k / rt_min_daily 等 RT 接口需要单独开通权限（不含在积分内）。权限缺失属于
+# “干净的未命中”：记录一次后在冷却期内不再请求，让实时行情链路直接落到下一个数据源。
+_RT_PERMISSION_MARKERS = ("没有接口访问权限", "没有访问权限", "无接口访问权限", "接口权限", "permission")
+_RT_RATE_LIMIT_MARKERS = ("每分钟最多", "每天最多", "每小时最多", "最多访问")
+_RT_PERMISSION_COOLDOWN_SECONDS = 600.0
+
+
+class RealtimePermissionError(DataFetchError):
+    """Tushare RT interface is not enabled for the configured token."""
+
+
+def _is_permission_error(exc: BaseException) -> bool:
+    """Return True when a Tushare error message means "interface permission missing".
+
+    Rate-limit messages also mention 权限 ("…每分钟最多访问该接口N次，权限的具体详情…"),
+    so they are excluded first.
+    """
+    message = str(exc or "")
+    if any(marker in message for marker in _RT_RATE_LIMIT_MARKERS):
+        return False
+    lowered = message.lower()
+    return any(marker.lower() in lowered for marker in _RT_PERMISSION_MARKERS)
+
+
 class _TushareHttpClient:
     """Lightweight Tushare Pro client that does not require the tushare SDK."""
 
@@ -142,7 +167,7 @@ class _TushareHttpClient:
         return caller
 
 
-class TushareFetcher(BaseFetcher):
+class TushareFetcher(TushareMarketDataMixin, BaseFetcher):
     """
     Tushare Pro 数据源实现
     
@@ -179,6 +204,8 @@ class TushareFetcher(BaseFetcher):
         self._api: Optional[object] = None  # Tushare API 实例
         self.date_list: Optional[List[str]] = None  # 交易日列表缓存（倒序，最新日期在前）
         self._date_list_end: Optional[str] = None  # 缓存对应的截止日期，用于跨日刷新
+        self._rt_denied_until: Dict[str, float] = {}  # RT 接口名 -> 权限缺失冷却截止（monotonic）
+        self._circ_mv_cache: Optional[Tuple[str, Dict[str, float]]] = None  # (交易日, {6位代码: 流通市值元})
 
         # 尝试初始化 API
         self._init_api()
@@ -712,13 +739,96 @@ class TushareFetcher(BaseFetcher):
 
         return None
     
+    def _call_rt_api(self, api_name: str, **kwargs) -> pd.DataFrame:
+        """Call a Tushare RT interface with rate limiting and permission cooldown.
+
+        Raises ``RealtimePermissionError`` when the token lacks the RT permission
+        (and keeps raising it without a network call during the cooldown window).
+        """
+        if time.monotonic() < self._rt_denied_until.get(api_name, 0.0):
+            raise RealtimePermissionError(f"Tushare {api_name} permission missing (cooldown)")
+        try:
+            return self._call_api_with_rate_limit(api_name, **kwargs)
+        except Exception as exc:
+            if _is_permission_error(exc):
+                self._rt_denied_until[api_name] = time.monotonic() + _RT_PERMISSION_COOLDOWN_SECONDS
+                raise RealtimePermissionError(f"Tushare {api_name} permission missing: {exc}") from exc
+            raise
+
+    @staticmethod
+    def rt_k_row_to_quote(row: Any, normalized_code: str) -> Optional[UnifiedRealtimeQuote]:
+        """Map one ``rt_k`` row (vol in shares, amount in yuan) to a unified quote."""
+        from .realtime_types import RealtimeSource, safe_float, safe_int
+
+        price = safe_float(row.get('close'))
+        if price is None or price <= 0:
+            return None
+        pre_close = safe_float(row.get('pre_close'))
+        high = safe_float(row.get('high'))
+        low = safe_float(row.get('low'))
+        change_amount = change_pct = amplitude = None
+        if pre_close and pre_close > 0:
+            change_amount = round(price - pre_close, 4)
+            change_pct = round((price - pre_close) / pre_close * 100, 4)
+            if high is not None and low is not None:
+                amplitude = round((high - low) / pre_close * 100, 4)
+        return UnifiedRealtimeQuote(
+            code=normalized_code,
+            name=str(row.get('name') or ''),
+            source=RealtimeSource.TUSHARE,
+            provider_timestamp=format_cn_provider_timestamp(row.get('trade_time')),
+            price=price,
+            change_pct=change_pct,
+            change_amount=change_amount,
+            volume=safe_int(row.get('vol')),  # rt_k: 股
+            amount=safe_float(row.get('amount')),  # rt_k: 元
+            amplitude=amplitude,
+            high=high,
+            low=low,
+            open_price=safe_float(row.get('open')),
+            pre_close=pre_close,
+        )
+
+    def fetch_rt_k(self, ts_code: str) -> pd.DataFrame:
+        """Raw ``rt_k`` frame for a ts_code / wildcard pattern (e.g. ``6*.SH``)."""
+        return self._call_rt_api("rt_k", ts_code=ts_code)
+
+    def fetch_rt_min_daily(self, ts_code: str, freq: str = "5MIN") -> pd.DataFrame:
+        """Raw ``rt_min_daily`` frame (today's intraday bars; needs 「A股分钟RT」)."""
+        return self._call_rt_api("rt_min_daily", ts_code=ts_code, freq=freq)
+
+    def fetch_prev_circ_mv(self) -> Dict[str, float]:
+        """Previous trading day's circulating market cap (yuan) keyed by 6-digit code.
+
+        ``rt_k`` carries no market cap, so intraday cap-weighting uses the last
+        complete day's ``daily_basic.circ_mv`` (10k yuan). Cached per trade date.
+        """
+        trade_dates = self._get_trade_dates()
+        today = self._get_china_now().strftime("%Y%m%d")
+        prev = next((d for d in trade_dates if d < today), None)
+        if prev is None:
+            return {}
+        if self._circ_mv_cache is not None and self._circ_mv_cache[0] == prev:
+            return self._circ_mv_cache[1]
+        df = self._call_api_with_rate_limit("daily_basic", trade_date=prev, fields="ts_code,circ_mv")
+        result: Dict[str, float] = {}
+        if df is not None and not df.empty:
+            from .realtime_types import safe_float
+            for ts_code, circ_mv in zip(df["ts_code"], df["circ_mv"]):
+                value = safe_float(circ_mv)
+                if value is not None and value > 0:
+                    result[str(ts_code).split(".")[0]] = value * 10000.0
+        self._circ_mv_cache = (prev, result)
+        return result
+
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         获取实时行情
 
         策略：
-        1. 优先尝试 Pro 接口（需要2000积分）：数据全，稳定性高
-        2. 失败降级到旧版接口：门槛低，数据较少
+        1. 优先尝试 rt_k（需单独开通「A股日线RT」）：成交量单位为股，trade_time 作为
+           provider_timestamp；权限缺失按“干净未命中”返回 None，交给后续数据源
+        2. 其他失败（网络/限流等）降级到旧版接口：门槛低，数据较少
 
         Args:
             stock_code: 股票代码
@@ -741,40 +851,23 @@ class TushareFetcher(BaseFetcher):
             safe_float, safe_int
         )
 
-        # 速率限制检查
-        self._check_rate_limit()
-
-        # 尝试 Pro 接口
+        # 尝试 rt_k（需单独开通「A股日线RT」）。权限缺失时直接返回 None，
+        # 由 DataFetcherManager 继续尝试下一个数据源，不再走旧版接口。
         try:
             ts_code = self._convert_stock_code(stock_code)
-            # 尝试调用 Pro 实时接口 (需要积分)
-            df = self._api.quotation(ts_code=ts_code)
+            df = self._call_rt_api("rt_k", ts_code=ts_code)
 
             if df is not None and not df.empty:
-                row = df.iloc[0]
-                logger.debug(f"Tushare Pro 实时行情获取成功: {stock_code}")
-
-                return UnifiedRealtimeQuote(
-                    code=normalized_code,
-                    name=str(row.get('name', '')),
-                    source=RealtimeSource.TUSHARE,
-                    price=safe_float(row.get('price')),
-                    change_pct=safe_float(row.get('pct_chg')),  # Pro 接口通常直接返回涨跌幅
-                    change_amount=safe_float(row.get('change')),
-                    volume=safe_int(row.get('vol')),
-                    amount=safe_float(row.get('amount')),
-                    high=safe_float(row.get('high')),
-                    low=safe_float(row.get('low')),
-                    open_price=safe_float(row.get('open')),
-                    pre_close=safe_float(row.get('pre_close')),
-                    turnover_rate=safe_float(row.get('turnover_ratio')), # Pro 接口可能有换手率
-                    pe_ratio=safe_float(row.get('pe')),
-                    pb_ratio=safe_float(row.get('pb')),
-                    total_mv=safe_float(row.get('total_mv')),
-                )
+                quote = self.rt_k_row_to_quote(df.iloc[0], normalized_code)
+                if quote is not None:
+                    logger.debug(f"Tushare rt_k 实时行情获取成功: {stock_code}")
+                    return quote
+        except RealtimePermissionError:
+            logger.info("Tushare rt_k 未开通权限（A股日线RT），实时行情交由下一个数据源")
+            return None
         except Exception as e:
             # 仅记录调试日志，不报错，继续尝试降级
-            logger.debug(f"Tushare Pro 实时行情不可用 (可能是积分不足): {e}")
+            logger.debug(f"Tushare rt_k 实时行情不可用: {e}")
 
         # 降级：尝试旧版接口
         try:

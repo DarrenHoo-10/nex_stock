@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import apiClient from '../index';
 import { getParsedApiError } from '../error';
+import { setUserCenterSession } from '../../utils/userCenterSession';
 
 describe('authentication response redirect', () => {
   const assign = vi.fn();
@@ -63,5 +64,62 @@ describe('authentication response redirect', () => {
     await expect(apiClient.post('/fixture', {}, { adapter: () => Promise.reject(error) })).rejects.toBe(error);
     expect(getParsedApiError(error).message).toBe('请检查渠道的 API Key、模型和运行参数后重试。');
     expect(getParsedApiError(error).rawMessage).not.toContain('private-key-value');
+  });
+});
+
+describe('user_center mode', () => {
+  const assign = vi.fn();
+  const LOGIN_URL = 'https://user.example.test/login?return=https%3A%2F%2Fstock.example.test%2F';
+
+  type FixtureConfig = { headers: { get: (name: string) => unknown } };
+  const okAdapter = (captured: { headers?: FixtureConfig['headers'] }) => (config: FixtureConfig) => {
+    captured.headers = config.headers;
+    return Promise.resolve({ data: {}, status: 200, statusText: 'OK', headers: {}, config });
+  };
+
+  beforeEach(() => {
+    assign.mockClear();
+    vi.stubGlobal('window', {
+      location: { pathname: '/boards', search: '', hash: '', assign },
+    });
+  });
+
+  afterEach(() => {
+    setUserCenterSession(null);
+    vi.unstubAllGlobals();
+  });
+
+  it.each(['post', 'put', 'patch', 'delete'] as const)('attaches X-CSRF-Token to %s requests', async (method) => {
+    setUserCenterSession({ csrfToken: 'csrf-123', loginUrl: LOGIN_URL });
+    const captured: { headers?: FixtureConfig['headers'] } = {};
+    await apiClient.request({ url: '/fixture', method, adapter: okAdapter(captured) as never });
+    expect(captured.headers?.get('X-CSRF-Token')).toBe('csrf-123');
+  });
+
+  it('does not attach X-CSRF-Token to GET requests', async () => {
+    setUserCenterSession({ csrfToken: 'csrf-123', loginUrl: LOGIN_URL });
+    const captured: { headers?: FixtureConfig['headers'] } = {};
+    await apiClient.get('/fixture', { adapter: okAdapter(captured) as never });
+    expect(captured.headers?.get('X-CSRF-Token')).toBeFalsy();
+  });
+
+  it('sends no CSRF header outside user_center mode', async () => {
+    const captured: { headers?: FixtureConfig['headers'] } = {};
+    await apiClient.post('/fixture', {}, { adapter: okAdapter(captured) as never });
+    expect(captured.headers?.get('X-CSRF-Token')).toBeFalsy();
+  });
+
+  it('redirects to the user-center login URL when the session expires', async () => {
+    setUserCenterSession({ csrfToken: 'csrf-123', loginUrl: LOGIN_URL });
+    const error = { response: { status: 401 }, message: 'expired session' };
+    await expect(apiClient.get('/fixture', { adapter: () => Promise.reject(error) })).rejects.toBe(error);
+    expect(assign).toHaveBeenCalledWith(LOGIN_URL);
+  });
+
+  it('does not redirect on 403 (non-admin or CSRF failure)', async () => {
+    setUserCenterSession({ csrfToken: 'csrf-123', loginUrl: LOGIN_URL });
+    const error = { response: { status: 403, data: { error: 'ADMIN_REQUIRED' } }, message: 'forbidden' };
+    await expect(apiClient.get('/fixture', { adapter: () => Promise.reject(error) })).rejects.toBe(error);
+    expect(assign).not.toHaveBeenCalled();
   });
 });

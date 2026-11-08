@@ -22,11 +22,13 @@ export interface BoardDetailPanelProps {
   onBack: () => void;
   onPick: (boardId: string) => void;
   onAsk: () => void;
+  /** Opens the K-line / chip chart of a representative stock. */
+  onOpenStock?: (code: string, name: string) => void;
 }
 
 /** Detail window of a board: verdict, six metrics, excess-return chart, representatives and the reasons. */
 export const BoardDetailPanel = forwardRef<HTMLHeadingElement, BoardDetailPanelProps>(
-  ({ detail, tradeDate, benchmark, onBack, onPick, onAsk }, headingRef) => {
+  ({ detail, tradeDate, benchmark, onBack, onPick, onAsk, onOpenStock }, headingRef) => {
     const stateLabel = BOARD_STATE_LABEL[detail.state];
     const quiet = detail.state === 'ebbing' || detail.state === 'abnormal_drop';
     const unknownDriver = detail.driverKind === 'unknown' || detail.drivers.startsWith('原因未明');
@@ -92,7 +94,21 @@ export const BoardDetailPanel = forwardRef<HTMLHeadingElement, BoardDetailPanelP
                     {detail.representatives.map((stock) => (
                       <li key={`${stock.code}-${stock.role}`}>
                         <span>
-                          <b>{stock.name}</b> <span className="cd">{stock.code}</span>{' '}
+                          {onOpenStock ? (
+                            <button
+                              type="button"
+                              className="stock-link"
+                              aria-haspopup="dialog"
+                              aria-label={`查看 ${stock.name} 的 K 线和筹码`}
+                              onClick={() => onOpenStock(stock.code, stock.name)}
+                            >
+                              <b>{stock.name}</b> <span className="cd">{stock.code}</span>
+                            </button>
+                          ) : (
+                            <>
+                              <b>{stock.name}</b> <span className="cd">{stock.code}</span>
+                            </>
+                          )}{' '}
                           <span className={`tag ${stock.role === 'leader' ? 'wait' : 'line'}`}>
                             {REPRESENTATIVE_ROLE_LABEL[stock.role]}
                           </span>

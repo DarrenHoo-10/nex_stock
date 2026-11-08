@@ -334,7 +334,7 @@ def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
     """Get daily OHLCV history data."""
     effective_days, metadata = _normalize_history_days(days)
 
-    from src.services.history_loader import load_history_df
+    from src.services.history_loader import filter_persistable_daily_bars, load_history_df
     df, source = load_history_df(stock_code, days=effective_days)
 
     if df is None or df.empty:
@@ -343,10 +343,13 @@ def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
             metadata,
         )
 
+    last_bar_incomplete = False
     if source != "db_cache":
         _, normalized_code = _history_code_candidates(stock_code)
+        # An in-progress intraday bar must never reach stock_daily.
+        persist_df, last_bar_incomplete = filter_persistable_daily_bars(df, normalized_code)
         try:
-            saved_count = _get_db().save_daily_data(df, normalized_code, source)
+            saved_count = _get_db().save_daily_data(persist_df, normalized_code, source)
             logger.info(
                 "Agent daily history persisted for %s (source=%s, new_records=%s)",
                 normalized_code,
@@ -371,7 +374,7 @@ def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
     if source == "db_cache" and records:
         response_code = records[-1].get("code") or response_code
 
-    return _append_history_metadata({
+    payload = {
         "code": response_code,
         "source": source,
         "cache_hit": source == "db_cache",
@@ -381,7 +384,11 @@ def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
         "partial_cache": source == "db_cache" and len(records) < effective_days,
         "total_records": len(records),
         "data": records,
-    }, metadata)
+    }
+    if last_bar_incomplete:
+        # Today's bar is still forming (market open): shown to the model but not persisted.
+        payload["last_bar_incomplete"] = True
+    return _append_history_metadata(payload, metadata)
 
 
 get_daily_history_tool = ToolDefinition(

@@ -9,6 +9,16 @@ import {
   toRouteModel,
   validateTemperature,
 } from '../llmModels';
+import {
+  channelDeleteItems,
+  channelSaveItems,
+  emptyDraft,
+  inUseProblem,
+  mergeModelLists,
+  normalizeChannelName,
+  rolesUsing,
+  validateDraft,
+} from '../channelDraft';
 import { resetValues, serverValues, validateRules } from '../positionRules';
 import { buildOverrides, describeThresholdError, editedKeys, groupThresholds, invalidNumbers } from '../thresholds';
 import { buildConfigView } from '../usePreferencesConfig';
@@ -168,8 +178,12 @@ describe('model roles', () => {
       primary: 'deepseek/deepseek-v4-flash',
       agent: '',
       fallbacks: ['deepseek/deepseek-v4-pro'],
+      light: '',
       vision: 'openai/legacy-vision',
       temperature: '0.7',
+      effort: '',
+      agentEffort: '',
+      lightEffort: '',
     });
     expect(diffModelItems(saved, saved)).toEqual([]);
     expect(
@@ -179,6 +193,13 @@ describe('model roles', () => {
       { key: 'LITELLM_FALLBACK_MODELS', value: '' },
       { key: 'AGENT_LITELLM_MODEL', value: 'deepseek/deepseek-v4-flash' },
     ]);
+    expect(
+      diffModelItems(saved, { ...saved, light: 'deepseek/deepseek-v4-flash', effort: 'max', lightEffort: 'high' }),
+    ).toEqual([
+      { key: 'LITELLM_LIGHT_MODEL', value: 'deepseek/deepseek-v4-flash' },
+      { key: 'LLM_REASONING_EFFORT', value: 'max' },
+      { key: 'LITELLM_LIGHT_REASONING_EFFORT', value: 'high' },
+    ]);
   });
 
   it('validates the temperature range', () => {
@@ -186,5 +207,83 @@ describe('model roles', () => {
     expect(validateTemperature('1.2')).toBeNull();
     expect(validateTemperature('2.5')).not.toBeNull();
     expect(validateTemperature('abc')).not.toBeNull();
+  });
+});
+
+describe('channel drafts', () => {
+  const roles = {
+    primary: 'anthropic/claude-opus-5-5',
+    agent: '',
+    fallbacks: [],
+    light: 'anthropic/claude-haiku-5-5',
+    vision: '',
+    temperature: '',
+    effort: 'max',
+    agentEffort: '',
+    lightEffort: 'high',
+  };
+  const providers = new Set(['anthropic', 'openai']);
+
+  it('normalizes names to config-safe keys', () => {
+    expect(normalizeChannelName('Darren-CPA')).toBe('darren_cpa');
+    expect(normalizeChannelName(' my gateway.v2 ')).toBe('my_gateway_v2');
+    expect(normalizeChannelName('中文')).toBe('');
+  });
+
+  it('validates a new channel before saving', () => {
+    const base = { ...emptyDraft(), name: 'gw', protocol: 'anthropic', baseUrl: 'https://gw.example.com', apiKey: 'k', models: ['m'] };
+    const opts = { isNew: true, existingNames: ['gw2'], keySaved: false };
+    expect(validateDraft(base, opts)).toBeNull();
+    expect(validateDraft({ ...base, name: '' }, opts)).toContain('名称');
+    expect(validateDraft({ ...base, name: 'gw2' }, opts)).toContain('已经有');
+    expect(validateDraft({ ...base, baseUrl: 'gw.example.com' }, opts)).toContain('http');
+    expect(validateDraft({ ...base, apiKey: '' }, opts)).toContain('API Key');
+    expect(validateDraft({ ...base, apiKey: '' }, { ...opts, isNew: false, keySaved: true })).toBeNull();
+    expect(validateDraft({ ...base, models: [] }, opts)).toContain('至少打开一个模型');
+  });
+
+  it('builds save items for a new channel and leaves a blank key alone for a saved one', () => {
+    const draft = {
+      name: 'darren-cpa',
+      protocol: 'anthropic',
+      baseUrl: 'https://gw.example.com/',
+      apiKey: 'sk-1',
+      enabled: true,
+      models: ['claude-opus-5-5', 'claude-haiku-5-5'],
+    };
+    expect(channelSaveItems(draft, ['deepseek'])).toEqual([
+      { key: 'LLM_CHANNELS', value: 'deepseek,darren_cpa' },
+      { key: 'LLM_DARREN_CPA_PROTOCOL', value: 'anthropic' },
+      { key: 'LLM_DARREN_CPA_BASE_URL', value: 'https://gw.example.com' },
+      { key: 'LLM_DARREN_CPA_ENABLED', value: 'true' },
+      { key: 'LLM_DARREN_CPA_MODELS', value: 'claude-opus-5-5,claude-haiku-5-5' },
+      { key: 'LLM_DARREN_CPA_API_KEY', value: 'sk-1' },
+      { key: 'LLM_DARREN_CPA_API_KEYS', value: '' },
+    ]);
+    const existing = channelSaveItems({ ...draft, name: 'darren_cpa', apiKey: '' }, ['darren_cpa']);
+    expect(existing.map((entry) => entry.key)).toEqual([
+      'LLM_DARREN_CPA_PROTOCOL',
+      'LLM_DARREN_CPA_BASE_URL',
+      'LLM_DARREN_CPA_ENABLED',
+      'LLM_DARREN_CPA_MODELS',
+    ]);
+    expect(channelSaveItems({ ...draft, apiKey: 'a,b' }, [])).toContainEqual({ key: 'LLM_DARREN_CPA_API_KEYS', value: 'a,b' });
+  });
+
+  it('clears every channel key on delete', () => {
+    const items = channelDeleteItems('gw', ['deepseek', 'gw']);
+    expect(items[0]).toEqual({ key: 'LLM_CHANNELS', value: 'deepseek' });
+    expect(items.slice(1).every((entry) => entry.key.startsWith('LLM_GW_') && entry.value === '')).toBe(true);
+    expect(items.map((entry) => entry.key)).toContain('LLM_GW_API_KEY');
+  });
+
+  it('blocks removing models that a role still uses', () => {
+    expect(rolesUsing('anthropic/claude-opus-5-5', roles)).toEqual(['分析模型']);
+    expect(inUseProblem(['claude-haiku-5-5'], 'anthropic', roles, providers)).toContain('轻量模型');
+    expect(inUseProblem(['claude-sonnet-5-5'], 'anthropic', roles, providers)).toBeNull();
+  });
+
+  it('merges saved and fetched model lists without duplicates', () => {
+    expect(mergeModelLists(['b', 'a'], ['a', 'c', 'b', 'd'])).toEqual(['b', 'a', 'c', 'd']);
   });
 });

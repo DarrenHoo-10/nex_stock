@@ -75,6 +75,8 @@ class StockService:
                 "prev_close": getattr(quote, "pre_close", None),
                 "volume": getattr(quote, "volume", None),
                 "amount": getattr(quote, "amount", None),
+                "turnover_rate": getattr(quote, "turnover_rate", None),
+                "float_shares": resolve_float_shares(quote),
                 "update_time": datetime.now().isoformat(),
             }
             
@@ -184,3 +186,30 @@ class StockService:
             "amount": None,
             "update_time": datetime.now().isoformat(),
         }
+
+
+def resolve_float_shares(quote: Any) -> Optional[float]:
+    """由实时行情推算流通股本（股）：优先 流通市值/现价，其次 成交量/换手率；都缺失时返回 None。
+
+    成交量与历史日线同为“股”口径，前端据此计算逐日换手率（筹码分布）。
+    """
+    if quote is None:
+        return None
+
+    def _positive(name: str) -> Optional[float]:
+        value = getattr(quote, name, None)
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    circ_mv, price = _positive("circ_mv"), _positive("price")
+    if circ_mv and price:
+        return circ_mv / price
+    volume, turnover = _positive("volume"), _positive("turnover_rate")
+    if volume and turnover:
+        return volume / (turnover / 100.0)
+    return None

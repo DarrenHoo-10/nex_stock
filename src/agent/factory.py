@@ -308,7 +308,7 @@ def _build_category_timeout_map(config) -> dict:
     Only explicit overrides (value > 0) are carried; 0.0 means "no category
     limit, fall back to the global tool_call_timeout_seconds budget".
 
-    ``market`` tools (get_market_indices / get_sector_rankings) are
+    ``market`` tools (get_market_indices / get_sector_rankings / get_board_signal) are
     network-backed data calls, so they share the ``data`` ceiling.
     """
     data_timeout = _coerce_config_timeout(config, "agent_data_tool_timeout_s")
@@ -360,6 +360,7 @@ def _build_tool_registry(category_timeout_map):
     from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
     from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
     from src.agent.tools.market_tools import ALL_MARKET_TOOLS
+    from src.agent.tools.board_tools import ALL_BOARD_TOOLS
     from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
     from src.agent.tools.fxmacrodata_tools import ALL_FXMACRODATA_TOOLS
 
@@ -369,6 +370,7 @@ def _build_tool_registry(category_timeout_map):
         + ALL_ANALYSIS_TOOLS
         + ALL_SEARCH_TOOLS
         + ALL_MARKET_TOOLS
+        + ALL_BOARD_TOOLS
         + ALL_BACKTEST_TOOLS
         + ALL_FXMACRODATA_TOOLS
     ):

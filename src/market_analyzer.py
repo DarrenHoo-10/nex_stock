@@ -960,7 +960,6 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             if callable(method):
                 return method(
                     prompt,
-                    max_tokens=8192,
                     temperature=0.7,
                 )
 
@@ -975,7 +974,6 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
         review = legacy_method(
             prompt,
-            max_tokens=8192,
             temperature=0.7,
         )
         if review is None:

@@ -283,6 +283,64 @@ def parse_env_int(
     return parsed
 
 
+def _parse_reasoning_effort(value: Optional[str], field_name: str) -> str:
+    """Parse a reasoning effort setting: blank -> ``""``; unknown value -> warning + ``""`` (not sent)."""
+    text = (value or '').strip()
+    if not text:
+        return ''
+    normalized = llm_generation_params.normalize_reasoning_effort(text)
+    if not normalized:
+        logger.warning(
+            "%s=%r is not one of %s; the reasoning effort is not sent",
+            field_name,
+            value,
+            ", ".join(llm_generation_params.REASONING_EFFORT_VALUES),
+        )
+    return normalized
+
+
+def get_primary_reasoning_effort(config: Any) -> str:
+    """``LLM_REASONING_EFFORT``: the primary analysis model and its fallbacks (``""`` = not sent)."""
+    return llm_generation_params.normalize_reasoning_effort(getattr(config, "llm_reasoning_effort", ""))
+
+
+def get_agent_reasoning_effort(config: Any) -> str:
+    """``AGENT_REASONING_EFFORT`` for assistant / agent chat; empty follows ``LLM_REASONING_EFFORT``."""
+    explicit = llm_generation_params.normalize_reasoning_effort(getattr(config, "agent_reasoning_effort", ""))
+    return explicit or get_primary_reasoning_effort(config)
+
+
+def get_light_reasoning_effort(config: Any) -> str:
+    """``LITELLM_LIGHT_REASONING_EFFORT`` for light-model chores (``""`` = not sent)."""
+    return llm_generation_params.normalize_reasoning_effort(getattr(config, "litellm_light_reasoning_effort", ""))
+
+
+def _parse_weekday(value: Optional[str], default: int, *, field_name: str) -> int:
+    """Parse an ISO weekday (1=Monday ... 7=Sunday); blank -> default, invalid / out of range -> warning + default."""
+    text = (value or '').strip()
+    if not text:
+        return default
+    try:
+        parsed = int(text)
+    except ValueError:
+        parsed = 0
+    if not 1 <= parsed <= 7:
+        logger.warning("%s=%r is not an ISO weekday (1=Mon ... 7=Sun); falling back to %s", field_name, value, default)
+        return default
+    return parsed
+
+
+def _parse_hhmm(value: Optional[str], default: str, *, field_name: str) -> str:
+    """Parse an ``HH:MM`` env value; blank -> default, invalid -> warning + default."""
+    text = (value or '').strip()
+    if not text:
+        return default
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', text):
+        logger.warning("%s=%r is not a valid HH:MM time; falling back to %s", field_name, text, default)
+        return default
+    return text
+
+
 def parse_env_float(
     value: Optional[str],
     default: float,
@@ -898,6 +956,44 @@ def get_effective_agent_primary_model(config: "Config") -> str:
     return (getattr(config, "litellm_model", "") or "").strip()
 
 
+def get_effective_light_model(config: "Config") -> str:
+    """Return the model for light chores (classification, tagging, short summaries).
+
+    ``LITELLM_LIGHT_MODEL`` uses the same value format as ``LITELLM_MODEL`` (including channel
+    model names from ``LLM_CHANNELS``); empty falls back to the effective primary model.
+    """
+    configured_light_model = (getattr(config, "litellm_light_model", "") or "").strip()
+    if configured_light_model:
+        return _resolve_against_configured_models(config, configured_light_model)
+    return (getattr(config, "litellm_model", "") or "").strip()
+
+
+def _resolve_against_configured_models(config: "Config", model: str) -> str:
+    """Map a model typed as listed in a channel (``auto/x``) to its routed name (``openai/auto/x``).
+
+    Channel models get a provider prefix when the channels are parsed, so the name a user copies
+    from the channel's model list can differ from the routed name. A unique suffix match wins;
+    Otherwise a name whose prefix is not a LiteLLM provider (e.g. a gateway group such as
+    ``auto/x`` in the legacy single-endpoint setup) is routed through the OpenAI-compatible
+    endpoint, the same default ``normalize_agent_litellm_model`` uses for bare names.
+    """
+    configured = set(get_configured_llm_models(getattr(config, "llm_model_list", []) or []))
+    if model in configured:
+        return model
+    candidates = sorted(m for m in configured if "/" in m and m.split("/", 1)[1] == model)
+    if len(candidates) == 1:
+        return candidates[0]
+    if "/" in model:
+        prefix = model.split("/", 1)[0].lower()
+        try:
+            providers = get_litellm_model_providers()
+        except Exception:  # noqa: BLE001 - provider list is best effort
+            providers = set()
+        if providers and prefix not in providers:
+            return f"openai/{model}"
+    return model
+
+
 def get_effective_agent_models_to_try(config: "Config") -> List[str]:
     """Return Agent model try-order: primary + global fallbacks (deduped)."""
     configured_router_models = set(
@@ -983,6 +1079,9 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    biying_licence: Optional[str] = None
+    biying_timeout_seconds: float = 8.0
+    intraday_snapshot_ttl_seconds: int = 60
     tickflow_api_key: Optional[str] = None
     tickflow_kline_adjust: str = "none"
     tickflow_priority: int = 2
@@ -1014,10 +1113,15 @@ class Config:
     opencode_cli_model: str = ""
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
+    litellm_light_model: str = ""  # Optional light model for cheap chores (classification / tagging / short summaries); empty falls back to the primary model
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
 
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
     llm_temperature: float = 0.7
+    # Standard ``reasoning_effort`` request parameter ("" = do not send / model default; low|medium|high|xhigh|max).
+    llm_reasoning_effort: str = ""  # LLM_REASONING_EFFORT: primary analysis model + its fallbacks (analysis, market review)
+    agent_reasoning_effort: str = ""  # AGENT_REASONING_EFFORT: assistant / agent chat; empty follows LLM_REASONING_EFFORT
+    litellm_light_reasoning_effort: str = ""  # LITELLM_LIGHT_REASONING_EFFORT: light-model chores; empty = not sent
 
     # Provider prompt-cache controls. These do not control provider implicit cache.
     llm_prompt_cache_telemetry_enabled: bool = True
@@ -1102,6 +1206,22 @@ class Config:
     news_intel_fetch_timeout_sec: float = 8.0  # 单个资讯源拉取超时
     news_intel_max_items_per_source: int = 50  # 单次每个资讯源最多采集条数
     news_intel_auto_fetch_enabled: bool = False  # 是否在分析前自动初始化并拉取本地资讯源
+    # AKShare 资讯池定时抓取与分类（仅在 NEWS_INTEL_AUTO_FETCH_ENABLED=true 且定时模式下生效）
+    news_poll_interval_minutes: int = 10  # 交易日 08:00–15:30（中国时间）快讯轮询间隔（分钟）
+    news_poll_offhours_interval_minutes: int = 30  # 其余时段快讯轮询间隔（分钟）
+    news_akshare_cls_symbol: str = "全部"  # 财联社电报取数范围：全部（默认）/ 重点
+    news_flash_retention_days: int = 3  # 快讯（市场范围）和财经早餐保留天数
+    news_company_retention_days: int = 30  # 公告等个股事件保留天数
+    news_dedup_window_minutes: int = 30  # 跨来源按标题近似去重的时间窗（分钟）
+    news_fetch_timeout_sec: float = 30.0  # 单次 AKShare 接口调用的超时（秒）；超时后该来源本轮跳过
+    news_announcement_mode: str = "auto"  # 公告取数方式：auto / by_code / market
+    news_announcement_by_code_max: int = 12  # auto 模式下：自选股+持仓不超过该数量时逐只取公告，否则取全市场当日公告再过滤
+    news_daily_fetch_time: str = "08:05"  # 每个交易日抓取公告与财经早餐的时间（HH:MM，本机时区）
+    news_classify_enabled: bool = True  # 是否用 LLM 对新资讯分类（范围/重要性/板块/美股/突发）
+    news_classify_batch_size: int = 20  # 每次 LLM 调用分类的资讯条数
+    news_classify_max_items_per_run: int = 60  # 每轮最多分类的资讯条数
+    news_classify_max_attempts: int = 5  # 单条资讯分类失败后的最大重试次数
+    news_board_driver_min_importance: int = 4  # 资讯重要性达到该值才会成为板块异动的「消息」驱动
     newsnow_base_url: str = "https://newsnow.busiyi.world"  # NewsNow HTTP API base URL (数据源侧，不影响 LLM/provider base URL)
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
 
@@ -1143,6 +1263,15 @@ class Config:
     agent_context_compression_trigger_tokens: int = 12000
     agent_context_protected_turns: int = 4
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
+    # === 助手记忆（笔记 + 可插拔长期回忆）===
+    assistant_recall_provider: str = "none"  # none | hindsight
+    hindsight_base_url: str = ""
+    hindsight_api_key: Optional[str] = None
+    hindsight_bank_id: str = ""
+    assistant_recall_timeout_s: float = 2.0  # 提问时 recall 的整体超时，超时即跳过
+    assistant_recall_mask_amounts: bool = True  # 发送给回忆服务前对金额/股数/成本打码
+    assistant_note_daily_proposal_limit: int = 2  # 助手每天最多主动提议修改笔记的次数
+    assistant_note_inject_max_chars: int = 3000  # 笔记注入提示词的总长度上限
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
 
@@ -1281,6 +1410,25 @@ class Config:
     sqlite_busy_timeout_ms: int = 5000
     sqlite_write_retry_max: int = 3
     sqlite_write_retry_base_delay: float = 0.1
+
+    # === 板块与全市场快照（docs/design/core-backend-design.md 第 2 节）===
+    market_snapshot_retention_days: int = 250  # market_stock_daily 保留的交易日数
+    market_snapshot_backfill_days: int = 60  # 冷启动回填的交易日数
+    market_benchmark_code: str = "000985.CSI"  # market_daily 的基准指数（Tushare 代码）
+    market_snapshot_requests_per_minute: int = 60  # 快照取数的 Tushare 每分钟请求上限
+    market_snapshot_members_requests_per_minute: int = 200  # 逐板块 dc_member 成分请求的每分钟上限（仅成分刷新使用）
+    board_anomaly_thresholds: str = ""  # 板块异动阈值覆盖（JSON 对象，空表示全部默认）
+    board_pipeline_enabled: bool = True  # 定时模式下是否在交易日运行板块异动日度流程（还需 TUSHARE_TOKEN）
+    board_pipeline_schedule_time: str = "17:00"  # 板块异动日度流程的运行时间（HH:MM，本机时区）
+    board_membership_full_day_fallback: bool = False  # 逐板块概念成分全部失败时，是否再试一次全量成分查询（受 100000 偏移上限限制，通常无效）
+    board_industry_membership_enabled: bool = True  # 板块流程开启时，是否每周刷新一次行业板块成分
+    board_industry_membership_weekday: int = 6  # 每周刷新行业板块成分的星期（ISO：1=周一 … 6=周六 7=周日）
+    board_industry_membership_time: str = "10:00"  # 每周行业板块成分刷新的运行时间（HH:MM，本机时区）
+    us_leaders: str = ""  # 美股龙头名单（JSON 数组，空表示使用内置默认名单）
+    us_move_stock_pct: float = 4.0  # 美股个股单日涨跌幅达到该绝对值（%）视为异动
+    us_move_index_pct: float = 1.5  # 美股指数单日涨跌幅达到该绝对值（%）视为异动
+    preopen_push_enabled: bool = False  # 定时模式下是否在交易日推送盘前版（隔夜美股 + 自选股盘前分析）
+    preopen_push_time: str = "08:15"  # 盘前版开始运行时间（HH:MM，本机时区；约 8:45 送达）
 
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
@@ -1909,6 +2057,9 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            biying_licence=os.getenv('BIYING_LICENCE'),
+            biying_timeout_seconds=parse_env_float(os.getenv('BIYING_TIMEOUT_SECONDS'), 8.0, field_name='BIYING_TIMEOUT_SECONDS', minimum=1.0),
+            intraday_snapshot_ttl_seconds=parse_env_int(os.getenv('INTRADAY_SNAPSHOT_TTL_SECONDS'), 60, field_name='INTRADAY_SNAPSHOT_TTL_SECONDS', minimum=0),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
             tickflow_kline_adjust=normalize_tickflow_kline_adjust(os.getenv('TICKFLOW_KLINE_ADJUST')),
             tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
@@ -1937,8 +2088,17 @@ class Config:
             local_cli_backend_max_concurrency=local_cli_backend_max_concurrency,
             opencode_cli_model=opencode_cli_model,
             litellm_model=litellm_model,
+            litellm_light_model=normalize_agent_litellm_model(
+                os.getenv('LITELLM_LIGHT_MODEL', ''),
+                configured_models=set(get_configured_llm_models(llm_model_list)),
+            ),
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
+            llm_reasoning_effort=_parse_reasoning_effort(os.getenv('LLM_REASONING_EFFORT'), 'LLM_REASONING_EFFORT'),
+            agent_reasoning_effort=_parse_reasoning_effort(os.getenv('AGENT_REASONING_EFFORT'), 'AGENT_REASONING_EFFORT'),
+            litellm_light_reasoning_effort=_parse_reasoning_effort(
+                os.getenv('LITELLM_LIGHT_REASONING_EFFORT'), 'LITELLM_LIGHT_REASONING_EFFORT'
+            ),
             litellm_config_path=litellm_config_path,
             llm_models_source=llm_models_source,
             llm_channels=llm_channels,
@@ -2032,6 +2192,90 @@ class Config:
             news_intel_auto_fetch_enabled=parse_env_bool(
                 os.getenv('NEWS_INTEL_AUTO_FETCH_ENABLED'),
                 False,
+            ),
+            news_poll_interval_minutes=parse_env_int(
+                os.getenv('NEWS_POLL_INTERVAL_MINUTES'),
+                10,
+                field_name='NEWS_POLL_INTERVAL_MINUTES',
+                minimum=1,
+                maximum=240,
+            ),
+            news_poll_offhours_interval_minutes=parse_env_int(
+                os.getenv('NEWS_POLL_OFFHOURS_INTERVAL_MINUTES'),
+                30,
+                field_name='NEWS_POLL_OFFHOURS_INTERVAL_MINUTES',
+                minimum=1,
+                maximum=1440,
+            ),
+            news_akshare_cls_symbol=cls._parse_news_cls_symbol(os.getenv('NEWS_AKSHARE_CLS_SYMBOL')),
+            news_flash_retention_days=parse_env_int(
+                os.getenv('NEWS_FLASH_RETENTION_DAYS'),
+                3,
+                field_name='NEWS_FLASH_RETENTION_DAYS',
+                minimum=1,
+                maximum=365,
+            ),
+            news_company_retention_days=parse_env_int(
+                os.getenv('NEWS_COMPANY_RETENTION_DAYS'),
+                30,
+                field_name='NEWS_COMPANY_RETENTION_DAYS',
+                minimum=1,
+                maximum=365,
+            ),
+            news_dedup_window_minutes=parse_env_int(
+                os.getenv('NEWS_DEDUP_WINDOW_MINUTES'),
+                30,
+                field_name='NEWS_DEDUP_WINDOW_MINUTES',
+                minimum=1,
+                maximum=720,
+            ),
+            news_fetch_timeout_sec=parse_env_float(
+                os.getenv('NEWS_FETCH_TIMEOUT_SEC'),
+                30.0,
+                field_name='NEWS_FETCH_TIMEOUT_SEC',
+                minimum=3.0,
+            ),
+            news_announcement_mode=cls._parse_news_announcement_mode(os.getenv('NEWS_ANNOUNCEMENT_MODE')),
+            news_announcement_by_code_max=parse_env_int(
+                os.getenv('NEWS_ANNOUNCEMENT_BY_CODE_MAX'),
+                12,
+                field_name='NEWS_ANNOUNCEMENT_BY_CODE_MAX',
+                minimum=1,
+                maximum=200,
+            ),
+            news_daily_fetch_time=_parse_hhmm(
+                os.getenv('NEWS_DAILY_FETCH_TIME'),
+                default='08:05',
+                field_name='NEWS_DAILY_FETCH_TIME',
+            ),
+            news_classify_enabled=parse_env_bool(os.getenv('NEWS_CLASSIFY_ENABLED'), True),
+            news_classify_batch_size=parse_env_int(
+                os.getenv('NEWS_CLASSIFY_BATCH_SIZE'),
+                20,
+                field_name='NEWS_CLASSIFY_BATCH_SIZE',
+                minimum=1,
+                maximum=50,
+            ),
+            news_classify_max_items_per_run=parse_env_int(
+                os.getenv('NEWS_CLASSIFY_MAX_ITEMS_PER_RUN'),
+                60,
+                field_name='NEWS_CLASSIFY_MAX_ITEMS_PER_RUN',
+                minimum=1,
+                maximum=500,
+            ),
+            news_classify_max_attempts=parse_env_int(
+                os.getenv('NEWS_CLASSIFY_MAX_ATTEMPTS'),
+                5,
+                field_name='NEWS_CLASSIFY_MAX_ATTEMPTS',
+                minimum=1,
+                maximum=20,
+            ),
+            news_board_driver_min_importance=parse_env_int(
+                os.getenv('NEWS_BOARD_DRIVER_MIN_IMPORTANCE'),
+                4,
+                field_name='NEWS_BOARD_DRIVER_MIN_IMPORTANCE',
+                minimum=1,
+                maximum=5,
             ),
             newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
             bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
@@ -2134,6 +2378,34 @@ class Config:
             agent_context_compression_trigger_tokens=agent_context_compression_trigger_tokens,
             agent_context_protected_turns=agent_context_protected_turns,
             agent_event_monitor_enabled=os.getenv('AGENT_EVENT_MONITOR_ENABLED', 'false').lower() == 'true',
+            assistant_recall_provider=(os.getenv('ASSISTANT_RECALL_PROVIDER') or 'none').strip().lower() or 'none',
+            hindsight_base_url=(os.getenv('HINDSIGHT_BASE_URL') or '').strip(),
+            hindsight_api_key=(os.getenv('HINDSIGHT_API_KEY') or '').strip() or None,
+            hindsight_bank_id=(os.getenv('HINDSIGHT_BANK_ID') or '').strip(),
+            assistant_recall_timeout_s=parse_env_float(
+                os.getenv('ASSISTANT_RECALL_TIMEOUT_S'),
+                2.0,
+                field_name='ASSISTANT_RECALL_TIMEOUT_S',
+                minimum=0.2,
+                maximum=30.0,
+            ),
+            assistant_recall_mask_amounts=parse_env_bool(
+                os.getenv('ASSISTANT_RECALL_MASK_AMOUNTS'), default=True,
+            ),
+            assistant_note_daily_proposal_limit=parse_env_int(
+                os.getenv('ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT'),
+                2,
+                field_name='ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT',
+                minimum=0,
+                maximum=50,
+            ),
+            assistant_note_inject_max_chars=parse_env_int(
+                os.getenv('ASSISTANT_NOTE_INJECT_MAX_CHARS'),
+                3000,
+                field_name='ASSISTANT_NOTE_INJECT_MAX_CHARS',
+                minimum=200,
+                maximum=20000,
+            ),
             agent_event_monitor_interval_minutes=parse_env_int(
                 os.getenv('AGENT_EVENT_MONITOR_INTERVAL_MINUTES'),
                 5,
@@ -2269,6 +2541,73 @@ class Config:
                 0.1,
                 field_name='SQLITE_WRITE_RETRY_BASE_DELAY',
                 minimum=0.0,
+            ),
+            market_snapshot_retention_days=parse_env_int(
+                os.getenv('MARKET_SNAPSHOT_RETENTION_DAYS'),
+                250,
+                field_name='MARKET_SNAPSHOT_RETENTION_DAYS',
+                minimum=30,
+            ),
+            market_snapshot_backfill_days=parse_env_int(
+                os.getenv('MARKET_SNAPSHOT_BACKFILL_DAYS'),
+                60,
+                field_name='MARKET_SNAPSHOT_BACKFILL_DAYS',
+                minimum=1,
+            ),
+            market_benchmark_code=(os.getenv('MARKET_BENCHMARK_CODE') or '').strip() or '000985.CSI',
+            market_snapshot_requests_per_minute=parse_env_int(
+                os.getenv('MARKET_SNAPSHOT_REQUESTS_PER_MINUTE'),
+                60,
+                field_name='MARKET_SNAPSHOT_REQUESTS_PER_MINUTE',
+                minimum=1,
+            ),
+            market_snapshot_members_requests_per_minute=parse_env_int(
+                os.getenv('MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE'),
+                200,
+                field_name='MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE',
+                minimum=1,
+            ),
+            board_anomaly_thresholds=(os.getenv('BOARD_ANOMALY_THRESHOLDS') or '').strip(),
+            board_pipeline_enabled=parse_env_bool(os.getenv('BOARD_PIPELINE_ENABLED'), default=True),
+            board_pipeline_schedule_time=_parse_hhmm(
+                os.getenv('BOARD_PIPELINE_SCHEDULE_TIME'),
+                default='17:00',
+                field_name='BOARD_PIPELINE_SCHEDULE_TIME',
+            ),
+            board_membership_full_day_fallback=parse_env_bool(
+                os.getenv('BOARD_MEMBERSHIP_FULL_DAY_FALLBACK'), default=False
+            ),
+            board_industry_membership_enabled=parse_env_bool(
+                os.getenv('BOARD_INDUSTRY_MEMBERSHIP_ENABLED'), default=True
+            ),
+            board_industry_membership_weekday=_parse_weekday(
+                os.getenv('BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY'),
+                default=6,
+                field_name='BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY',
+            ),
+            board_industry_membership_time=_parse_hhmm(
+                os.getenv('BOARD_INDUSTRY_MEMBERSHIP_TIME'),
+                default='10:00',
+                field_name='BOARD_INDUSTRY_MEMBERSHIP_TIME',
+            ),
+            us_leaders=(os.getenv('US_LEADERS') or '').strip(),
+            us_move_stock_pct=parse_env_float(
+                os.getenv('US_MOVE_STOCK_PCT'),
+                4.0,
+                field_name='US_MOVE_STOCK_PCT',
+                minimum=0.1,
+            ),
+            us_move_index_pct=parse_env_float(
+                os.getenv('US_MOVE_INDEX_PCT'),
+                1.5,
+                field_name='US_MOVE_INDEX_PCT',
+                minimum=0.1,
+            ),
+            preopen_push_enabled=parse_env_bool(os.getenv('PREOPEN_PUSH_ENABLED'), default=False),
+            preopen_push_time=_parse_hhmm(
+                os.getenv('PREOPEN_PUSH_TIME'),
+                default='08:15',
+                field_name='PREOPEN_PUSH_TIME',
             ),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
@@ -3059,6 +3398,26 @@ class Config:
         )
 
     @staticmethod
+    def _parse_news_announcement_mode(value: Optional[str]) -> str:
+        normalized = (value or '').strip().lower()
+        if not normalized:
+            return 'auto'
+        if normalized in ('auto', 'by_code', 'market'):
+            return normalized
+        logger.warning("NEWS_ANNOUNCEMENT_MODE=%r is invalid (expected auto / by_code / market); falling back to auto", value)
+        return 'auto'
+
+    @staticmethod
+    def _parse_news_cls_symbol(value: Optional[str]) -> str:
+        normalized = (value or '').strip()
+        if not normalized:
+            return '全部'
+        if normalized in ('重点', '全部'):
+            return normalized
+        logger.warning("NEWS_AKSHARE_CLS_SYMBOL=%r is invalid (expected 全部 or 重点); falling back to 全部", value)
+        return '全部'
+
+    @staticmethod
     def _parse_etf_rotation_pool(value: Optional[str]) -> List[str]:
         if value is None or not value.strip():
             return list(DEFAULT_ETF_ROTATION_POOL)
@@ -3133,14 +3492,20 @@ class Config:
             return explicit
 
         tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        if tushare_token:
-            # Token configured but no explicit priority override
-            # Prepend tushare so the paid source is tried first
+        biying_licence = os.getenv('BIYING_LICENCE', '').strip()
+        if tushare_token or biying_licence:
+            # Paid sources configured but no explicit priority override:
+            # tushare -> biying -> free sources (only the configured ones are injected)
             import logging
             logger = logging.getLogger(__name__)
-            resolved = f'tushare,{default_priority}'
+            injected = [
+                name for name, configured in (('tushare', tushare_token), ('biying', biying_licence))
+                if configured
+            ]
+            resolved = ','.join(injected + [default_priority])
             logger.info(
-                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
+                "Paid realtime source(s) detected, auto-injecting into realtime priority: %s",
+                resolved,
             )
             return resolved
 

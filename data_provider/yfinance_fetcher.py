@@ -126,6 +126,10 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"识别为美股指数: {code} -> {yf_symbol}")
             return yf_symbol
 
+        # Yahoo 指数符号（^SOX、^HXC 等未登记在 US_INDEX_MAPPING 的指数）：原样返回
+        if code.startswith('^'):
+            return code
+
         # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
         if is_us_stock_code(code):
             logger.debug(f"识别为美股代码: {code}")

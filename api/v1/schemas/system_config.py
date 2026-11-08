@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.v1.schemas.assistant_notes import RecallStatus
+
 LLMCapabilityCheck = Literal["json", "tools", "vision", "stream"]
 GenerationBackendSmokeMode = Literal["text", "json"]
 GenerationBackendHealthStatus = Literal["not_tested", "passed", "failed", "skipped"]
@@ -168,6 +170,8 @@ class AgentBackendStatusResponse(BaseModel):
     version: Optional[str] = None
     error_code: Optional[str] = None
     message: Optional[str] = None
+    # Long-term recall plugin status; additive, absent when it cannot be read.
+    recall: Optional[RecallStatus] = None
 
 
 class ExportSystemConfigResponse(BaseModel):

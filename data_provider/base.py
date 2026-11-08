@@ -639,6 +639,8 @@ class DataFetcherManager:
         "TickFlowFetcher": {"cn"},
         # 妙想为垂直补充数据源（资金流/筹码分布），不提供日线行情
         "MiaoxiangFetcher": set(),
+        # 必盈为盘中实时源，不提供日线行情
+        "BiyingFetcher": set(),
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
@@ -744,6 +746,10 @@ class DataFetcherManager:
         if not self._is_fetcher_available(fetcher, capability=capability):
             return None
         return fetcher
+
+    def get_fetcher(self, fetcher_name: str, capability: str = "") -> Optional[BaseFetcher]:
+        """Return an available fetcher by class name (``None`` if absent/unavailable)."""
+        return self._get_fetcher_by_name(fetcher_name, capability=capability)
 
     @staticmethod
     def _call_availability_probe(fetcher: BaseFetcher, probe_name: str, capability: str) -> Optional[bool]:
@@ -1847,6 +1853,19 @@ class DataFetcherManager:
         else:
             logger.debug("[data source init] skip TickFlowFetcher because TICKFLOW_API_KEY is not configured")
 
+        biying_licence = getattr(config, "biying_licence", None)
+        if isinstance(biying_licence, str) and biying_licence.strip():
+            from .biying_fetcher import BiyingFetcher
+
+            optional_fetchers.append(
+                BiyingFetcher(
+                    licence=biying_licence,
+                    timeout=getattr(config, "biying_timeout_seconds", 8.0),
+                )
+            )
+        else:
+            logger.debug("[data source init] skip BiyingFetcher because BIYING_LICENCE is not configured")
+
         mx_apikey = getattr(config, "mx_apikey", None)
         if not isinstance(mx_apikey, str):
             mx_apikey = ""
@@ -2673,6 +2692,16 @@ class DataFetcherManager:
                 
                 elif source == "tushare":
                     fetcher = self._get_fetcher_by_name("TushareFetcher", capability="realtime_quote")
+                    if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
+                        record_provider_run_started(
+                            data_type="realtime_quote",
+                            provider=fetcher.name,
+                            operation="get_realtime_quote",
+                        )
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
+
+                elif source == "biying":
+                    fetcher = self._get_fetcher_by_name("BiyingFetcher", capability="realtime_quote")
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",

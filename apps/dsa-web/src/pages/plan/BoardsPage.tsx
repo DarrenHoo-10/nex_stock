@@ -2,7 +2,13 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { getParsedApiError } from '../../api/error';
+import { systemConfigApi } from '../../api/systemConfig';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
+import { StockChartDialog } from '../../components/plan/quote/StockChartDialog';
+import { targetFromCode } from '../../components/plan/quote/quoteTarget';
+import type { QuoteTarget } from '../../components/plan/quote/quoteTarget';
+import { showPlanToast } from '../../stores/planToastStore';
 import { usePlanUiStore } from '../../stores/planUiStore';
 import {
   BOARD_DETAIL_ID,
@@ -95,6 +101,20 @@ const BoardsPage: React.FC = () => {
     [openAssistant, activeBoard, anomalies],
   );
 
+  const [chartTarget, setChartTarget] = useState<QuoteTarget | null>(null);
+  const handleOpenStock = useCallback(
+    (code: string, name: string) => setChartTarget(targetFromCode(code, name)),
+    [],
+  );
+  const handleAddWatch = useCallback(async (target: QuoteTarget) => {
+    try {
+      await systemConfigApi.addToWatchlist(target.watchCode);
+      showPlanToast(`已把 ${target.name ?? target.displayCode} 加入自选`);
+    } catch (error: unknown) {
+      showPlanToast(getParsedApiError(error).message || '加入自选失败，请稍后重试。');
+    }
+  }, []);
+
   const tradeDate = anomalies.status === 'ready' ? anomalies.data.tradeDate : '';
   const benchmark = anomalies.status === 'ready' ? anomalies.data.market.indexName : '中证全指';
   const subtitle = tradeDate
@@ -157,6 +177,7 @@ const BoardsPage: React.FC = () => {
           onBack={handleBack}
           onPick={handlePick}
           onAsk={handleAsk}
+          onOpenStock={handleOpenStock}
         />
       );
     }
@@ -211,6 +232,11 @@ const BoardsPage: React.FC = () => {
     <>
       <PlanPageHeader title={title} subtitle={subtitle} onOpenAssistant={handleAsk} />
       <StaggerItem>{body}</StaggerItem>
+      <StockChartDialog
+        target={chartTarget}
+        onClose={() => setChartTarget(null)}
+        onAddWatch={(target) => void handleAddWatch(target)}
+      />
     </>
   );
 };

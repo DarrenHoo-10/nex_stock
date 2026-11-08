@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from api.deps import get_agent_chat_session_service
+from api.v1.schemas.assistant_notes import RecallStatus
 from api.v1.schemas.system_config import AgentBackendStatusResponse
 from src.config import get_config
 from src.services.agent_chat_session_service import AgentChatSessionService
@@ -202,8 +203,11 @@ async def get_agent_models():
 @router.get("/status", response_model=AgentBackendStatusResponse)
 async def get_agent_status():
     """Return the current effective Chat backend status for the Chat page."""
-    payload = await asyncio.to_thread(_get_agent_chat_status, get_config())
-    return _agent_status_response(payload)
+    config = get_config()
+    payload = await asyncio.to_thread(_get_agent_chat_status, config)
+    response = _agent_status_response(payload)
+    response.recall = await asyncio.to_thread(_get_recall_status, config)
+    return response
 
 
 def _agent_status_response(payload: Dict[str, Any]) -> AgentBackendStatusResponse:
@@ -215,6 +219,25 @@ def _agent_status_response(payload: Dict[str, Any]) -> AgentBackendStatusRespons
         error_code=payload.get("error_code"),
         message=payload.get("message"),
     )
+
+
+def _get_recall_status(config) -> Optional[RecallStatus]:
+    """Long-term recall health; a weak dependency, so never fail the status call."""
+    try:
+        from src.agent.recall import get_recall_service
+
+        health = get_recall_service(config).health()
+        return RecallStatus(
+            provider=health.provider_id,
+            status=health.status,
+            message=health.message,
+            latency_ms=health.latency_ms,
+            pending_retain=health.pending_retain,
+            pending_forget=health.pending_forget,
+        )
+    except Exception as exc:
+        logger.warning("Recall status unavailable: %s", exc)
+        return None
 
 
 def _build_skills_response(config) -> SkillsResponse:

@@ -8,7 +8,7 @@ export type PickSetupState =
   | { status: 'loading' }
   | { status: 'ready'; strategies: ScreeningStrategy[] }
   /** Screening is switched off or unavailable in the backend configuration. */
-  | { status: 'disabled'; message: string }
+  | { status: 'disabled'; message: string; canEnable: boolean }
   | { status: 'error'; message: string };
 
 /** Screening status plus the strategy list (existing `/screening/status` and `/screening/strategies`). */
@@ -26,6 +26,7 @@ export function usePickSetup(): PickSetupState & { reload: () => void } {
           setState({
             status: 'disabled',
             message: status.enabled ? '选股功能当前不可用，请检查策略配置和服务日志。' : '选股功能还没有开启。',
+            canEnable: !status.enabled,
           });
           return;
         }

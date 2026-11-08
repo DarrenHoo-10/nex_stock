@@ -34,45 +34,32 @@ function createStorage(value: string | null): Storage {
 }
 
 describe('UiLanguageContext', () => {
-  it('resolves explicit storage choice before browser language', () => {
-    expect(resolveInitialUiLanguage({
-      storage: createStorage('zh'),
-      navigatorLike: { language: 'en-US', languages: ['en-US'] },
-    })).toBe('zh');
-
-    expect(resolveInitialUiLanguage({
-      storage: createStorage('en'),
-      navigatorLike: { language: 'zh-CN', languages: ['zh-CN'] },
-    })).toBe('en');
+  it('uses an explicit stored choice and ignores the browser language', () => {
+    expect(resolveInitialUiLanguage({ storage: createStorage('zh') })).toBe('zh');
+    expect(resolveInitialUiLanguage({ storage: createStorage('en') })).toBe('en');
   });
 
-  it('falls back from invalid storage to the first supported browser language and then zh', () => {
-    expect(resolveInitialUiLanguage({
-      storage: createStorage('fr'),
-      navigatorLike: { language: 'en-US', languages: ['en-US'] },
-    })).toBe('en');
-
-    expect(resolveInitialUiLanguage({
-      storage: createStorage('fr'),
-      navigatorLike: { language: 'zh-CN', languages: ['zh-CN', 'en-US'] },
-    })).toBe('zh');
-
-    expect(resolveInitialUiLanguage({
-      storage: createStorage(null),
-      navigatorLike: { language: 'tr-TR', languages: ['tr-TR'] },
-    })).toBe('zh');
+  it('defaults to Chinese without a valid stored choice, whatever the browser language', () => {
+    const original = Object.getOwnPropertyDescriptor(window.navigator, 'language');
+    Object.defineProperty(window.navigator, 'language', { configurable: true, get: () => 'en-US' });
+    try {
+      expect(resolveInitialUiLanguage({ storage: createStorage('fr') })).toBe('zh');
+      expect(resolveInitialUiLanguage({ storage: createStorage(null) })).toBe('zh');
+      expect(resolveInitialUiLanguage()).toBe('zh');
+    } finally {
+      if (original) {
+        Object.defineProperty(window.navigator, 'language', original);
+      }
+    }
   });
 
-  it('falls back to browser language if storage getItem throws', () => {
+  it('defaults to Chinese if storage getItem throws', () => {
     const throwingStorage = createStorage('en');
     throwingStorage.getItem = () => {
       throw new Error('Storage getItem disabled');
     };
 
-    expect(resolveInitialUiLanguage({
-      storage: throwingStorage,
-      navigatorLike: { language: 'en-US', languages: ['en-US'] },
-    })).toBe('en');
+    expect(resolveInitialUiLanguage({ storage: throwingStorage })).toBe('zh');
   });
 
   it('persists language preference via storage in a safe, non-throwing path', () => {
@@ -94,7 +81,7 @@ describe('UiLanguageContext', () => {
     });
 
     try {
-      expect(getRuntimeInitialLanguage()).toBe('en');
+      expect(getRuntimeInitialLanguage()).toBe('zh');
     } finally {
       if (originalDescriptor) {
         Object.defineProperty(window, 'localStorage', originalDescriptor);

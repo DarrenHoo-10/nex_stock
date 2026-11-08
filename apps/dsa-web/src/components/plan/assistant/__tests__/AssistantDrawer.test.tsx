@@ -59,7 +59,7 @@ describe('AssistantDrawer', () => {
     const dialog = await screen.findByRole('dialog', { name: '助手' });
     expect(screen.getByTestId('assistant-context-chip')).toHaveTextContent('未选中');
     expect(screen.queryByRole('button', { name: '取消选中对象' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '在问股页打开' })).toHaveAttribute('href', '/chat');
+    expect(screen.queryByRole('link', { name: '在问股页打开' })).not.toBeInTheDocument();
     expect(dialog.contains(document.activeElement)).toBe(true);
 
     fireEvent.keyDown(document, { key: 'Escape' });

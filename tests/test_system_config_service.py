@@ -4201,6 +4201,41 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["resolved_protocol"], "gemini")
         self.assertIn("does not support /models discovery yet", payload["error"])
 
+    @patch("src.services.system_config_service.requests.get")
+    def test_discover_llm_channel_models_lists_anthropic_messages_models(self, mock_get) -> None:
+        mock_response = Mock(ok=True, status_code=200)
+        mock_response.json.return_value = {
+            "data": [
+                {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5"},
+                {"type": "model", "id": "claude-haiku-5-5", "display_name": "Claude Haiku 5.5"},
+            ],
+            "has_more": False,
+        }
+        mock_get.return_value = mock_response
+
+        payload = self.service.discover_llm_channel_models(
+            name="gateway",
+            protocol="anthropic",
+            base_url="https://gateway.example.com",
+            api_key="sk-ant-secret",
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["models"], ["claude-opus-5-5", "claude-haiku-5-5"])
+        self.assertEqual(mock_get.call_args.args[0], "https://gateway.example.com/v1/models?limit=1000")
+        headers = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(headers["x-api-key"], "sk-ant-secret")
+        self.assertEqual(headers["anthropic-version"], "2023-06-01")
+
+    def test_build_llm_models_url_for_anthropic_base_urls(self) -> None:
+        for base_url, expected in [
+            ("https://gateway.example.com", "https://gateway.example.com/v1/models?limit=1000"),
+            ("https://gateway.example.com/v1", "https://gateway.example.com/v1/models?limit=1000"),
+            ("https://gateway.example.com/v1/messages", "https://gateway.example.com/v1/models?limit=1000"),
+        ]:
+            with self.subTest(base_url=base_url):
+                self.assertEqual(SystemConfigService._build_llm_models_url(base_url, anthropic=True), expected)
+
     def test_build_llm_models_url_strips_query_and_fragment(self) -> None:
         models_url = SystemConfigService._build_llm_models_url(
             "https://example.com/v1/chat/completions?api-version=1#frag"

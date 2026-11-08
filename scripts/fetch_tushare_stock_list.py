@@ -8,6 +8,7 @@ Tushare 股票列表获取脚本
 使用方法：
     python3 scripts/fetch_tushare_stock_list.py
     python3 scripts/fetch_tushare_stock_list.py --a-rk
+    python3 scripts/fetch_tushare_stock_list.py --etf-seed   # 仅刷新 ETF seed（单次 etf_basic 请求）
 
 环境要求：
     - 需要在 .env 中配置 TUSHARE_TOKEN
@@ -21,6 +22,7 @@ Tushare 股票列表获取脚本
     - data/stock_list_hk.csv     港股列表
     - data/stock_list_us.csv     美股列表
     - data/README_stock_list.md  数据说明文档
+    - scripts/stock_index_seeds/etf_list.csv  在市 ETF 列表（--etf-seed，随仓库提交）
 """
 
 import argparse
@@ -585,6 +587,47 @@ us_stocks = pd.read_csv('data/stock_list_us.csv')
         print(f"[错误] 生成说明文档失败: {e}")
 
 
+ETF_SEED_PATH = Path(__file__).parent / "stock_index_seeds" / "etf_list.csv"
+ETF_SEED_COLUMNS = ["ts_code", "name", "full_name", "index_name"]
+
+
+def fetch_etf_seed(api: ts.pro_api) -> Optional[pd.DataFrame]:
+    """
+    获取在市 ETF 列表（etf_basic 单次请求，最多 5000 条，覆盖沪深两市）。
+
+    ``name`` 优先取扩位简称 extname（如“沪深300ETF”），缺失时回退 csname。
+    """
+    print("\n正在获取 ETF 列表...")
+    try:
+        df = api.etf_basic(
+            list_status="L",
+            fields="ts_code,csname,extname,cname,index_name,list_status",
+        )
+    except Exception as e:
+        print(f"[错误] 获取 ETF 列表失败: {e}")
+        return None
+    if df is None or df.empty:
+        print("[错误] ETF 列表为空")
+        return None
+
+    df = df.copy()
+    df["name"] = df["extname"].fillna("").astype(str).str.strip()
+    fallback = df["csname"].fillna("").astype(str).str.strip()
+    df.loc[df["name"] == "", "name"] = fallback
+    df["full_name"] = df["cname"].fillna("").astype(str).str.strip()
+    df["index_name"] = df["index_name"].fillna("").astype(str).str.strip()
+    df = df[df["ts_code"].astype(str).str.match(r"^\d{6}\.(SH|SZ)$") & (df["name"] != "")]
+    df = df.drop_duplicates(subset=["ts_code"]).sort_values("ts_code")
+    print(f"✓ 获取到 {len(df)} 只在市 ETF")
+    return df[ETF_SEED_COLUMNS]
+
+
+def save_etf_seed(df: pd.DataFrame, path: Path = ETF_SEED_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False, encoding="utf-8", lineterminator="\n")
+    print(f"✓ 已写入 {path}")
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """构建命令行参数。"""
     parser = argparse.ArgumentParser(description="Tushare 股票列表获取工具")
@@ -592,6 +635,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--a-rk",
         action="store_true",
         help="使用 rt_k 修正 A 股中带 XD/XR/DR/N/C 前缀的名称，并覆盖输出到 stock_list_a.csv",
+    )
+    parser.add_argument(
+        "--etf-seed",
+        action="store_true",
+        help="只刷新 scripts/stock_index_seeds/etf_list.csv（ETF 搜索 seed），不抓取股票列表",
     )
     return parser
 
@@ -604,6 +652,17 @@ def main(argv: Optional[List[str]] = None):
     print("=" * 60)
     print("Tushare 股票列表获取工具")
     print("=" * 60)
+
+    if args.etf_seed:
+        api = get_tushare_api()
+        if not api:
+            return 1
+        etf_df = fetch_etf_seed(api)
+        if etf_df is None:
+            return 1
+        save_etf_seed(etf_df)
+        return 0
+
     print(f"[信息] A股名称修正模式：{'开启' if args.a_rk else '关闭'}")
 
     # 1. 获取 API 实例

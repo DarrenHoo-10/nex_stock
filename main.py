@@ -122,9 +122,9 @@ def _warn_if_public_webui_without_auth(host: str) -> None:
     if not _is_public_bind_host(host):
         return
 
-    from src.auth import is_auth_enabled
+    from src.auth import is_auth_enabled, is_user_center_mode
 
-    if is_auth_enabled():
+    if is_auth_enabled() or is_user_center_mode():
         return
     logger.warning(
         "WEBUI_HOST=%s binds the Web UI to a public interface while "
@@ -1417,20 +1417,32 @@ def start_bot_stream_clients(config: Config) -> None:
         except Exception as exc:
             logger.error(f"[Main] Failed to start Dingtalk Stream client: {exc}")
 
-    # 启动飞书 Stream 客户端
-    if getattr(config, 'feishu_stream_enabled', False):
-        try:
-            from bot.platforms import start_feishu_stream_background, FEISHU_SDK_AVAILABLE
-            if FEISHU_SDK_AVAILABLE:
-                if start_feishu_stream_background():
-                    logger.info("[Main] Feishu Stream client started in background.")
-                else:
-                    logger.warning("[Main] Feishu Stream client failed to start.")
+    start_feishu_stream_client(config)
+
+
+def start_feishu_stream_client(config: Config) -> None:
+    """Start the Feishu long-connection client when enabled (one client per process).
+
+    Called from every long-running mode that needs it: serve modes (through
+    ``start_bot_stream_clients``) and the scheduler-only ``--schedule`` mode,
+    where scheduled pushes are written into the bound chat's assistant session
+    and follow-up questions must be answered. A second call is a no-op because
+    ``start_feishu_stream_background`` refuses to start a duplicate client.
+    """
+    if not getattr(config, 'feishu_stream_enabled', False):
+        return
+    try:
+        from bot.platforms import start_feishu_stream_background, FEISHU_SDK_AVAILABLE
+        if FEISHU_SDK_AVAILABLE:
+            if start_feishu_stream_background():
+                logger.info("[Main] Feishu Stream client started in background.")
             else:
-                logger.warning("[Main] Feishu Stream enabled but SDK is missing.")
-                logger.warning("[Main] Run: pip install lark-oapi")
-        except Exception as exc:
-            logger.error(f"[Main] Failed to start Feishu Stream client: {exc}")
+                logger.warning("[Main] Feishu Stream client failed to start.")
+        else:
+            logger.warning("[Main] Feishu Stream enabled but SDK is missing.")
+            logger.warning("[Main] Run: pip install lark-oapi")
+    except Exception as exc:
+        logger.error(f"[Main] Failed to start Feishu Stream client: {exc}")
 
 
 def _resolve_scheduled_stock_codes(stock_codes: Optional[List[str]]) -> Optional[List[str]]:
@@ -1824,6 +1836,10 @@ def main() -> int:
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
 
+            # Pushes happen in this process, so the Feishu long connection that
+            # answers follow-up questions must live here too.
+            start_feishu_stream_client(config)
+
             # Determine whether to run immediately:
             # Command line arg --no-run-immediately overrides config if present.
             # Otherwise use config (defaults to True).
@@ -1887,6 +1903,23 @@ def main() -> int:
                 "schedule_time_provider": schedule_time_provider,
                 "pass_scheduled_for": True,
             }
+            from src.services.board_pipeline_schedule import (
+                build_board_pipeline_jobs,
+                build_industry_membership_jobs,
+            )
+            from src.services.news_schedule import build_news_background_tasks, build_news_daily_jobs
+
+            from src.services.preopen_push_schedule import build_preopen_push_jobs
+
+            background_tasks.extend(
+                build_news_background_tasks(config, config_provider=_reload_runtime_config)
+            )
+            extra_daily_jobs = build_board_pipeline_jobs(config, config_provider=_reload_runtime_config)
+            extra_daily_jobs.extend(build_industry_membership_jobs(config, config_provider=_reload_runtime_config))
+            extra_daily_jobs.extend(build_preopen_push_jobs(config, config_provider=_reload_runtime_config))
+            extra_daily_jobs.extend(build_news_daily_jobs(config, config_provider=_reload_runtime_config))
+            if extra_daily_jobs:
+                schedule_kwargs["extra_daily_jobs"] = extra_daily_jobs
             if hasattr(config, "schedule_times"):
                 schedule_kwargs["schedule_times"] = config.schedule_times
                 schedule_kwargs["schedule_times_provider"] = schedule_times_provider

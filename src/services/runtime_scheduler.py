@@ -645,7 +645,17 @@ class RuntimeSchedulerService:
     def _current_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         if self._background_tasks_provider is not None:
             return self._background_tasks_provider(config)
-        return self._current_agent_event_monitor_background_tasks(config)
+        return self._current_agent_event_monitor_background_tasks(config) + self._current_news_background_tasks(config)
+
+    def _current_news_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        """AKShare news polling / classification tasks (only with NEWS_INTEL_AUTO_FETCH_ENABLED)."""
+        try:
+            from src.services.news_schedule import build_news_background_tasks
+
+            return build_news_background_tasks(config, config_provider=self._config_provider)
+        except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
+            logger.warning("Failed to build news background tasks: %s", exc)
+            return []
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         name = "agent_event_monitor"
@@ -682,6 +692,35 @@ class RuntimeSchedulerService:
             "run_immediately": run_immediately,
             "name": name,
         }]
+
+    def _current_daily_jobs(self, config: Config) -> List[Dict[str, Any]]:
+        """Independent daily jobs (own time): the 17:00 board pipeline, the weekly industry membership refresh, the 08:15 pre-open push and the news daily fetch."""
+        jobs: List[Dict[str, Any]] = []
+        try:
+            from src.services.board_pipeline_schedule import build_board_pipeline_jobs
+
+            jobs.extend(build_board_pipeline_jobs(config, config_provider=self._config_provider))
+        except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
+            logger.warning("Failed to build board pipeline daily job: %s", exc)
+        try:
+            from src.services.board_pipeline_schedule import build_industry_membership_jobs
+
+            jobs.extend(build_industry_membership_jobs(config, config_provider=self._config_provider))
+        except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
+            logger.warning("Failed to build industry membership weekly job: %s", exc)
+        try:
+            from src.services.preopen_push_schedule import build_preopen_push_jobs
+
+            jobs.extend(build_preopen_push_jobs(config, config_provider=self._config_provider))
+        except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
+            logger.warning("Failed to build pre-open push daily job: %s", exc)
+        try:
+            from src.services.news_schedule import build_news_daily_jobs
+
+            jobs.extend(build_news_daily_jobs(config, config_provider=self._config_provider))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to build news daily job: %s", exc)
+        return jobs
 
     @staticmethod
     def _run_in_background_thread(target: Callable[[], None]) -> None:
@@ -737,6 +776,8 @@ class RuntimeSchedulerService:
                     run_immediately=entry.get("run_immediately", False),
                     name=entry.get("name"),
                 )
+            for job in self._current_daily_jobs(config):
+                scheduler.add_daily_job(**job)
             if run_immediately and self._run_immediately_in_background:
                 self._run_in_background_thread(scheduled_analysis)
             thread = threading.Thread(

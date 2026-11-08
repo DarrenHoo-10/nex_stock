@@ -138,6 +138,39 @@ def _select_best_bars(db, stock_code: str, start: date, end: date, stock_identit
     return best_code, best_bars
 
 
+def filter_persistable_daily_bars(
+    df: pd.DataFrame,
+    stock_code: str,
+    current_time: Optional[datetime] = None,
+) -> Tuple[pd.DataFrame, bool]:
+    """Drop an in-progress daily bar so it is never written to ``stock_daily``.
+
+    Network providers may include today's unfinished bar while the market is
+    open. Rows dated on/after the market-local session date are only kept once
+    the phase is post-close (or the market is closed all day); an unknown phase
+    is treated conservatively. Returns ``(df, dropped_any)``.
+    """
+    if df is None or df.empty or "date" not in df.columns:
+        return df, False
+    from src.core.trading_calendar import build_market_phase_context, get_market_for_stock
+
+    market = get_market_for_stock(str(stock_code or "")) or "cn"
+    try:
+        ctx = build_market_phase_context(
+            market=market, current_time=current_time, trigger_source="history_persist"
+        )
+    except Exception as exc:
+        logger.debug("filter_persistable_daily_bars(%s): phase unavailable: %s", stock_code, exc)
+        return df, False
+    if ctx.phase.value in ("postmarket", "non_trading"):
+        return df, False
+    session_date = ctx.session_date
+    mask = df["date"].map(_coerce_bar_date) >= session_date
+    if not mask.any():
+        return df, False
+    return df[~mask], True
+
+
 def load_history_df(
     stock_code: str,
     days: int = 60,

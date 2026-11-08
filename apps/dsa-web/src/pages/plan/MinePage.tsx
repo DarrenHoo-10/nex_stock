@@ -11,6 +11,7 @@ import { StockDetail } from '../../components/plan/mine/StockDetail';
 import { StockList } from '../../components/plan/mine/StockList';
 import { useMineOverview, useStockPlanDetail } from '../../components/plan/mine/useMineData';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
+import { QuoteSearch } from '../../components/plan/quote/QuoteSearch';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { showPlanToast } from '../../stores/planToastStore';
 import { usePlanUiStore } from '../../stores/planUiStore';
@@ -203,7 +204,14 @@ const MinePage: React.FC = () => {
     list.status === 'ready'
       ? `${list.data.nextTradeDate} 的计划，基于 ${list.data.tradeDate} 收盘数据，包含全部自选和持仓`
       : t('plan.page.mine.subtitle');
-  const header = <PlanPageHeader title={title} subtitle={subtitle} onOpenAssistant={() => openAssistant()} />;
+  const header = (
+    <PlanPageHeader
+      title={title}
+      subtitle={subtitle}
+      actions={<QuoteSearch onAddWatch={(code) => void addWatchFromDetail(code)} />}
+      onOpenAssistant={() => openAssistant()}
+    />
+  );
 
   if (list.status === 'unavailable' || account.status === 'unavailable') {
     return (

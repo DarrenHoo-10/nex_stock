@@ -1004,3 +1004,61 @@ class TestIndexRegistrySeed:
         index_rows = [item for item in compressed if len(item) > 7 and item[7] == "index"]
         canonicals = [x[0] for x in index_rows]
         assert canonicals == sorted(canonicals)
+
+
+class TestEtfSeedMerge:
+    """ETF seed rows are merged as ``market=CN``/``assetType=etf`` without touching stock/index rows."""
+
+    @staticmethod
+    def _write_seed(path: Path) -> Path:
+        seed = path / "etf_list.csv"
+        seed.write_text(
+            "ts_code,name,full_name,index_name\n"
+            "510300.SH,华泰柏瑞沪深300ETF,华泰柏瑞沪深300交易型开放式指数证券投资基金,沪深300\n"
+            "159915.SZ,易方达创业板ETF,易方达创业板交易型开放式指数证券投资基金,创业板指\n"
+            "159915.SZ,重复行,,\n"
+            "BAD,坏代码,,\n",
+            encoding="utf-8",
+        )
+        return seed
+
+    def test_build_entries(self, tmp_path):
+        from generate_index_from_csv import build_etf_entries_from_seed, load_etf_seed
+
+        entries = build_etf_entries_from_seed(load_etf_seed(self._write_seed(tmp_path)))
+        assert [e["canonicalCode"] for e in entries] == ["159915.SZ", "510300.SH"]
+        hs300 = entries[1]
+        assert hs300["displayCode"] == "510300"
+        assert hs300["market"] == "CN"
+        assert hs300["assetType"] == "etf"
+        assert hs300["aliases"] == ["沪深300ETF"]
+        assert hs300["pinyinAbbr"]
+
+    def test_missing_seed_is_empty(self, tmp_path):
+        from generate_index_from_csv import load_etf_seed
+
+        assert load_etf_seed(tmp_path / "missing.csv") == []
+
+    def test_etf_only_places_etf_between_stocks_and_indexes(self, tmp_path):
+        from generate_index_from_csv import run_etf_only
+
+        output = tmp_path / "stocks.index.json"
+        stock = ["600519.SH", "600519", "贵州茅台", "guizhoumaotai", "gzmt", [], "CN", "stock", True, 100]
+        stale_etf = ["512880.SH", "512880", "旧ETF", "jiu", "j", [], "CN", "etf", True, 100]
+        index_row = ["sh000001", "sh000001", "上证指数", "shangzhengzhishu", "szzs", [], "CN", "index", True, 100]
+        output.write_text(json.dumps([stock, stale_etf, index_row], ensure_ascii=False), encoding="utf-8")
+
+        merged = run_etf_only(output, seed_path=self._write_seed(tmp_path))
+        assert [row[0] for row in merged] == ["600519.SH", "159915.SZ", "510300.SH", "sh000001"]
+        assert json.loads(output.read_text(encoding="utf-8")) == merged
+
+        again = run_etf_only(output, seed_path=self._write_seed(tmp_path), test=True)
+        assert again == merged
+
+    def test_etf_only_requires_seed(self, tmp_path):
+        from generate_index_from_csv import run_etf_only
+
+        output = tmp_path / "stocks.index.json"
+        output.write_text("[]", encoding="utf-8")
+        with pytest.raises(ValueError):
+            run_etf_only(output, seed_path=tmp_path / "missing.csv")

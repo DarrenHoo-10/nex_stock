@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 「我的股票」标题栏新增股票 / ETF 搜索框（代码、名称、拼音），点开显示日K/周K/月K 蜡烛图、MA5/10/20/60、成交量和筹码分布（获利比例、平均成本、90%/70% 成本区间），可缩放、平移；光标处为十字线（横线标价位/成交量，竖线浮出该 K 线的开高低收、涨跌幅、振幅、成交量额、换手），所在日即显示当天筹码，并可直接加入自选。
+- [新功能] 自动补全索引新增 1737 只沪深在市 ETF（`assetType=etf`，别名含「跟踪指数名+ETF」）；seed 为 `scripts/stock_index_seeds/etf_list.csv`，由 `fetch_tushare_stock_list.py --etf-seed` 刷新、`generate_index_from_csv.py --etf-only` 合并，全量重建时自动保留。
+- [改进] `GET /api/v1/stocks/{code}/quote` 新增可选字段 `turnover_rate`、`float_shares`（流通股本，股）；`GET /api/v1/stocks/{code}/history` 的 `days` 上限由 365 提高到 1000。原有字段和默认行为不变。
+- [改进] 设置页「模型」改为渠道列表 + 编辑区：在同一页添加、编辑、停用、删除渠道（名称、接口地址、API 格式、API Key），获取模型、手动添加、搜索并逐个打开模型；用途里新增轻量模型和三项推理强度；正在使用的模型不能关闭，所在渠道不能停用或删除。
+- [改进] 模型列表获取支持 Anthropic Messages 格式（`{base}/v1/models`，`x-api-key` + `anthropic-version`）。
+- [改进] 新页面不再跳转旧页面：去掉导航「更多」、模型页「高级设置」、助手「在问股页打开」和选股页「去选股工具开启」；飞书应用机器人、群 Webhook 与开启选股改为在新页面直接设置，用户中心登录时导航提供「退出」。
+- [改进] Web 界面默认中文，不再按浏览器语言切换英文；明确切换过的语言仍然保留。
+
+- [新功能] 支持 NexorAI 用户中心登录：`AUTH_MODE=user_center` 时 Web 与 API 改用 nex_user 的共享会话（`user_session`）校验身份，默认只允许管理员（`USER_CENTER_REQUIRED_ROLE`），写操作校验来源与 CSRF 令牌；新增 `/api/session`、`/api/login`、`/api/logout`，前端未登录时跳转用户中心、非管理员显示无权限页；默认 `AUTH_MODE=local` 行为不变。新增配置 `AUTH_MODE`、`USER_CENTER_URL`、`PUBLIC_ORIGIN`、`USER_CENTER_REQUIRED_ROLE`。
+
+- [新功能] 新增部署模板：`deploy/tokyo/`（单容器同时运行 Web API 与定时任务，`.env` 所在目录挂载可写）与 `deploy/seoul/`（nginx 站点：静态前端 + `/api` 反向代理，含证书签发用的 HTTP 引导配置）；Docker 镜像补齐 `scripts/` 与 `templates/`。
+
+- [新功能] 板块与全市场日度快照入库：新增 `board_catalog`、`board_membership`（成分拉链表）、`market_stock_daily`、`market_daily`、`board_daily`、`daily_runs`、`board_signal` 表，按交易日从 Tushare 取全市场行情、每日指标、涨跌停、停牌与东方财富板块（含分页、单位换算、数据缺失标记），新增可断点续跑的回填脚本 `scripts/backfill_market_snapshot.py`；新增配置 `MARKET_SNAPSHOT_RETENTION_DAYS`、`MARKET_SNAPSHOT_BACKFILL_DAYS`、`MARKET_BENCHMARK_CODE`、`MARKET_SNAPSHOT_REQUESTS_PER_MINUTE`。
+
+- [新功能] 板块异动计算与判定：由本地快照计算全市场与板块日度指标（市值加权 / 等权收益、超额、排名、量比、宽度、涨跌停、炸板率、贡献股等），按核心功能说明的规则与默认阈值判定首次启动、持续走强、分歧、退潮、异常下跌，含普涨保护、历史不足、单股驱动、新概念冷却与概念合并，数据缺失记为「数据不足」而不当作不满足；`/api/v1/boards/*` 接入真实数据，阈值可经 `BOARD_ANOMALY_THRESHOLDS` 覆盖；新增每日板块流程脚本 `scripts/run_board_pipeline.py` 与助手工具 `get_board_signal`（盘中附实时强弱）；阈值尚未经历史回测校准。
+
+- [新功能] 每日板块流程接入定时任务：交易日 17:00 运行一次（`BOARD_PIPELINE_ENABLED`、`BOARD_PIPELINE_SCHEDULE_TIME`，未配置 `TUSHARE_TOKEN` 时跳过并记录原因），与现有分析的 `SCHEDULE_TIME` 互不影响；当天尚未发布的每日指标、涨跌停数据由日线、涨跌停价和前一日数据推算并标记来源，次日运行时补齐前一日的真实数据并重算其指标（不改写已有判定）；板块成分改为按板块获取前一交易日成分：概念板块随 17:00 流程每天刷新，行业板块由独立的每周任务刷新（默认周六 10:00，`BOARD_INDUSTRY_MEMBERSHIP_*`），成分请求单独限速（`MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE`，默认 200 次/分钟）；单个板块失败时保留原成分。冷启动回填只取回填窗口内的成分历史，超大板块（如沪股通、融资融券）按日期区间自动拆分以避开 Tushare 的 10 万行分页上限。
+
+- [修复] 按交易日获取全部板块成分时，同一股票属于多个板块不再被合并成一行。
+
+- [新功能] 资讯池接入 AKShare：开启 `NEWS_INTEL_AUTO_FETCH_ENABLED` 后，交易日 08:00–15:30 每 10 分钟、其他时段每 30 分钟同时抓取财联社电报与东方财富快讯（新浪、富途、同花顺备用），跨来源去重并记录可能漏抓的时段；每个交易日抓取自选股与持仓公告和财经早餐；快讯保留 3 天、公告保留 30 天；新资讯由轻量模型分类（范围、重要程度、关联板块、美股龙头、是否突发），重要资讯成为板块异动的「消息」驱动因素并在判定依据中保存标题；新增 `NEWS_*` 相关配置。
+
+- [新功能] 新增通用轻量模型配置 `LITELLM_LIGHT_MODEL`，用于资讯分类等杂活；留空时使用主模型，调用失败时退回主模型一次；填写渠道模型列表里的名称或网关分组名（如 `auto/...`）都能正确路由。
+
+- [新功能] 新增推理强度配置：`LLM_REASONING_EFFORT`（主模型与备用模型）、`AGENT_REASONING_EFFORT`（助手，留空跟随主模型）、`LITELLM_LIGHT_REASONING_EFFORT`（轻量模型），取值 `low` / `medium` / `high` / `xhigh` / `max`，以标准 `reasoning_effort` 参数发送（OpenAI 兼容网关的自定义模型也会透传），服务商不支持时自动去掉该参数重试一次。
+
+- [改进] 分析、大盘复盘、资讯分类和通用文本生成默认不再限制输出 token 数，由模型或网关的上限决定（原先固定 8192，高推理强度时会被推理过程占满而返回空内容）；必须提供上限的 Anthropic 原生接口使用该模型自身的最大输出长度。
+
+- [修复] 分析日志中的「响应成功」现在记录实际回答的模型，使用备用模型时会注明。
+
+- [新功能] 飞书助手：飞书应用机器人以长连接接入（定时任务模式下也会启动），私聊或群里 @ 机器人的普通消息交给助手回答，先回复「正在分析…」卡片再原地更新为答案；以 `/` 开头的消息仍走原有命令；发「记住：…」生成笔记修改，回复「确认」/「取消」处理。所有推送（分析报告、盘前版、板块结果、提醒、系统错误）通过同一机器人发到 `/bind` 绑定的会话（未绑定时用 `FEISHU_CHAT_ID`，再退回 Webhook），并写入该会话的助手历史，回复推送即可追问。新增自检脚本 `scripts/feishu_check.py`，重写[飞书配置文档](bot/feishu-bot-config.md)。
+
+- [改进] 飞书推送目标改为优先使用应用机器人（绑定会话或 `FEISHU_CHAT_ID`），Webhook 仅在没有应用机器人目标时使用；飞书里不带 `/` 的「分析」「大盘」等旧口令改由助手处理。
+
+- [修复] 隔夜美股：17:00 回放历史日期时，纳斯达克 100 等指数改用东方财富指数历史补取，不再因快照已是更新的交易日而缺失。
+
+- [新功能] 隔夜美股联动：可配置的美股龙头名单与 A 股板块映射（`US_LEADERS`、`US_MOVE_STOCK_PCT`、`US_MOVE_INDEX_PCT`），17:00 板块流程取前一晚美股日线（东方财富优先，Tushare 与 yfinance 备用；Tushare `us_daily` 限 1 次/分钟，遇到频率超限即跳过）并在相关板块的判定依据中注明隔夜美股异动；美股日线写入 `stock_daily`。
+
+- [新功能] 盘前推送：开启 `PREOPEN_PUSH_ENABLED` 后，每个交易日 `PREOPEN_PUSH_TIME`（默认 08:15）从东方财富（AKShare）取隔夜美股（yfinance 备用；费城半导体、纳斯达克中国金龙指数以 SOXX、PGJ 代替），结合资讯摘要与财经早餐，对自选股运行现有分析并推送「盘前版」，不影响现有 `SCHEDULE_TIME` 分析。
+
+- [修复] yfinance 取数时，`^` 开头的指数代码（如 `^SOX`）不再被误加 `.SZ` 后缀。
+
+- [新功能] 盘中实时数据：Tushare 单只报价改用 `rt_k`（无权限时干净回退），新增必盈 API 作为第二实时源（`BIYING_LICENCE`，可在 Web 设置页填写，日志中打码），新增按需获取、带缓存的全市场盘中快照服务（`INTRADAY_SNAPSHOT_TTL_SECONDS`）；助手每轮对话带上市场阶段与当前时间。
+
+- [修复] 助手盘中查询日线时，不再把当天未收盘的 K 线写入 `stock_daily`。
+
+- [新功能] 助手记忆：新增 Markdown 笔记（偏好、个股、板块各一页，修改需确认，带历史版本，接口 `/api/v1/agent/notes`）并注入对话；新增可插拔长期回忆插件（`ASSISTANT_RECALL_PROVIDER`，默认 `none`，首个实现为 Hindsight，默认对金额打码，超时或不可用时照常回答）；对话消息新增 `context_snapshot` 记录市场阶段与数据时间。详见[助手记忆](assistant-memory.md)。
+
+- [新功能] 持仓快照录入：`PortfolioService.set_holdings_snapshot` 把录入的持仓写成「期初持仓」/「持仓调整」交易与现金差额，持仓和成本仍由现有账本回放计算，同一快照重复录入不重复写入。
+
+- [文档] 新增[核心流程后端设计讨论稿](design/core-backend-design.md)：手动持仓以「期初持仓」写入现有账本；板块数据统一取自 Tushare，每日保存全市场个股快照与成分拉链表、由本地数据计算板块指标，含板块维表、日度指标、判定结果的表结构与每日数据流程；助手沿用现有 Agent，盘中优先用 Tushare 实时接口、必盈 API（包年版）作为第二实时源，回答问题并检查计划条件；助手记忆分为会话、Markdown 笔记（用户确认后写入）、可插拔的长期回忆插件（首个实现为 Hindsight，不配置也可运行）三层；隔夜美股与资讯：17:00 用前一晚美股日线、8:45 推送盘前版自选股分析与资讯、快讯与公告以 AKShare 为主、NewsNow 为可选备用；尚未实现。
+
 - [新功能] 新增次日计划的 API 与 Web 入口（[说明](daily-plan-api.md)）：`/api/v1/boards/*`（板块异动列表、详情、阈值读写）与 `/api/v1/plan/*`（账户与持仓快照、股票计划、股数试算、运行记录与手动运行），后端服务未就绪时返回 503 `daily_plan_unavailable`；Web 新增深色玻璃风格的板块异动 `/boards`、机会选股 `/picks`（复用现有选股任务）、我的股票 `/mine`、带页面上下文的助手抽屉和新设置页 `/preferences`（仓位规则、按用途的模型、异动阈值、运行和推送、数据状态）；`/` 与登录后默认改为进入 `/mine`，原首页移到 `/home`，其余旧页面路由不变并收进导航「更多」。
 
 - [文档] 新增[核心流程设计稿](design/core-redesign.html)与[设计说明](design/core-redesign.md)：按核心功能说明重做板块异动、机会选股、我的股票三页和全局助手，采用 visionOS 风格的玻璃窗口、悬浮导航和弹簧动效，用价格梯子展示买入区、止损和止盈，股数按可配置仓位规则实时计算，含换股判断、手动持仓录入、按用途选择的模型设置（对应现有 LLM 配置项）、16:00 运行状态与飞书消息预览；仅使用演示数据，不修改生产前端。

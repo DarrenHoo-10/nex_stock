@@ -155,7 +155,7 @@ def _missing_asset_media_type(asset_path: str) -> str:
 
 
 def _warn_if_open_cors_without_auth() -> None:
-    if is_auth_enabled():
+    if is_auth_enabled() or is_user_center_mode():
         return
     logger.warning(
         "CORS_ALLOW_ALL=true is enabled while ADMIN_AUTH_ENABLED is false. "
@@ -166,8 +166,9 @@ def _warn_if_open_cors_without_auth() -> None:
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
+from api.user_center import router as user_center_router
 from api.v1.schemas.common import HealthResponse
-from src.auth import is_auth_enabled
+from src.auth import is_auth_enabled, is_user_center_mode
 from src.data.stock_index_loader import find_existing_stock_index_path
 from src.services.system_config_service import SystemConfigService
 from src.services.runtime_scheduler import (
@@ -216,6 +217,28 @@ def _schedule_stock_index_background_refresh(app: FastAPI, reason: str) -> None:
 
     app.state.stock_index_refresh_task = asyncio.create_task(
         _refresh_stock_index_cache_in_background(reason)
+    )
+
+
+def _log_user_center_startup_check() -> None:
+    """Surface user-center misconfiguration at startup instead of on the first request."""
+    if not is_user_center_mode():
+        return
+    from src.user_center_auth import load_settings
+
+    settings = load_settings()
+    problems = settings.problems()
+    if problems:
+        logger.error(
+            "AUTH_MODE=user_center is misconfigured; protected API requests will fail with 503: %s",
+            "; ".join(problems),
+        )
+        return
+    logger.info(
+        "AUTH_MODE=user_center: user center=%s public origin=%s required role=%s",
+        settings.base_url,
+        settings.public_origin,
+        settings.required_role,
     )
 
 
@@ -281,6 +304,7 @@ async def app_lifespan(app: FastAPI):
         schedule_args_overrides=runtime_scheduler_args,
     )
     app.state.runtime_scheduler_service = runtime_scheduler_service
+    _log_user_center_startup_check()
     if not runtime_suppress_start:
         app.state.runtime_scheduler_service.reconcile_from_config(
             run_immediately=runtime_run_immediately,
@@ -337,7 +361,10 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             "- 股票数据：获取行情数据\n\n"
             "## 认证方式\n"
             "支持可选管理员认证：ADMIN_AUTH_ENABLED=true 时，除登录、状态、健康检查和 "
-            "OpenAPI 文档外，/api/v1/* 需要有效管理员会话 Cookie；关闭时不强制认证。"
+            "OpenAPI 文档外，/api/v1/* 需要有效管理员会话 Cookie；关闭时不强制认证。\n"
+            "AUTH_MODE=user_center 时改由 NexorAI 用户中心登录：除健康检查与 "
+            "/api/session、/api/login、/api/logout 外，所有 /api/* 都需要管理员的 user_session Cookie，"
+            "非 GET 请求另需 Origin=PUBLIC_ORIGIN 与 X-CSRF-Token。"
         ),
         version="1.0.0",
         lifespan=app_lifespan,
@@ -381,6 +408,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # ============================================================
     
     app.include_router(api_v1_router, prefix="/api/v1")
+    app.include_router(user_center_router)
     add_error_handlers(app)
     
     # ============================================================

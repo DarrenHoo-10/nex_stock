@@ -41,6 +41,67 @@
 .plan-shell .pref-chs { margin-top: 12px; }
 .plan-shell .roles .fb-box label.f select { width: 100%; }
 
+/* models: role effort + channel manager */
+.plan-shell .pref-first { margin-top: 22px; }
+.plan-shell .role-effort { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.plan-shell .chm { display: grid; grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); border-radius: var(--r-in); background: var(--fill); overflow: hidden; }
+.plan-shell .chm-list { padding: 10px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.plan-shell .chm-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.plan-shell .chm-item { width: 100%; border: 0; border-radius: 14px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; background: none; color: var(--t2); text-align: left; font-size: 14px; transition: background .2s, color .2s; }
+.plan-shell .chm-item:hover { background: var(--fill); color: #fff; }
+.plan-shell .chm-item[aria-current=true] { background: var(--fill3); color: #fff; font-weight: 600; box-shadow: inset 0 1px 0 rgba(255,255,255,.22); }
+.plan-shell .chm-item-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-shell .chm-item .tag { line-height: 18px; font-size: 11px; padding: 0 7px; }
+.plan-shell .chm-dot { display: inline-flex; flex: none; }
+.plan-shell .chm-dot.st-idle .sdot { background: var(--t3); }
+.plan-shell .chm-dot.st-off .sdot { background: var(--fill3); }
+.plan-shell .chm-add { border: 0; border-radius: 14px; padding: 10px 12px; background: none; color: var(--t3); font-size: 13.5px; box-shadow: inset 0 0 0 1px var(--line); transition: background .2s, color .2s; }
+.plan-shell .chm-add:hover, .plan-shell .chm-add[aria-current=true] { background: var(--fill); color: #fff; }
+.plan-shell .chm-detail { padding: 18px 22px 20px; min-width: 0; }
+.plan-shell .chm-head { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
+.plan-shell .chm-head h4 { margin: 0; font-size: 17px; font-weight: 650; overflow-wrap: anywhere; }
+.plan-shell .chm-switch { padding-top: 0; font-size: 13px; color: var(--t2); }
+.plan-shell .chm-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; margin-top: 16px; }
+.plan-shell .chm-fields .f { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--t3); min-width: 0; }
+.plan-shell .chm-fields input, .plan-shell .chm-fields select, .plan-shell .chm-filter input, .plan-shell .chm-add-model input {
+  border: 0; border-radius: 12px; padding: 8px 12px; background: rgba(10,14,40,.22);
+  box-shadow: inset 0 0 0 1px var(--line); color: #fff; min-width: 0; width: 100%; font-size: 14px;
+}
+.plan-shell .chm-fields input[readonly] { color: var(--t3); background: rgba(10,14,40,.12); }
+.plan-shell .chm-fields input::placeholder, .plan-shell .chm-filter input::placeholder, .plan-shell .chm-add-model input::placeholder { color: var(--t4); }
+.plan-shell .chm-key-row { display: flex; gap: 6px; align-items: center; }
+.plan-shell .chm-models { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+.plan-shell .chm-models-head { margin-bottom: 4px; }
+.plan-shell .chm-models-head h5 { margin: 0; font-size: 14.5px; font-weight: 650; }
+.plan-shell .chm-models-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.plan-shell .chm-models-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; font-size: 12.5px; color: var(--t3); }
+.plan-shell .chm-err { color: var(--risk); overflow-wrap: anywhere; }
+.plan-shell .chm-add-model, .plan-shell .chm-filter { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
+.plan-shell .chm-filter input { max-width: 260px; }
+.plan-shell .chm-model-list { list-style: none; margin: 10px 0 0; padding: 0; border-radius: 16px; background: rgba(10,14,40,.14); box-shadow: inset 0 0 0 1px var(--line); max-height: 360px; overflow: auto; }
+.plan-shell .chm-model-list li + li { border-top: 1px solid var(--line); }
+.plan-shell .chm-model { position: relative; display: flex; align-items: center; gap: 12px; padding: 10px 14px; cursor: pointer; }
+.plan-shell .chm-model:hover { background: var(--fill); }
+.plan-shell .chm-model-id { flex: 1 1 auto; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; color: var(--t3); overflow-wrap: anywhere; }
+.plan-shell .chm-model-list li.on .chm-model-id { color: #fff; }
+.plan-shell .chm-model input { position: absolute; right: 14px; opacity: 0; width: 44px; height: 26px; margin: 0; cursor: pointer; }
+.plan-shell .chm-model input:checked + .switch-track { background: #7BE3B0; }
+.plan-shell .chm-model input:checked + .switch-track::after { transform: translateX(18px); }
+.plan-shell .chm-model input:focus-visible + .switch-track { outline: 2px solid #fff; outline-offset: 2px; }
+.plan-shell .chm-test { margin-top: 14px; white-space: normal; overflow-wrap: anywhere; }
+.plan-shell .chm-detail .err { margin-top: 12px; }
+.plan-shell .chm-actions { flex-wrap: wrap; gap: 8px; }
+.plan-shell .chm-delete { margin-left: auto; color: var(--t2); }
+.plan-shell .chm-delete.confirm { background: rgba(255,116,104,.3); color: #FFE0DC; }
+@container (max-width: 640px) {
+  .plan-shell .chm { grid-template-columns: minmax(0, 1fr); }
+  .plan-shell .chm-list { border-right: 0; border-bottom: 1px solid var(--line); }
+  .plan-shell .chm-list ul { flex-direction: row; flex-wrap: wrap; }
+  .plan-shell .chm-item { width: auto; }
+  .plan-shell .chm-fields { grid-template-columns: minmax(0, 1fr); }
+  .plan-shell .chm-detail { padding: 16px; }
+}
+
 /* thresholds */
 .plan-shell .evidence-legend { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 16px 0 0; padding: 12px 16px; border-radius: var(--r-in); background: var(--fill); }
 .plan-shell .evidence-legend > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -81,6 +142,17 @@
 .plan-shell .switch input:checked + .switch-track::after { transform: translateX(18px); }
 .plan-shell .switch input:focus-visible + .switch-track { outline: 2px solid #fff; outline-offset: 2px; }
 .plan-shell .pref-scheduler { margin-top: 6px; }
+.plan-shell .feishu-form { margin-top: 14px; }
+.plan-shell .feishu-group + .feishu-group { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.plan-shell .feishu-group h4 { margin: 0; font-size: 14px; font-weight: 650; }
+.plan-shell .feishu-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); max-width: 640px; }
+.plan-shell .feishu-grid label.f { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--t3); min-width: 0; }
+.plan-shell .feishu-grid label.f input {
+  border: 0; border-radius: 12px; padding: 8px 12px; background: rgba(10,14,40,.22);
+  box-shadow: inset 0 0 0 1px var(--line); color: #fff; min-width: 0; width: 100%; font-size: 14px;
+}
+.plan-shell .feishu-grid label.f input::placeholder { color: var(--t4); }
+.plan-shell .feishu-form .switch { padding-top: 14px; }
 .plan-shell .pref-run-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
 .plan-shell .pref-run-head .big { font-family: var(--display); font-size: 28px; font-weight: 700; line-height: 1.15; }
 .plan-shell .pref-steps { margin-top: 10px; }
