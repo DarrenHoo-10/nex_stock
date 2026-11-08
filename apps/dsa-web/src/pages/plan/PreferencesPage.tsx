@@ -96,7 +96,13 @@ const PreferencesPage: React.FC = () => {
     models: () => withConfig((view) => <ModelsPanel config={view} onSave={save} onReload={() => void reload()} />),
     thresholds: () => <ThresholdsPanel />,
     run: () => withConfig((view) => <RunPushPanel config={view} onSave={save} onReload={() => void reload()} />),
-    data: () => <DataStatusPanel />,
+    data: () => (
+      <DataStatusPanel
+        config={configState.status === 'ready' ? configState.view : null}
+        onSave={save}
+        onReload={() => void reload()}
+      />
+    ),
   };
 
   return (

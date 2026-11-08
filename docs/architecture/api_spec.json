@@ -8560,6 +8560,14 @@
             ],
             "title": "Cooldown",
             "description": "Whether the provider is currently in cooldown"
+          },
+          "config_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Config Keys",
+            "description": "Config keys (PUT /system/config) that enable or tune this provider; empty for built-in sources"
           }
         },
         "type": "object",

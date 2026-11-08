@@ -22,6 +22,8 @@ export type DataProviderCapability = {
   warnings: string[];
   lastError?: string | null;
   cooldown?: boolean | null;
+  /** Config keys that enable / tune this source (PUT /system/config); empty for built-in sources. */
+  configKeys?: string[];
 };
 
 export type DataDatasetQuality = {

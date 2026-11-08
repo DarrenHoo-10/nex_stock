@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../../contexts/UiLanguageContext';
 import { attachParsedApiError } from '../../../../api/error';
 import type { SystemConfigItem } from '../../../../types/systemConfig';
+import { DataStatusPanel } from '../DataStatusPanel';
 import { ModelsPanel } from '../ModelsPanel';
 import { PositionRulesPanel } from '../PositionRulesPanel';
 import { ThresholdsPanel } from '../ThresholdsPanel';
@@ -19,6 +20,7 @@ const { get, put, post, getPlanAccount, previewSizing } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../../api', () => ({ default: { get, put, post } }));
+vi.mock('../../../../hooks/useLatestPlanRun', () => ({ useLatestPlanRun: () => ({ status: 'ready', run: null }) }));
 vi.mock('../../../../api/dailyPlan', () => ({
   getPlanAccount,
   previewSizing,
@@ -356,5 +358,83 @@ describe('ModelsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存模型设置' }));
     expect(onSave).not.toHaveBeenCalled();
     expect(screen.getByText('温度填 0 到 2 之间的数')).toBeInTheDocument();
+  });
+});
+
+describe('DataStatusPanel source settings', () => {
+  function provider(name: string, label: string, configured: boolean, configKeys: string[]) {
+    return {
+      name, label, enabled: configured, configured, status: configured ? 'unknown' : 'unconfigured',
+      priority: null, markets: ['cn'], datasets: ['quote.realtime'], dataset_markets: {}, warnings: [],
+      last_error: null, cooldown: null, config_keys: configKeys,
+    };
+  }
+  const overview = (biyingConfigured: boolean) => ({
+    data: {
+      as_of: '2026-11-09T01:00:00+08:00',
+      providers: [
+        provider('akshare', 'AkShare', true, []),
+        provider('tushare', 'Tushare', true, ['TUSHARE_TOKEN']),
+        provider('biying', 'Biying', biyingConfigured, ['BIYING_LICENCE', 'BIYING_TIMEOUT_SECONDS']),
+      ],
+      datasets: [],
+      priorities: [],
+      warnings: [],
+    },
+  });
+  const view = buildConfigView(
+    [
+      item('TUSHARE_TOKEN', '******', { isMasked: true, schema: { key: 'TUSHARE_TOKEN', isSensitive: true } as never }),
+      item('BIYING_LICENCE', '', { schema: { key: 'BIYING_LICENCE', isSensitive: true } as never }),
+      item('BIYING_TIMEOUT_SECONDS', '8'),
+    ],
+    'v1',
+  );
+
+  it('configures a source in place, sends only typed values and refreshes the status', async () => {
+    get.mockResolvedValueOnce(overview(false)).mockResolvedValueOnce(overview(true));
+    const onSave = vi.fn<(items: Array<{ key: string; value: string }>) => Promise<SaveOutcome>>(async () => ({ ok: true }));
+    wrap(<DataStatusPanel config={view} onSave={onSave} onReload={vi.fn()} />);
+
+    expect(await screen.findByRole('button', { name: '配置 Biying' })).toHaveTextContent('配置');
+    expect(screen.queryByRole('button', { name: '配置 AkShare' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '配置 Tushare' })).toHaveTextContent('修改');
+
+    fireEvent.click(screen.getByRole('button', { name: '配置 Biying' }));
+    const form = screen.getByRole('form', { name: 'Biying 配置' });
+    const licence = within(form).getByLabelText('必盈 licence');
+    expect(licence).toHaveAttribute('type', 'password');
+    expect(licence).toHaveAttribute('placeholder', '未配置');
+    expect(within(form).getByLabelText('单次请求超时（秒）')).toHaveValue('8');
+    expect(within(form).getByRole('button', { name: '保存' })).toBeDisabled();
+
+    fireEvent.change(licence, { target: { value: '  my-licence  ' } });
+    fireEvent.click(within(form).getByRole('button', { name: '保存' }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith([{ key: 'BIYING_LICENCE', value: 'my-licence' }]));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('form', { name: 'Biying 配置' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '配置 Biying' })).toHaveTextContent('修改');
+  });
+
+  it('never shows a saved secret and keeps it when left empty', async () => {
+    get.mockResolvedValue(overview(true));
+    const onSave = vi.fn<(items: Array<{ key: string; value: string }>) => Promise<SaveOutcome>>(async () => ({ ok: true }));
+    wrap(<DataStatusPanel config={view} onSave={onSave} onReload={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '配置 Tushare' }));
+    const token = screen.getByLabelText('Tushare Token');
+    expect(token).toHaveValue('');
+    expect(token).toHaveAttribute('placeholder', '已配置，留空不修改');
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('shows the source list read-only while the settings are not loaded', async () => {
+    get.mockResolvedValue(overview(false));
+    wrap(<DataStatusPanel />);
+    expect(await screen.findByText('Biying')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^配置 / })).not.toBeInTheDocument();
   });
 });
