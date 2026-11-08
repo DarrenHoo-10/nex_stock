@@ -604,13 +604,28 @@ def get_stock_history(
         )
 
 
+# 503 intraday_unavailable: user-facing message per ``IntradayDataUnavailable.reason`` (top-level ``reason``).
+INTRADAY_UNAVAILABLE_MESSAGES = {
+    "biying_not_configured": "历史交易日的分时来自必盈数据源，还没有配置必盈 licence：请在设置的数据源里填写 BIYING_LICENCE 后重试。",
+    "not_configured": "没有可用的分钟线数据源：请在设置的数据源里配置 Tushare 或必盈 licence（BIYING_LICENCE）。",
+    "no_bars": "数据源没有这一天的分时数据，可能当天停牌或不是交易日。",
+    "source_failed": "分钟线数据源请求失败，请稍后重试；多次失败请检查数据源配置和网络。",
+}
+
+
 @router.get(
     "/{stock_code}/intraday",
     response_model=StockIntradayResponse,
     responses={
         200: {"description": "指定交易日的分时（5 分钟）行情"},
         422: {"description": "日期格式错误或为未来日期", "model": ErrorResponse},
-        503: {"description": "没有可用的分钟线数据源", "model": ErrorResponse},
+        503: {
+            "description": (
+                "取不到分时：error=intraday_unavailable，reason 为 biying_not_configured / "
+                "not_configured / no_bars / source_failed，message 是对应的中文说明"
+            ),
+            "model": ErrorResponse,
+        },
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取个股某个交易日的分时行情",
@@ -631,10 +646,16 @@ def get_stock_intraday(
             detail={"error": "invalid_date", "message": str(e)},
         )
     except IntradayDataUnavailable as e:
-        logger.info("分时行情不可用 %s %s: %s", stock_code, date, e)
+        reason = getattr(e, "reason", "source_failed")
+        logger.info("分时行情不可用 %s %s (%s): %s", stock_code, date, reason, e)
         raise HTTPException(
             status_code=503,
-            detail={"error": "intraday_unavailable", "message": "暂时取不到这一天的分时数据"},
+            detail={
+                "error": "intraday_unavailable",
+                "message": INTRADAY_UNAVAILABLE_MESSAGES.get(reason, INTRADAY_UNAVAILABLE_MESSAGES["source_failed"]),
+                # Top level, not under ``detail``: the Web error parser reads a ``detail`` object as the message.
+                "reason": reason,
+            },
         )
     except Exception as e:
         logger.error(f"获取分时行情失败: {e}", exc_info=True)

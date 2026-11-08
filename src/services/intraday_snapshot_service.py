@@ -44,7 +44,19 @@ PAST_SESSION_TTL_SECONDS = 6 * 3600.0
 
 
 class IntradayDataUnavailable(RuntimeError):
-    """No configured source could provide the requested intraday data."""
+    """No configured source could provide the requested intraday data.
+
+    ``reason`` tells callers why, so users see the cause instead of a generic network error:
+
+    * ``biying_not_configured`` - a past session needs Biying history bars and ``BIYING_LICENCE`` is unset;
+    * ``not_configured`` - none of the sources for this request is configured;
+    * ``no_bars`` - configured sources answered but had no bars (suspension, holiday);
+    * ``source_failed`` - a configured source raised or timed out (default).
+    """
+
+    def __init__(self, message: str, *, reason: str = "source_failed") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +376,7 @@ class IntradaySnapshotService:
     def _market_from_tushare(self) -> Dict[str, UnifiedRealtimeQuote]:
         fetcher = self._fetcher("TushareFetcher")
         if fetcher is None or not hasattr(fetcher, "fetch_rt_k"):
-            raise IntradayDataUnavailable("Tushare is not configured")
+            raise IntradayDataUnavailable("Tushare is not configured", reason="not_configured")
         quotes: Dict[str, UnifiedRealtimeQuote] = {}
         for pattern in RT_K_BATCH_PATTERNS:
             df = fetcher.fetch_rt_k(pattern)
@@ -389,7 +401,7 @@ class IntradaySnapshotService:
     def _market_from_biying(self) -> Dict[str, UnifiedRealtimeQuote]:
         fetcher = self._fetcher("BiyingFetcher")
         if fetcher is None:
-            raise IntradayDataUnavailable("Biying is not configured")
+            raise IntradayDataUnavailable("Biying is not configured", reason="not_configured")
         return fetcher.get_all_realtime_quotes()
 
     # -- single stock ------------------------------------------------------
@@ -439,22 +451,27 @@ class IntradaySnapshotService:
 
     def _load_bars(self, stock_code: str, code: str) -> Tuple[List[Dict[str, Any]], str]:
         errors: List[str] = []
+        reasons = set()
         for label, loader in (("tushare", self._bars_from_tushare), ("biying", self._bars_from_biying)):
             try:
                 bars = loader(stock_code, code)
             except Exception as exc:
                 errors.append(f"{label}: {exc}")
+                reasons.add(getattr(exc, "reason", "source_failed"))
                 logger.info("[intraday] 5-min bars via %s failed for %s: %s", label, code, exc)
                 continue
             if bars:
                 return bars, label
             errors.append(f"{label}: no bars")
-        raise IntradayDataUnavailable("5-minute bars unavailable (" + "; ".join(errors) + ")")
+            reasons.add("no_bars")
+        reason = ("source_failed" if "source_failed" in reasons
+                  else "no_bars" if "no_bars" in reasons else "not_configured")
+        raise IntradayDataUnavailable("5-minute bars unavailable (" + "; ".join(errors) + ")", reason=reason)
 
     def _bars_from_tushare(self, stock_code: str, code: str) -> List[Dict[str, Any]]:
         fetcher = self._fetcher("TushareFetcher")
         if fetcher is None or not hasattr(fetcher, "fetch_rt_min_daily"):
-            raise IntradayDataUnavailable("Tushare is not configured")
+            raise IntradayDataUnavailable("Tushare is not configured", reason="not_configured")
         df = fetcher.fetch_rt_min_daily(fetcher._convert_stock_code(stock_code), "5MIN")
         if df is None or df.empty:
             return []
@@ -480,7 +497,7 @@ class IntradaySnapshotService:
     def _bars_from_biying(self, stock_code: str, code: str) -> List[Dict[str, Any]]:
         fetcher = self._fetcher("BiyingFetcher")
         if fetcher is None:
-            raise IntradayDataUnavailable("Biying is not configured")
+            raise IntradayDataUnavailable("Biying is not configured", reason="not_configured")
         return self._latest_session(fetcher.get_intraday_bars(stock_code, limit=48))
 
     # -- 5-minute bars of one given session --------------------------------
@@ -526,6 +543,7 @@ class IntradaySnapshotService:
         self, stock_code: str, code: str, trade_date: str, is_today: bool
     ) -> Tuple[List[Dict[str, Any]], str]:
         errors: List[str] = []
+        live_reason: Optional[str] = None  # today only: why the live chain gave nothing
         if is_today:
             try:
                 live, source = self._load_bars(stock_code, code)
@@ -533,21 +551,40 @@ class IntradaySnapshotService:
                 if bars:
                     return bars, source
                 errors.append("live: no bars for the date")
+                live_reason = "no_bars"
             except IntradayDataUnavailable as exc:
                 errors.append(str(exc))
+                live_reason = exc.reason
         try:
             fetcher = self._fetcher("BiyingFetcher")
-            if fetcher is None:
-                raise IntradayDataUnavailable("Biying is not configured")
-            bars = fetcher.get_history_bars(stock_code, trade_date)
+            bars = None if fetcher is None else fetcher.get_history_bars(stock_code, trade_date)
         except Exception as exc:
             errors.append(f"biying: {exc}")
             logger.info("[intraday] history bars via biying failed for %s %s: %s", code, trade_date, exc)
+            history_reason = "source_failed"
         else:
-            if bars:
+            if fetcher is None:
+                errors.append("biying: not configured")
+                history_reason = "biying_not_configured"
+            elif bars:
                 return bars, "biying"
-            errors.append("biying: no bars")
-        raise IntradayDataUnavailable(f"5-minute bars for {trade_date} unavailable (" + "; ".join(errors) + ")")
+            else:
+                errors.append("biying: no bars")
+                history_reason = "no_bars"
+        raise IntradayDataUnavailable(
+            f"5-minute bars for {trade_date} unavailable (" + "; ".join(errors) + ")",
+            reason=self._session_reason(live_reason, history_reason) if is_today else history_reason,
+        )
+
+    @staticmethod
+    def _session_reason(live_reason: Optional[str], history_reason: str) -> str:
+        """Today's reason: a source failure first, then no data, then missing configuration."""
+        reasons = {live_reason, history_reason}
+        if "source_failed" in reasons:
+            return "source_failed"
+        if "no_bars" in reasons:
+            return "no_bars"
+        return "not_configured"
 
     @staticmethod
     def _latest_session(bars: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -413,6 +413,22 @@ export function parseApiError(error: unknown): ParsedApiError {
     });
   }
 
+  if (errorCode === 'intraday_unavailable') {
+    // The backend explains the cause (e.g. BIYING_LICENCE not configured); keep it instead of
+    // falling through to the generic 503 "check proxy / DNS" text below.
+    const data = response?.data;
+    const message = (isRecord(data) ? pickString(data.message) : null)
+      ?? '暂时取不到这一天的分时数据，请稍后重试。';
+    return createParsedApiError({
+      title: '取不到分时数据',
+      message,
+      rawMessage,
+      status,
+      category: 'http_error',
+      code: errorCode,
+    });
+  }
+
   const noConfiguredLlm = (
     includesAny(matchText, ['all llm models failed']) && includesAny(matchText, ['last error: none'])
   ) || includesAny(matchText, [
