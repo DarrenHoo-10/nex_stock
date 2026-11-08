@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 左侧导航新增「助手」页（`/assistant`）：左栏显示历史会话（切换、删除、新对话），右侧对话可选模型和思考强度（只作用于本次请求，记在浏览器里，助手抽屉共用），可查看上下文用量（历史 token、模型上下文窗口、摘要覆盖、自动压缩阈值）并手动「压缩会话」。新增 `GET /api/v1/agent/chat/sessions/{id}/context`、`POST /api/v1/agent/chat/sessions/{id}/compact`；`/agent/chat` 与 `/chat/stream` 新增可选 `model`、`reasoning_effort`，`/agent/models` 追加 `route_model`、默认模型与思考强度字段。会话有摘要后，即使自动压缩关闭也按「摘要 + 最近 20 条」带历史；YAML 路由别名的模型现在能正确标记为主模型。
 - [新功能] 次日计划后端服务（`DailyPlanService`，`/api/v1/plan/*` 不再返回 503）：账户与持仓快照（新表 `plan_account`、`plan_holding`）、按 `POSITION_*` 仓位规则确定性计算股数与止损（主板 / 创业板 / 科创板 / 北交所的申报单位与涨跌停、`fixed` / `nearer` 止损）、每只股票短线 / 波段两个周期的条件计划（模型决定买不买和价位，模型不可用时按规则生成）、持股数已满时的换股判断、运行记录与飞书摘要推送（新表 `plan_run`、`plan_stock`）；`DAILY_PLAN_ENABLED=true` 时在定时模式下按 `SCHEDULE_TIME` 每个交易日独立运行一次；新增配置项 `DAILY_PLAN_ENABLED`、`POSITION_STOP_LOSS_PCT`、`POSITION_MAX_TOTAL_PCT`、`POSITION_MAX_HOLDINGS`、`POSITION_MAX_SINGLE_PCT`、`POSITION_STOP_MODE`，详见 `docs/daily-plan-api.md`。
 - [改进] 我的股票：次日计划服务未就绪时，页面改为显示自选列表（名称、代码，可移出），不再只显示错误；页头搜索打开走势图后「加入自选」会同步刷新这份列表。
 - [新功能] 板块异动页新增「今日建议」与「我关注的」：17:00 板块运行后由分析模型从当日异动板块里挑 3–5 个值得重点跟踪的板块并给出理由（模型不可用时按规则排序并说明原因，可手动重新生成），存入新表 `board_recommendation`；板块详情可关注 / 取消关注（新表 `board_follow`），关注的板块在列表里带 ★。机会选股的板块选择按「模型推荐 / 我关注的 / 今日异动」分组，可一键选上推荐板块，也可搜索全部板块。新增 `GET/PUT/DELETE /api/v1/boards/follows`、`GET /api/v1/boards/recommendations`、`POST /api/v1/boards/recommendations/refresh`。

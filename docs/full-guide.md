@@ -259,13 +259,13 @@ daily_stock_analysis/
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
 | `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
 | `LITELLM_LIGHT_MODEL` | 轻量模型（可选）：资讯分类、打标签、短摘要等轻量杂活共用，格式与 `LITELLM_MODEL` 相同（可填 `LLM_CHANNELS` 渠道里的模型名）；留空使用主模型，轻量模型调用失败时退回主模型再试一次；不改变任何现有功能使用的模型 | - | 否 |
-| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |
+| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 自动压缩开关；Codex 使用最近 20 条可见对话且保留该配置。关闭时仍可在 Web「助手」页手动压缩，会话有摘要后按「摘要 + 最近 20 条」带历史 | `false` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_PROFILE` | 问股上下文压缩策略：`cost` / `balanced` / `long_context_raw_first` | `balanced` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 历史 token 估算超过该值时触发压缩；留空则跟随 profile preset | - | 否 |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
 | `LITELLM_FALLBACK_MODELS` | 备选模型，逗号分隔 | - | 否 |
 | `LLM_REASONING_EFFORT` | 主分析模型及其备选模型（单股分析、大盘复盘等）的标准 `reasoning_effort` 请求参数：留空 = 不发送（模型默认），可选 `low` / `medium` / `high` / `xhigh` / `max`，非法值记录警告并按留空处理。强度越高越慢、token 越多；项目不发送 `max_tokens`，思考不会被输出预算截断。这是推荐的设置方式，模型名带 `:high` 等后缀的写法仍保留（由网关解释，项目不改写模型名）。服务端明确拒绝该参数时，当次请求去掉它重试一次并记录日志 | 空 | 否 |
-| `AGENT_REASONING_EFFORT` | 问股助手（Agent）对话的 `reasoning_effort`；留空跟随 `LLM_REASONING_EFFORT`，取值同上 | 空 | 否 |
+| `AGENT_REASONING_EFFORT` | 问股助手（Agent）对话的 `reasoning_effort`；留空跟随 `LLM_REASONING_EFFORT`，取值同上。Web「助手」页可按请求另选模型和思考强度，不改写本项 | 空 | 否 |
 | `LITELLM_LIGHT_REASONING_EFFORT` | 轻量模型杂活（资讯分类等）的 `reasoning_effort`；留空 = 不发送，取值同上。轻量调用退回主模型时，那一次使用 `LLM_REASONING_EFFORT` | 空 | 否 |
 | `LLM_CHANNELS` | 渠道名称列表（逗号分隔），配合 `LLM_{NAME}_*` 使用，详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) | - | 否 |
 | `MODELFLARE_KEY` | Modelflare 单 Key 接入，自动启用默认渠道；Actions 仅从 Secrets 读取 | - | 选用时 |

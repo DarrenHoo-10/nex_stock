@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 VISIBLE_ROLES = {"user", "assistant"}
 SUMMARY_USER_PREFIX = "[系统生成的历史对话摘要，仅供延续本会话]"
 SUMMARY_LLM_TIMEOUT_SECONDS = 20
+# Visible messages kept when no compression applies (no summary, or automatic compression off).
+FALLBACK_HISTORY_MESSAGES = 20
 
 SUMMARY_SYSTEM_PROMPT = """你是股票问答系统的会话压缩器，只能总结已经出现过的用户可见对话内容。
 
@@ -249,7 +251,19 @@ def _build_visible_history_state(
     snapshot = _history_snapshot(db, session_id, source_snapshot)
     visible_messages = _visible_messages_from_rows(snapshot["messages"])
     if not allow_llm_compression or not getattr(config, "agent_context_compression_enabled", False):
-        selected = visible_messages[-20:]
+        stored_summary = (snapshot["summary"] or {}).get("summary") or ""
+        if stored_summary:
+            # A saved summary (automatic or manual compaction) replaces the history it covers even when
+            # automatic compression is off; only newer messages follow it, capped like the plain path.
+            covered = _coerce_int(snapshot["summary"].get("covered_message_id"), default=0)
+            selected = [msg for msg in visible_messages if msg.id > covered][-FALLBACK_HISTORY_MESSAGES:]
+            messages = [build_summary_message(stored_summary)] + _to_chat_messages(selected, include_ids=True)
+            return VisibleHistoryState(
+                messages=messages,
+                visible_ids={msg.id for msg in selected},
+                visible_tokens=estimate_messages_tokens(_strip_internal_message_ids(messages), config),
+            )
+        selected = visible_messages[-FALLBACK_HISTORY_MESSAGES:]
         messages = _to_chat_messages(selected, include_ids=True)
         return VisibleHistoryState(
             messages=messages,
@@ -544,3 +558,159 @@ def _coerce_int(value: Any, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return int(default)
+
+
+@dataclass(frozen=True)
+class ChatContextInfo:
+    """Read-only description of what the next Agent turn would carry as conversation history."""
+
+    message_count: int
+    history_tokens: int
+    history_message_count: int
+    compression_enabled: bool
+    trigger_tokens: int
+    protected_turns: int
+    summary: Optional[Dict[str, Any]]
+    compactable_message_count: int
+
+
+@dataclass(frozen=True)
+class ChatCompactResult:
+    """Outcome of a manual compaction request."""
+
+    status: str  # "compacted" | "nothing_to_compact" | "failed"
+    summarized_message_count: int = 0
+    tokens_before: int = 0
+    tokens_after: int = 0
+
+
+def _compression_limits(config: Any) -> Tuple[Any, int, int]:
+    preset = get_agent_context_compression_preset(
+        getattr(config, "agent_context_compression_profile", None)
+    )
+    trigger_tokens = _coerce_int(
+        getattr(config, "agent_context_compression_trigger_tokens", preset.trigger_tokens),
+        default=preset.trigger_tokens,
+    )
+    protected_turns = _coerce_int(
+        getattr(config, "agent_context_protected_turns", preset.protected_turns),
+        default=preset.protected_turns,
+    )
+    return preset, trigger_tokens, protected_turns
+
+
+def _compactable_messages(
+    visible_messages: Sequence[VisibleMessage], covered_message_id: int, protected_turns: int,
+) -> List[VisibleMessage]:
+    protected_ids = {msg.id for msg in _split_protected_tail(visible_messages, protected_turns)}
+    return [msg for msg in visible_messages if msg.id > covered_message_id and msg.id not in protected_ids]
+
+
+def _describe_snapshot(snapshot: Dict[str, Any], config: Any) -> ChatContextInfo:
+    visible_messages = _visible_messages_from_rows(snapshot["messages"])
+    _preset, trigger_tokens, protected_turns = _compression_limits(config)
+    summary_record = snapshot["summary"]
+    summary_text = (summary_record or {}).get("summary") or ""
+    covered = _coerce_int((summary_record or {}).get("covered_message_id"), default=0) if summary_text else 0
+    compression_enabled = bool(getattr(config, "agent_context_compression_enabled", False))
+
+    if summary_text:
+        selected = [msg for msg in visible_messages if msg.id > covered]
+        if not compression_enabled:
+            selected = selected[-FALLBACK_HISTORY_MESSAGES:]
+        history = [build_summary_message(summary_text)] + _to_chat_messages(selected)
+    else:
+        selected = visible_messages if compression_enabled else visible_messages[-FALLBACK_HISTORY_MESSAGES:]
+        history = _to_chat_messages(selected)
+
+    summary_info = None
+    if summary_text:
+        updated_at = summary_record.get("updated_at")
+        summary_info = {
+            "covered_message_count": sum(1 for msg in visible_messages if msg.id <= covered),
+            "estimated_tokens": _coerce_int(summary_record.get("estimated_tokens"), default=0),
+            "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else updated_at,
+        }
+
+    return ChatContextInfo(
+        message_count=len(visible_messages),
+        history_tokens=estimate_messages_tokens(history, config) if history else 0,
+        history_message_count=len(selected),
+        compression_enabled=compression_enabled,
+        trigger_tokens=trigger_tokens,
+        protected_turns=protected_turns,
+        summary=summary_info,
+        compactable_message_count=len(_compactable_messages(visible_messages, covered, protected_turns)),
+    )
+
+
+def describe_chat_context(
+    session_id: str,
+    config: Any,
+    *,
+    db_manager: Optional[DatabaseManager] = None,
+) -> ChatContextInfo:
+    """Describe the conversation history the next Agent turn would carry; calls no model and writes nothing."""
+    db = db_manager if db_manager is not None else get_db()
+    return _describe_snapshot(db.read_chat_session_snapshot(session_id), config)
+
+
+def compact_chat_history(
+    session_id: str,
+    llm_adapter: Any,
+    config: Any,
+    *,
+    db_manager: Optional[DatabaseManager] = None,
+) -> ChatCompactResult:
+    """Fold every uncovered message outside the protected tail into the rolling summary now.
+
+    Same summary prompt, coverage CAS and usage telemetry as automatic compression, but ignores the trigger
+    threshold and the ``AGENT_CONTEXT_COMPRESSION_ENABLED`` switch. Raises ``ChatSessionStateConflict`` when the
+    session was reset or a concurrent compaction already moved the coverage.
+    """
+    db = db_manager if db_manager is not None else get_db()
+    snapshot = _history_snapshot(db, session_id, None)
+    visible_messages = _visible_messages_from_rows(snapshot["messages"])
+    preset, _trigger_tokens, protected_turns = _compression_limits(config)
+    summary_record = snapshot["summary"]
+    previous_summary = (summary_record or {}).get("summary") or ""
+    covered = _coerce_int((summary_record or {}).get("covered_message_id"), default=0)
+    to_summarize = _compactable_messages(visible_messages, covered, protected_turns)
+    tokens_before = _describe_snapshot(snapshot, config).history_tokens
+    if not to_summarize:
+        return ChatCompactResult(status="nothing_to_compact", tokens_before=tokens_before, tokens_after=tokens_before)
+
+    summary_text, response = _generate_summary(
+        llm_adapter=llm_adapter,
+        config=config,
+        previous_summary=previous_summary,
+        to_summarize=to_summarize,
+        max_tokens=preset.summary_target_tokens,
+    )
+    if not summary_text:
+        return ChatCompactResult(status="failed", tokens_before=tokens_before, tokens_after=tokens_before)
+
+    saved = db.upsert_conversation_summary(
+        session_id=session_id,
+        summary=summary_text,
+        covered_message_id=max(msg.id for msg in to_summarize),
+        source_message_count=len(to_summarize),
+        estimated_tokens=estimate_text_tokens(summary_text, config),
+        source_snapshot=snapshot,
+    )
+    usage = getattr(response, "usage", {}) or {}
+    if should_persist_usage_telemetry(usage):
+        persist_llm_usage(
+            usage,
+            getattr(response, "model", "") or get_effective_agent_primary_model(config) or "unknown",
+            call_type="agent",
+        )
+    if not saved:
+        raise ChatSessionStateConflict()
+    logger.info("Manual context compaction for session %s summarized %d messages", session_id, len(to_summarize))
+    return ChatCompactResult(
+        status="compacted",
+        summarized_message_count=len(to_summarize),
+        tokens_before=tokens_before,
+        tokens_after=describe_chat_context(session_id, config, db_manager=db).history_tokens,
+    )

@@ -17,9 +17,15 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from api.deps import get_agent_chat_session_service
 from api.v1.schemas.assistant_notes import RecallStatus
 from api.v1.schemas.system_config import AgentBackendStatusResponse
-from src.config import get_config
+from src.config import get_agent_reasoning_effort, get_config, get_effective_agent_primary_model
 from src.services.agent_chat_session_service import AgentChatSessionService
-from src.services.agent_model_service import list_agent_model_deployments
+from src.llm.generation_params import REASONING_EFFORT_VALUES
+from src.services.agent_model_service import (
+    AgentChatOverrideError,
+    apply_agent_chat_overrides,
+    list_agent_model_deployments,
+    resolve_model_context_window,
+)
 from src.storage import ChatSessionStateConflict
 
 # Tool name -> Chinese display name mapping
@@ -66,6 +72,10 @@ class ChatRequest(BaseModel):
         validation_alias=AliasChoices("skills", "strategies"),
     )
     context: Optional[Dict[str, Any]] = None  # Previous analysis context for data reuse
+    # Per-request Agent model (a ``route_model`` from GET /agent/models) and reasoning effort
+    # (low|medium|high|xhigh|max, or "none" to send none). Blank = configured AGENT_LITELLM_MODEL / AGENT_REASONING_EFFORT.
+    model: Optional[str] = Field(default=None, max_length=200)
+    reasoning_effort: Optional[str] = Field(default=None, max_length=16)
 
     @property
     def effective_skills(self) -> Optional[List[str]]:
@@ -180,12 +190,16 @@ class AgentModelDeployment(BaseModel):
     source: str
     api_base: Optional[str] = None
     deployment_name: Optional[str] = None
+    route_model: Optional[str] = None
     is_primary: bool = False
     is_fallback: bool = False
 
 
 class AgentModelsResponse(BaseModel):
     models: List[AgentModelDeployment]
+    default_model: Optional[str] = None
+    default_reasoning_effort: str = ""
+    reasoning_effort_options: List[str] = Field(default_factory=lambda: list(REASONING_EFFORT_VALUES))
 
 
 @router.get("/models", response_model=AgentModelsResponse)
@@ -201,8 +215,30 @@ async def get_agent_models():
     if selected_backend == "codex_app_server":
         return AgentModelsResponse(models=[])
     return AgentModelsResponse(
-        models=[AgentModelDeployment(**item) for item in list_agent_model_deployments(config)]
+        models=[AgentModelDeployment(**item) for item in list_agent_model_deployments(config)],
+        default_model=get_effective_agent_primary_model(config) or None,
+        default_reasoning_effort=get_agent_reasoning_effort(config),
     )
+
+
+def _apply_request_overrides(request: ChatRequest, config, backend_id: str):
+    """Config for this request with its model / reasoning effort applied (400 when not offered)."""
+    model = getattr(request, "model", None)
+    reasoning_effort = getattr(request, "reasoning_effort", None)
+    if not (model or "").strip() and not (reasoning_effort or "").strip():
+        return config
+    if backend_id == "codex_app_server":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "capability_unsupported",
+                "message": "Codex Agent does not support choosing the model or reasoning effort per request",
+            },
+        )
+    try:
+        return apply_agent_chat_overrides(config, model=model, reasoning_effort=reasoning_effort)
+    except AgentChatOverrideError as exc:
+        raise HTTPException(status_code=400, detail={"error": exc.code, "message": str(exc)}) from exc
 
 
 @router.get("/status", response_model=AgentBackendStatusResponse)
@@ -312,8 +348,9 @@ async def agent_chat(
             },
         )
     
+    config = _apply_request_overrides(request, config, backend_id)
     session_id = request.session_id or str(uuid.uuid4())
-    
+
     try:
         executor, turn, accepted, clarification = await asyncio.to_thread(
             _prepare_chat_request, request, config, session_id, session_service,
@@ -410,6 +447,110 @@ async def delete_chat_session(
     """删除指定会话"""
     count = session_service.delete_session(session_id)
     return {"deleted": count}
+
+
+class ChatContextSummaryInfo(BaseModel):
+    covered_message_count: int
+    estimated_tokens: int
+    updated_at: Optional[str] = None
+
+
+class ChatContextInfoResponse(BaseModel):
+    session_id: str
+    model: Optional[str] = None
+    context_window: Optional[int] = None
+    message_count: int
+    history_tokens: int
+    history_message_count: int
+    compression_enabled: bool
+    trigger_tokens: int
+    protected_turns: int
+    compactable_message_count: int
+    summary: Optional[ChatContextSummaryInfo] = None
+
+
+class ChatCompactResponse(BaseModel):
+    status: str
+    summarized_message_count: int
+    tokens_before: int
+    tokens_after: int
+    context: ChatContextInfoResponse
+
+
+def _context_info_response(session_id: str, config, model: Optional[str]) -> ChatContextInfoResponse:
+    from src.agent.chat_context import describe_chat_context
+
+    info = describe_chat_context(session_id, config)
+    effective_model = (model or "").strip() or get_effective_agent_primary_model(config) or None
+    return ChatContextInfoResponse(
+        session_id=session_id,
+        model=effective_model,
+        context_window=resolve_model_context_window(config, effective_model),
+        message_count=info.message_count,
+        history_tokens=info.history_tokens,
+        history_message_count=info.history_message_count,
+        compression_enabled=info.compression_enabled,
+        trigger_tokens=info.trigger_tokens,
+        protected_turns=info.protected_turns,
+        compactable_message_count=info.compactable_message_count,
+        summary=ChatContextSummaryInfo(**info.summary) if info.summary else None,
+    )
+
+
+@router.get("/chat/sessions/{session_id}/context", response_model=ChatContextInfoResponse)
+async def get_chat_session_context(session_id: str, model: Optional[str] = None):
+    """Conversation context of a session: history tokens, compression state and the model's context window.
+
+    Read-only; calls no model. ``model`` (optional) only selects which model's context window is reported.
+    """
+    config = get_config()
+    return await asyncio.to_thread(_context_info_response, session_id, config, model)
+
+
+class ChatCompactRequest(BaseModel):
+    model: Optional[str] = Field(default=None, max_length=200)
+
+
+@router.post("/chat/sessions/{session_id}/compact", response_model=ChatCompactResponse)
+async def compact_chat_session(session_id: str, request: Optional[ChatCompactRequest] = None):
+    """Manually fold the session's older messages into its rolling summary (the last protected turns stay verbatim).
+
+    Uses the same summary prompt as automatic compression and works even when
+    ``AGENT_CONTEXT_COMPRESSION_ENABLED`` is off; later turns then carry the summary plus newer messages.
+    """
+    config = get_config()
+    backend_id = _select_agent_chat_backend(config)
+    model = (request.model if request else None) or None
+    config = _apply_request_overrides(ChatRequest(message="", model=model), config, backend_id)
+    if backend_id == "codex_app_server":
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "capability_unsupported", "message": "Codex Agent does not support manual compaction"},
+        )
+
+    def run():
+        from src.agent.chat_context import compact_chat_history
+        from src.agent.llm_adapter import LLMToolAdapter
+
+        return compact_chat_history(session_id, LLMToolAdapter(config), config)
+
+    try:
+        result = await asyncio.to_thread(run)
+    except ChatSessionStateConflict as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.code, "message": str(exc)}) from exc
+    if result.status == "failed":
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "compaction_failed", "message": "摘要模型没有返回结果，会话未改动，请稍后重试"},
+        )
+    context = await asyncio.to_thread(_context_info_response, session_id, config, model)
+    return ChatCompactResponse(
+        status=result.status,
+        summarized_message_count=result.summarized_message_count,
+        tokens_before=result.tokens_before,
+        tokens_after=result.tokens_after,
+        context=context,
+    )
 
 
 class SendChatRequest(BaseModel):
@@ -586,6 +727,7 @@ async def agent_chat_stream(
     """
     config = get_config()
     backend_id = _select_agent_chat_backend(config)
+    config = _apply_request_overrides(request, config, backend_id)
 
     session_id = request.session_id or str(uuid.uuid4())
     loop = asyncio.get_running_loop()

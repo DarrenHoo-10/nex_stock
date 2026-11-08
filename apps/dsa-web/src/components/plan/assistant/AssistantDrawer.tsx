@@ -4,6 +4,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useLatestPlanRun } from '../../../hooks/useLatestPlanRun';
 import { useAgentChatStore } from '../../../stores/agentChatStore';
+import { assistantRequestOverrides, useAssistantPrefsStore } from '../../../stores/assistantPrefsStore';
 import { ASSISTANT_NO_CONTEXT, usePlanUiStore } from '../../../stores/planUiStore';
 import { GlassDrawer } from '../GlassDrawer';
 import { PlanIcon } from '../PlanIcon';
@@ -15,6 +16,7 @@ import {
   normalizeContext,
   suggestedQuestions,
 } from './assistantContext';
+import { useAssistantModels } from './useAssistantModels';
 import '../../../styles/plan-assistant.css';
 
 /** "2026-11-06" -> "11-06". */
@@ -46,6 +48,8 @@ export const AssistantDrawer: React.FC = () => {
   const stopStream = useAgentChatStore((state) => state.stopStream);
   const clearCompletionBadge = useAgentChatStore((state) => state.clearCompletionBadge);
 
+  // Validates the saved model / effort choice shared with the assistant page.
+  useAssistantModels();
   const latest = useLatestPlanRun();
   const latestTradeDate = latest.status === 'ready' ? (latest.run?.tradeDate ?? null) : null;
 
@@ -98,7 +102,11 @@ export const AssistantDrawer: React.FC = () => {
     }
     setLastQuestion(message);
     await startStream(
-      { message, context: buildStreamContext(context, latestTradeDate) },
+      {
+        message,
+        context: buildStreamContext(context, latestTradeDate),
+        ...assistantRequestOverrides(useAssistantPrefsStore.getState()),
+      },
       { skillNames: ['通用'], onAccepted: () => setInput('') },
     );
   };

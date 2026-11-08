@@ -356,6 +356,10 @@ AGENT_CONTEXT_PROTECTED_TURNS=
 
 压缩只处理 `session_id` 下用户可见的 `user` / `assistant` 文本历史，不处理 provider trace、thinking blocks、tool calls 或 tool results，也不会改变同轮工具调用透传。三档 preset 分别是 `cost`（6000 tokens / 保护 2 轮）、`balanced`（12000 / 4）和 `long_context_raw_first`（24000 / 6）；trigger / protected 留空时跟随当前 profile，显式填写时覆盖 profile。
 
+**手动压缩与上下文信息**：Web「助手」页（`/assistant`）可以随时点「压缩会话」，对应 `POST /api/v1/agent/chat/sessions/{session_id}/compact`。它使用同一套摘要提示词和覆盖校验，把最近 `AGENT_CONTEXT_PROTECTED_TURNS` 轮以外、尚未摘要的可见消息并入滚动摘要，不受触发阈值和 `AGENT_CONTEXT_COMPRESSION_ENABLED` 开关限制；没有可压缩的消息时直接返回 `nothing_to_compact`，摘要模型无结果时返回 502 且不改动会话，会话被重置或并发压缩抢先时返回 409。会话一旦有摘要，即使自动压缩关闭，后续轮次也会带「摘要 + 摘要之后的最近 20 条消息」，而不是只带最近 20 条原文；没有摘要的会话行为不变。`GET /api/v1/agent/chat/sessions/{session_id}/context` 只读，返回本轮会带上的历史 token 估算、消息数、摘要覆盖情况、自动压缩阈值，以及 LiteLLM 已知时的模型上下文窗口（未知为 `null`）；该估算只含对话历史，不含系统提示、工具结果和本轮问题。Codex Agent 不支持手动压缩（返回 400）。
+
+**按请求选择模型与思考强度**：`POST /api/v1/agent/chat` 和 `/chat/stream` 可带可选的 `model`（取 `GET /api/v1/agent/models` 返回的 `route_model`，即路由别名）和 `reasoning_effort`（`low` / `medium` / `high` / `xhigh` / `max`，或 `none` 表示本次不发送）。不带时沿用 `AGENT_LITELLM_MODEL` / `AGENT_REASONING_EFFORT`；值不在已配置模型或取值范围内时返回 400，不会静默回退。覆盖只作用于这一次请求，不改写 `.env` 和运行时配置。Codex Agent 不支持按请求覆盖（返回 400），`/agent/models` 对 Codex 返回空列表，Web 端据此禁用两个选择框。
+
 问股 single-agent 路径会额外维护一条 provider-aware trace 分轨，用于 DeepSeek V4 thinking + tool-call 的跨轮协议回放：只有同一轮同时出现 `tool_calls` 与 `reasoning_content` 时才会按当前 `session_id + provider + model` 保存最近 3 条最小协议材料，并在下一轮按原始时序插回对应可见 assistant 回复之前。该 trace 只能原样保留或整段丢弃，不参与摘要、不写入 Web 会话消息、不新增 `.env` 配置；model/provider 不匹配、锚点已被 summary 覆盖或预算不足时会整段跳过。Claude extended thinking 本轮只覆盖 adapter/storage 级 opaque `thinking` / `redacted_thinking` / `signature` blocks plumbing 与离线 fixture，不声明生产端到端支持；multi-agent trace 注入仍是 follow-up。外部协议依据包括 DeepSeek thinking mode 文档（<https://api-docs.deepseek.com/guides/thinking_mode>）和 Anthropic Claude extended thinking 文档（<https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking>），LiteLLM 兼容窗口仍以 `requirements.txt` 的 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0` 为准。
 
 ### 严格 temperature 模型兼容说明

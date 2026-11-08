@@ -27,6 +27,7 @@ const MAIN_ITEMS: OrnamentItem[] = [
   { to: '/boards', icon: 'boards', shortKey: 'plan.nav.boards', labelKey: 'layout.nav.boards' },
   { to: '/picks', icon: 'picks', shortKey: 'plan.nav.picks', labelKey: 'layout.nav.picks' },
   { to: '/mine', icon: 'mine', shortKey: 'plan.nav.mine', labelKey: 'layout.nav.mine' },
+  { to: '/assistant', icon: 'chat', shortKey: 'plan.nav.assistant', labelKey: 'layout.nav.assistant' },
 ];
 
 const SETTINGS_ITEM: OrnamentItem = {
