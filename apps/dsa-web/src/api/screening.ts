@@ -291,11 +291,27 @@ export type ScreeningScreenAccepted = {
 export type ScreeningScreenTaskStatus = {
   taskId: string;
   traceId?: string | null;
-  status: 'pending' | 'processing' | 'completed' | 'failed' | string;
+  /** `interrupted`: the service restarted while the task was running. */
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'interrupted' | string;
   progress?: number | null;
   message?: string | null;
   error?: string | null;
   result?: ScreeningScreenResponse | null;
+  // Persisted task fields (absent for tasks started before tasks were stored).
+  strategy?: string | null;
+  market?: string | null;
+  maxResults?: number | null;
+  scope?: ScreeningScope | null;
+  runId?: string | null;
+  candidateCount?: number | null;
+  createdAt?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+};
+
+export type ScreeningTaskListResponse = {
+  tasks: ScreeningScreenTaskStatus[];
+  total: number;
 };
 
 export type ScreeningRunSummary = {
@@ -422,6 +438,14 @@ export const screeningApi = {
   async getScreenTask(taskId: string): Promise<ScreeningScreenTaskStatus> {
     const response = await apiClient.get<Record<string, unknown>>(`/api/v1/screening/screen/tasks/${encodeURIComponent(taskId)}`);
     return toCamelCase<ScreeningScreenTaskStatus>(response.data);
+  },
+
+  /** Persisted screening tasks, newest first (without results). */
+  async listScreenTasks(payload: { limit?: number; offset?: number } = {}): Promise<ScreeningTaskListResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/screening/screen/tasks', {
+      params: { limit: payload.limit ?? 20, offset: payload.offset ?? 0 },
+    });
+    return toCamelCase<ScreeningTaskListResponse>(response.data);
   },
 
   async getHistory(payload: { limit?: number; strategy?: string; market?: string } = {}): Promise<ScreeningHistoryResponse> {

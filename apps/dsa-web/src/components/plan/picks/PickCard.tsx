@@ -12,22 +12,35 @@ export interface PickCardProps {
   adding: boolean;
   onAdd: (pick: PickView) => void;
   onAsk: (pick: PickView) => void;
+  /** Opens the K-line / chip chart for this stock. */
+  onOpen: (pick: PickView) => void;
 }
 
 const Dash: React.FC = () => <span className="dim">—</span>;
 
 /** One candidate: identity and horizon tags, the condition lines and the actions. */
-export const PickCard: React.FC<PickCardProps> = ({ pick, index, inWatchlist, adding, onAdd, onAsk }) => (
+export const PickCard: React.FC<PickCardProps> = ({ pick, index, inWatchlist, adding, onAdd, onAsk, onOpen }) => (
   <StaggerItem as="li" index={index} className="cand">
     <div>
-      <span className="nm">{pick.name}</span>
-      <span className="cd">{pick.code}</span>
-      {pick.price !== null || pick.changePct !== null ? (
-        <p className="px num">
-          <span>{pick.price !== null ? pick.price.toFixed(2) : '—'}</span>
-          <span className={signClass(pick.changePct)}>{formatPct(pick.changePct)}</span>
-        </p>
-      ) : null}
+      <button
+        type="button"
+        className="stock-link"
+        aria-haspopup="dialog"
+        aria-label={`查看 ${pick.name} 的 K 线和筹码`}
+        onClick={() => onOpen(pick)}
+      >
+        <span className="nm">{pick.name}</span>
+        <span className="cd">{pick.code}</span>
+        {pick.price !== null || pick.changePct !== null ? (
+          <span className="px num" style={{ display: 'flex' }}>
+            <span>{pick.price !== null ? pick.price.toFixed(2) : '—'}</span>
+            <span className={signClass(pick.changePct)}>{formatPct(pick.changePct)}</span>
+          </span>
+        ) : null}
+        <span className="go" aria-hidden="true">
+          K 线 · 筹码 ›
+        </span>
+      </button>
       {pick.horizons.length ? (
         <p className="tags">
           {pick.horizons.map((horizon) => (

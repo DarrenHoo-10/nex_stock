@@ -1909,6 +1909,7 @@ def main() -> int:
             )
             from src.services.news_schedule import build_news_background_tasks, build_news_daily_jobs
 
+            from src.services.daily_plan_schedule import build_daily_plan_jobs
             from src.services.preopen_push_schedule import build_preopen_push_jobs
 
             background_tasks.extend(
@@ -1916,6 +1917,7 @@ def main() -> int:
             )
             extra_daily_jobs = build_board_pipeline_jobs(config, config_provider=_reload_runtime_config)
             extra_daily_jobs.extend(build_industry_membership_jobs(config, config_provider=_reload_runtime_config))
+            extra_daily_jobs.extend(build_daily_plan_jobs(config, config_provider=_reload_runtime_config))
             extra_daily_jobs.extend(build_preopen_push_jobs(config, config_provider=_reload_runtime_config))
             extra_daily_jobs.extend(build_news_daily_jobs(config, config_provider=_reload_runtime_config))
             if extra_daily_jobs:

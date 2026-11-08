@@ -69,6 +69,41 @@ class BoardAnomalyListResponse(BaseModel):
     history_note: Optional[str] = None
 
 
+class FollowedBoard(BaseModel):
+    """关注的板块：关注时记下的名称和类型，加上最近一次运行里的当日数据（没有运行或已下线时为 null）。"""
+
+    id: str
+    name: str
+    board_type: BoardType
+    followed_at: Optional[str] = None
+    today: Optional[BoardRow] = None
+
+
+class FollowListResponse(BaseModel):
+    """GET /boards/follows 响应。"""
+
+    trade_date: Optional[str] = None
+    boards: List[FollowedBoard] = Field(default_factory=list)
+
+
+class RecommendationItem(BaseModel):
+    rank: int
+    reason: str = ""
+    board: BoardRow
+
+
+class RecommendationResponse(BaseModel):
+    """GET /boards/recommendations 响应。"""
+
+    trade_date: Optional[str] = None
+    status: Literal["ready", "generating", "none", "no_run"] = "none"
+    source: Optional[Literal["model", "rule"]] = Field(None, description="model 模型挑选；rule 模型不可用时按规则排序")
+    model: Optional[str] = None
+    note: Optional[str] = Field(None, description="按规则排序的原因")
+    generated_at: Optional[str] = None
+    items: List[RecommendationItem] = Field(default_factory=list)
+
+
 class Metric(BaseModel):
     label: str
     value: str

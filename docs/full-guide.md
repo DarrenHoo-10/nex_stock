@@ -1561,6 +1561,12 @@ python main.py --debug
 | `US_MOVE_INDEX_PCT` | `1.5` | 美股指数单日涨跌幅绝对值（%）达到该值视为异动 |
 | `PREOPEN_PUSH_ENABLED` | `false` | 定时模式下是否在每个交易日运行并推送「盘前版」：先用 yfinance 取隔夜美股日线写入 `stock_daily`，再对 `STOCK_LIST` 运行现有个股分析（附隔夜美股、映射板块、资讯摘要作为额外上下文），通过现有通知渠道推送，不改动 `SCHEDULE_TIME` 的每日分析 |
 | `PREOPEN_PUSH_TIME` | `08:15` | 盘前版开始运行时间（`HH:MM`，本机时区）；分析需要时间，8:15 开始约 8:45 送达。资讯摘要依赖资讯入库模块，不可用时显示「资讯暂不可用」，其余照常 |
+| `DAILY_PLAN_ENABLED` | `false` | 定时模式下是否在每个 A 股交易日按 `SCHEDULE_TIME`（设置了 `SCHEDULE_TIMES` 时按每个时间点）自动生成自选股和持仓的次日计划并推送飞书摘要；独立线程运行，不影响同一时刻的每日分析。计划基于本地已入库的最新交易日，想用当天数据请把时间设在 17:00 板块流程之后。详见 [次日计划 API 与 Web 入口](daily-plan-api.md) |
+| `POSITION_STOP_LOSS_PCT` | `10` | 次日计划的止损幅度（%），从买入价或持仓成本起算 |
+| `POSITION_MAX_TOTAL_PCT` | `100` | 总仓位上限（%，持仓市值占总资金） |
+| `POSITION_MAX_HOLDINGS` | `1` | 最多持股数；达到后新股票不再给「买入」，改为评估换股 |
+| `POSITION_MAX_SINGLE_PCT` | 空 | 单只仓位上限（%）；留空 = 总仓位上限 ÷ 最多持股数 |
+| `POSITION_STOP_MODE` | `fixed` | `fixed` 固定比例止损；`nearer` 固定比例与技术支撑取较近者 |
 | `NEWS_INTEL_AUTO_FETCH_ENABLED` | `false` | 总开关：开启后（定时模式 `SCHEDULE_ENABLED=true` 或 `--schedule` 下）定时抓取 AKShare 资讯并分类，同时保留分析前的惰性刷新 rss / newsnow 资讯源；`NEWS_INTEL_RETENTION_DAYS` 仍只管理 rss / atom / newsnow 来源，AKShare 资讯按下面两项分级保留 |
 | `NEWS_POLL_INTERVAL_MINUTES` | `10` | 交易日 08:00–15:30（中国时间）同时取财联社电报和东方财富快讯的间隔（分钟），合并去重；新浪 / 富途 / 同花顺仅在其中一个失败时备用 |
 | `NEWS_POLL_OFFHOURS_INTERVAL_MINUTES` | `30` | 其他时段和非交易日的轮询间隔（分钟） |
@@ -1760,7 +1766,8 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | `/api/v1/analysis/tasks/{task_id}/flow` | GET | 查询 active task 的运行流快照 |
 | `/api/v1/analysis/status/{task_id}` | GET | 查询任务状态 |
 | `/api/v1/screening/screen/tasks` | POST | 后台提交选股任务（需先开启 `SCREENING_ENABLED`） |
-| `/api/v1/screening/screen/tasks/{task_id}` | GET | 查询选股任务状态与完成结果 |
+| `/api/v1/screening/screen/tasks` | GET | 已保存的选股任务列表（新到旧，`limit` / `offset` 分页，不含结果） |
+| `/api/v1/screening/screen/tasks/{task_id}` | GET | 查询选股任务状态与完成结果（服务重启后从数据库读取，未完成的任务标为 `interrupted`） |
 | `/api/v1/history` | GET | 查询分析历史 |
 | `/api/v1/history/{record_id}/share-image` | GET | 生成浏览器版历史报告 PNG 分享图，需要可用的 `MD2IMG_ENGINE` |
 | `/api/v1/history/{record_id}/share-image-html` | GET | 生成供 Electron 桌面端内置 Chromium 截图的受限分享图 HTML |

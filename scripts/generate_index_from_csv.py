@@ -970,6 +970,110 @@ def run_index_only(output_path: Path, *, test: bool = False) -> List[List[Any]]:
     return merged
 
 
+# ---------------------------------------------------------------------------
+# ETF seed — build-time merge of listed A-share ETFs (search/autocomplete only).
+# ---------------------------------------------------------------------------
+_ETF_SEED_PATH = Path(__file__).parent / "stock_index_seeds" / "etf_list.csv"
+_ETF_TS_CODE_RE = re.compile(r"^(\d{6})\.(SH|SZ)$")
+
+
+def load_etf_seed(seed_path: Optional[Path] = None) -> List[Dict[str, str]]:
+    """Load ``etf_list.csv`` (``ts_code,name,full_name,index_name``).
+
+    Missing seed file returns ``[]`` so rebuilds without ETF data keep working.
+    The seed is refreshed by ``fetch_tushare_stock_list.py --etf-seed``.
+    """
+    path = seed_path or _ETF_SEED_PATH
+    if not path.is_file():
+        return []
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        return [dict(row) for row in csv.DictReader(f)]
+
+
+def build_etf_entries_from_seed(seed_rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Convert ETF seed rows into index dicts (``market=CN``, ``assetType=etf``).
+
+    Canonical is ``510300.SH``, display is the bare 6-digit code. The tracked
+    index name plus ``ETF`` (e.g. ``沪深300ETF``) is added as a text alias so a
+    search without the fund-manager prefix still matches.
+    """
+    entries: List[Dict[str, Any]] = []
+    seen: set = set()
+    for row in seed_rows:
+        ts_code = str(row.get("ts_code") or "").strip().upper()
+        name = str(row.get("name") or "").strip()
+        match = _ETF_TS_CODE_RE.match(ts_code)
+        if not match or not name or ts_code in seen:
+            continue
+        seen.add(ts_code)
+        aliases: List[str] = []
+        index_name = str(row.get("index_name") or "").strip()
+        if index_name:
+            alias = f"{index_name}ETF"
+            if alias != name:
+                aliases.append(alias)
+        pinyin_full, pinyin_abbr = generate_pinyin(name)
+        entries.append({
+            "canonicalCode": ts_code,
+            "displayCode": match.group(1),
+            "nameZh": name,
+            "pinyinFull": pinyin_full,
+            "pinyinAbbr": pinyin_abbr,
+            "aliases": aliases,
+            "market": "CN",
+            "assetType": "etf",
+            "active": True,
+            "popularity": 100,
+        })
+    entries.sort(key=lambda entry: str(entry["canonicalCode"]))
+    return entries
+
+
+def merge_etf_rows(
+    existing: List[List[Any]],
+    etf_compressed: List[List[Any]],
+) -> List[List[Any]]:
+    """Replace ETF tuples: ``stock rows + ETF rows + index rows``.
+
+    Stock and index tuples keep their original relative order; a stock tuple
+    whose canonical code is also an ETF canonical is dropped (the ETF row wins).
+    """
+    etf_codes = {str(item[0]) for item in etf_compressed}
+    stock_rows = [
+        item for item in existing
+        if not (len(item) > 7 and item[7] in {"etf", "index"}) and str(item[0]) not in etf_codes
+    ]
+    index_rows = [item for item in existing if len(item) > 7 and item[7] == "index"]
+    return stock_rows + etf_compressed + index_rows
+
+
+def run_etf_only(
+    output_path: Path,
+    *,
+    test: bool = False,
+    seed_path: Optional[Path] = None,
+) -> List[List[Any]]:
+    """Merge the ETF seed into the existing compressed JSON without rebuilding stocks."""
+    seed_rows = load_etf_seed(seed_path)
+    if not seed_rows:
+        raise ValueError(f"ETF seed is missing or empty: {seed_path or _ETF_SEED_PATH}")
+    etf_compressed = compress_index(build_etf_entries_from_seed(seed_rows))
+
+    existing = _load_existing_payload(output_path)
+    validate_stock_index_payload(existing, min_items=0)
+    merged = merge_etf_rows(existing, etf_compressed)
+    validate_stock_index_payload(merged, min_items=0)
+    # Index identities must still not collide with any active stock/ETF key.
+    index_entries = build_index_entries_from_seed(load_index_registry_seed())
+    validate_index_registry(
+        index_entries,
+        non_index_rows=[item for item in merged if not (len(item) > 7 and item[7] == "index")],
+    )
+    if not test:
+        _atomic_write_json(output_path, merged)
+    return merged
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='从 CSV 生成股票自动补全索引')
@@ -983,6 +1087,11 @@ def main():
         '--index-only',
         action='store_true',
         help='仅合并指数注册表 seed 到现有压缩 JSON，不重建股票索引'
+    )
+    parser.add_argument(
+        '--etf-only',
+        action='store_true',
+        help='仅合并 ETF seed（scripts/stock_index_seeds/etf_list.csv）到现有压缩 JSON，不重建股票索引'
     )
     parser.add_argument(
         '--test', '-t',
@@ -1025,6 +1134,18 @@ def main():
         print(f"      验证通过：{len(merged)} 条记录")
         return 0
 
+    # --etf-only: 只合并 ETF seed，不重建股票索引。
+    if args.etf_only:
+        print("数据源：etf-only（合并 ETF seed）")
+        merged = run_etf_only(output_path, test=args.test)
+        etf_count = sum(1 for item in merged if len(item) > 7 and item[7] == "etf")
+        print(f"      合并后共 {len(merged)} 条记录，其中 ETF {etf_count} 条")
+        if args.test:
+            print("      测试模式：跳过写入文件")
+        else:
+            print(f"      已写入：{output_path}")
+        return 0
+
     print(f"数据源：{args.source}")
 
     # 加载数据
@@ -1047,6 +1168,13 @@ def main():
 
     print("\n[2/5] 生成索引数据...")
     index = build_stock_index(stocks)
+
+    # 合并 ETF seed（缺失时跳过），避免全量重建擦除 ETF 行。
+    etf_entries = build_etf_entries_from_seed(load_etf_seed())
+    if etf_entries:
+        etf_codes = {entry["canonicalCode"] for entry in etf_entries}
+        index = [entry for entry in index if entry["canonicalCode"] not in etf_codes] + etf_entries
+        print(f"      合并 ETF seed：{len(etf_entries)} 只")
 
     # 合并指数注册表 seed，防止后续重建擦除 index 行。
     print("\n[2.5/5] 合并指数注册表 seed...")

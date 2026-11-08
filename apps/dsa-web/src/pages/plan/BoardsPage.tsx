@@ -2,11 +2,19 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { getParsedApiError } from '../../api/error';
+import { systemConfigApi } from '../../api/systemConfig';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
+import { StockChartDialog } from '../../components/plan/quote/StockChartDialog';
+import { targetFromCode } from '../../components/plan/quote/quoteTarget';
+import type { QuoteTarget } from '../../components/plan/quote/quoteTarget';
+import { showPlanToast } from '../../stores/planToastStore';
 import { usePlanUiStore } from '../../stores/planUiStore';
+import { useBoardFollowStore } from '../../stores/boardFollowStore';
 import {
   BOARD_DETAIL_ID,
   BoardDetailPanel,
+  BoardFocusStrip,
   BoardFilters,
   BoardList,
   MarketStrip,
@@ -15,6 +23,7 @@ import {
   PlanUnavailablePanel,
   useBoardAnomalies,
   useBoardDetail,
+  useBoardRecommendations,
 } from '../../components/plan/boards';
 import type { BoardStateFilter, BoardTypeFilter } from '../../components/plan/boards';
 import { StaggerItem } from '../../components/plan/motion';
@@ -37,6 +46,15 @@ const BoardsPage: React.FC = () => {
   const [typeFilter, setTypeFilter] = useState<BoardTypeFilter>('all');
   const [stateFilter, setStateFilter] = useState<BoardStateFilter>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // A board opened from 今日建议 / 我关注的 stays shown even when the list filters (or the list itself) do not include it.
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const recommendations = useBoardRecommendations();
+  const follows = useBoardFollowStore();
+  const loadFollows = follows.load;
+  useEffect(() => {
+    void loadFollows();
+  }, [loadFollows]);
+  const followedIds = useMemo(() => new Set(follows.boards.map((board) => board.id)), [follows.boards]);
   const [showDetail, setShowDetail] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const focusDetailRef = useRef(false);
@@ -55,10 +73,12 @@ const BoardsPage: React.FC = () => {
     [allBoards, typeFilter, stateFilter],
   );
   // The selection survives filtering while its row is visible; otherwise the first visible row is shown.
-  const activeId = visibleBoards.find((board) => board.id === selectedId)?.id ?? visibleBoards[0]?.id ?? null;
+  const activeId =
+    pinnedId ?? visibleBoards.find((board) => board.id === selectedId)?.id ?? visibleBoards[0]?.id ?? null;
   const detail = useBoardDetail(activeId);
 
   const handleSelect = useCallback((id: string) => {
+    setPinnedId(null);
     setSelectedId(id);
     if (isNarrow()) {
       focusDetailRef.current = true;
@@ -66,6 +86,14 @@ const BoardsPage: React.FC = () => {
       window.scrollTo({ top: 0 });
     }
   }, []);
+
+  const handleFocusSelect = useCallback(
+    (id: string) => {
+      handleSelect(id);
+      setPinnedId(id);
+    },
+    [handleSelect],
+  );
 
   const handleBack = useCallback(() => {
     setShowDetail(false);
@@ -94,6 +122,20 @@ const BoardsPage: React.FC = () => {
       ),
     [openAssistant, activeBoard, anomalies],
   );
+
+  const [chartTarget, setChartTarget] = useState<QuoteTarget | null>(null);
+  const handleOpenStock = useCallback(
+    (code: string, name: string) => setChartTarget(targetFromCode(code, name)),
+    [],
+  );
+  const handleAddWatch = useCallback(async (target: QuoteTarget) => {
+    try {
+      await systemConfigApi.addToWatchlist(target.watchCode);
+      showPlanToast(`已把 ${target.name ?? target.displayCode} 加入自选`);
+    } catch (error: unknown) {
+      showPlanToast(getParsedApiError(error).message || '加入自选失败，请稍后重试。');
+    }
+  }, []);
 
   const tradeDate = anomalies.status === 'ready' ? anomalies.data.tradeDate : '';
   const benchmark = anomalies.status === 'ready' ? anomalies.data.market.indexName : '中证全指';
@@ -147,16 +189,26 @@ const BoardsPage: React.FC = () => {
     } else if (detail.status === 'error') {
       detailBody = <PlanErrorPanel compact message={detail.message} onRetry={detail.reload} title="板块详情加载失败" />;
     } else {
+      const shown = detail.data;
       detailBody = (
         <BoardDetailPanel
-          key={detail.data.id}
+          key={shown.id}
           ref={headingRef}
-          detail={detail.data}
+          detail={shown}
           tradeDate={data.tradeDate}
           benchmark={benchmark}
           onBack={handleBack}
           onPick={handlePick}
           onAsk={handleAsk}
+          followed={followedIds.has(shown.id)}
+          followPending={follows.pending.has(shown.id)}
+          onToggleFollow={() => {
+            const wasFollowed = followedIds.has(shown.id);
+            void follows.toggle({ id: shown.id, name: shown.name, boardType: shown.boardType }).then((error) => {
+              showPlanToast(error ?? (wasFollowed ? `已取消关注 ${shown.name}` : `已关注 ${shown.name}`));
+            });
+          }}
+          onOpenStock={handleOpenStock}
         />
       );
     }
@@ -164,6 +216,17 @@ const BoardsPage: React.FC = () => {
     body = (
       <>
         <MarketStrip market={data.market} />
+        <BoardFocusStrip
+          recommendations={recommendations.state}
+          onRegenerate={recommendations.regenerate}
+          followed={follows.boards}
+          followStatus={follows.status}
+          followError={follows.error}
+          onRetryFollows={() => void follows.load(true)}
+          activeId={activeId}
+          onSelect={handleFocusSelect}
+          onMessage={showPlanToast}
+        />
         {data.historyNote ? (
           <p className="notice market-notice" role="note">
             <b>历史数据</b>
@@ -195,6 +258,7 @@ const BoardsPage: React.FC = () => {
                   boards={visibleBoards}
                   activeId={activeId}
                   onSelect={handleSelect}
+                  followedIds={followedIds}
                 />
               )}
             </div>
@@ -211,6 +275,11 @@ const BoardsPage: React.FC = () => {
     <>
       <PlanPageHeader title={title} subtitle={subtitle} onOpenAssistant={handleAsk} />
       <StaggerItem>{body}</StaggerItem>
+      <StockChartDialog
+        target={chartTarget}
+        onClose={() => setChartTarget(null)}
+        onAddWatch={(target) => void handleAddWatch(target)}
+      />
     </>
   );
 };

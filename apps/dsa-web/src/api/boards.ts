@@ -5,6 +5,8 @@ import type {
   BoardAnomalyQuery,
   BoardDetail,
   BoardThresholdOverrides,
+  FollowListResponse,
+  RecommendationResponse,
   ThresholdItem,
 } from '../types/boards';
 
@@ -52,4 +54,34 @@ export async function getBoardThresholds(): Promise<ThresholdItem[]> {
 export async function putBoardThresholds(overrides: BoardThresholdOverrides): Promise<ThresholdItem[]> {
   const response = await apiClient.put<unknown>('/api/v1/boards/thresholds', { overrides });
   return thresholdItems(response.data);
+}
+
+/** GET /api/v1/boards/follows — followed boards with the latest run's row. */
+export async function getBoardFollows(): Promise<FollowListResponse> {
+  const response = await apiClient.get<Record<string, unknown>>('/api/v1/boards/follows');
+  return toCamelCase<FollowListResponse>(response.data);
+}
+
+/** PUT /api/v1/boards/follows/{id} — follow (idempotent); returns the updated list. */
+export async function followBoard(boardId: string): Promise<FollowListResponse> {
+  const response = await apiClient.put<Record<string, unknown>>(`/api/v1/boards/follows/${encodeURIComponent(boardId)}`);
+  return toCamelCase<FollowListResponse>(response.data);
+}
+
+/** DELETE /api/v1/boards/follows/{id} — unfollow (idempotent); returns the updated list. */
+export async function unfollowBoard(boardId: string): Promise<FollowListResponse> {
+  const response = await apiClient.delete<Record<string, unknown>>(`/api/v1/boards/follows/${encodeURIComponent(boardId)}`);
+  return toCamelCase<FollowListResponse>(response.data);
+}
+
+/** GET /api/v1/boards/recommendations — boards picked for the next session from the latest run. */
+export async function getBoardRecommendations(): Promise<RecommendationResponse> {
+  const response = await apiClient.get<Record<string, unknown>>('/api/v1/boards/recommendations');
+  return toCamelCase<RecommendationResponse>(response.data);
+}
+
+/** POST /api/v1/boards/recommendations/refresh — regenerate in the background; poll the GET. */
+export async function refreshBoardRecommendations(): Promise<RecommendationResponse> {
+  const response = await apiClient.post<Record<string, unknown>>('/api/v1/boards/recommendations/refresh');
+  return toCamelCase<RecommendationResponse>(response.data);
 }
