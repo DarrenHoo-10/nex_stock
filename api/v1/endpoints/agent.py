@@ -223,7 +223,9 @@ async def get_agent_models():
 
 def _apply_request_overrides(request: ChatRequest, config, backend_id: str):
     """Config for this request with its model / reasoning effort applied (400 when not offered)."""
-    if not (request.model or "").strip() and not (request.reasoning_effort or "").strip():
+    model = getattr(request, "model", None)
+    reasoning_effort = getattr(request, "reasoning_effort", None)
+    if not (model or "").strip() and not (reasoning_effort or "").strip():
         return config
     if backend_id == "codex_app_server":
         raise HTTPException(
@@ -234,9 +236,7 @@ def _apply_request_overrides(request: ChatRequest, config, backend_id: str):
             },
         )
     try:
-        return apply_agent_chat_overrides(
-            config, model=request.model, reasoning_effort=request.reasoning_effort,
-        )
+        return apply_agent_chat_overrides(config, model=model, reasoning_effort=reasoning_effort)
     except AgentChatOverrideError as exc:
         raise HTTPException(status_code=400, detail={"error": exc.code, "message": str(exc)}) from exc
 
