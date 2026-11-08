@@ -208,6 +208,7 @@ const FACTOR_LABELS: Record<string, string> = {
   activity: '活跃度',
   stability: '稳定性',
   size: '规模',
+  small_cap: '小市值',
   theme_heat: '题材热度',
   topic_alignment: '题材匹配',
 };

@@ -4119,6 +4119,7 @@ def _normalize_candidate(
         "amount": _first_present(item, source, "amount"),
         "industry": item.get("industry") or source.get("industry") or "",
         "factor_scores": item.get("factor_scores") or source.get("factor_scores") or {},
+        "setup": item.get("setup") or source.get("setup") or {},
         "dsa_context": dsa_context,
         "dsa_news": dsa_news,
         "dsa_events": dsa_events,
@@ -4212,6 +4213,11 @@ def _attach_candidate_explanations(
     summary_texts = {
         str(value or "").strip() for value in summaries.values()
     } if isinstance(summaries, dict) else set()
+    setup_selected, setup_now = _setup_explanation_texts(candidate.get("setup"))
+    for text in setup_selected:
+        add_selection("setup_scan", text, "setup_scan", "observed")
+    for setup_code, text, value in setup_now:
+        why_now.append(_explanation_item(setup_code, text, source="setup_scan", quality="observed", value=value))
     if reason:
         provenance_source = str(candidate.get("reason_source") or "").strip()
         provenance_quality = str(candidate.get("reason_quality") or "").strip()
@@ -4441,6 +4447,58 @@ def _explanation_item(
     return item
 
 
+def _setup_explanation_texts(
+    setup: Any,
+) -> Tuple[List[str], List[Tuple[str, str, Optional[float]]]]:
+    """Deterministic texts for a ``surge_pullback`` setup (why selected / why now)."""
+    if not isinstance(setup, dict) or setup.get("type") != "surge_pullback":
+        return [], []
+
+    def num(key: str) -> Optional[float]:
+        value = _safe_float(setup.get(key))
+        return value if value is not None and math.isfinite(value) else None
+
+    selected: List[str] = []
+    surge_date = str(setup.get("surge_date") or "").strip()
+    change, ratio = num("surge_change_pct"), num("surge_volume_ratio")
+    if surge_date and change is not None:
+        details = [f"量能 {ratio:.1f} 倍"] if ratio is not None else []
+        turnover, prior = num("surge_turnover_rate"), num("prior_20d_change_pct")
+        if turnover is not None:
+            details.append(f"换手 {turnover:.1f}%")
+        if prior is not None:
+            details.append(f"此前20日 {prior:+.1f}%")
+        text = f"形态：{surge_date} 放量大涨 {change:+.1f}%（{'，'.join(details)}）"
+        peers = setup.get("industry_peers")
+        industry = str(setup.get("industry") or "").strip()
+        if isinstance(peers, int) and not isinstance(peers, bool) and industry:
+            text += f"；{industry} 同日另有 {peers} 只放量大涨"
+        selected.append(text)
+
+    now: List[Tuple[str, str, Optional[float]]] = []
+    line, gap = num("buy_line"), num("buy_line_gap_pct")
+    if line is not None:
+        session = str(setup.get("next_session") or "").strip() or "下一交易日"
+        ma = setup.get("buy_line_ma") or 10
+        text = f"{session} 买入价格线（MA{ma}）{line:.2f}"
+        if gap is not None:
+            text += f"，较最新收盘 {gap:+.1f}%"
+        index_k, left = setup.get("session_index"), setup.get("window_sessions_left")
+        if isinstance(index_k, int) and isinstance(left, int):
+            text += f"；为大涨后第 {index_k} 个交易日，挂单窗口剩 {left} 天"
+        now.append(("setup_buy_line", text, line))
+    cancel = num("cancel_line")
+    if cancel is not None:
+        now.append(("setup_cancel_line", f"收盘跌破 {cancel:.2f}（大涨日最低价）则放弃该股", cancel))
+    regime_change = num("regime_change_20d_pct")
+    if setup.get("regime_on") is not None:
+        state = "开启" if setup.get("regime_on") else "关闭，按规则暂不开新仓"
+        index_code = str(setup.get("regime_index") or "").strip()
+        change_text = "" if regime_change is None else f" 近20日 {regime_change:+.2f}%"
+        now.append(("setup_regime", f"市场开关：{index_code}{change_text}（{state}）", regime_change))
+    return selected, now
+
+
 def _explanation_quality(items: List[Dict[str, Any]]) -> str:
     qualities = {str(item.get("quality") or "unknown") for item in items}
     if qualities == {"observed"}:
@@ -4515,6 +4573,10 @@ def _build_candidate_reason(
     *,
     factor_weights: Optional[Dict[str, float]] = None,
 ) -> Tuple[str, str, str]:
+    setup_selected, _setup_now = _setup_explanation_texts(item.get("setup"))
+    if setup_selected:
+        return setup_selected[0], "setup_scan", "observed"
+
     summaries = item.get("post_analysis_summaries")
     if isinstance(summaries, dict):
         for analyzer, value in summaries.items():

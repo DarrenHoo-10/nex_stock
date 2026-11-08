@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增 MCP 管家（mcp_server/，python -m mcp_server）：把分析服务暴露为 Streamable HTTP MCP 接口（服务启停、个股分析、大盘复盘、历史报告），Bearer 认证，已完成 Nex 网关（nex-stock 项目）接入，文档见 docs/mcp-service.md。
 - [新功能] 新增 Windows 常驻化脚本 scripts/nex_stock_service.ps1：计划任务登录自启 MCP 管家（看门狗 5 秒自恢复）+ 防火墙仅放行 ZeroTier 网段；分析服务由管家托管并支持按需拉起。
 - [新功能] 选股硬过滤新增可选字段 `board_whitelist`（按代码前缀过滤沪深主板/创业板/科创板/北交所）与 `concept_keywords`（概念题材关键词包含匹配，快照缺概念列时放行），新增 `SCREENING_EXTRA_STRATEGIES_DIR` 用户自定义选股策略目录（与内置策略合并、同名覆盖）。
+- [新功能] 选股策略新增 `screening.setup_scan` 全市场形态预扫描（`surge_pullback`：放量大涨→回踩 MA10），按交易日缓存 Tushare 全市场日线，候选附带大涨日、下一交易日买入价格线、取消线与市场开关状态；开关关闭时默认只给观察名单并标注，可配置为空名单。
+- [新功能] 选股评分新增 `small_cap` 小市值优先因子（流通市值越小分越高，原 `size` 仍为大市值优先）。
 
 ## [3.33.0] - 2026-10-15
 

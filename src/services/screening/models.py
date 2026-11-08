@@ -57,10 +57,36 @@ class HardFilterConfig:
 
 
 @dataclass
+class SetupScanConfig:
+    """Market-wide event pre-scan (``screening.setup_scan``).
+
+    ``surge_pullback``: a volume surge within the last ``lookback_days`` sessions,
+    still above the surge-day low, not yet triggered, with a buy line at the
+    previous close's moving average. Percent values use percent units (7.0 = 7%).
+    """
+
+    type: str = "surge_pullback"
+    lookback_days: int = 10
+    surge_change_pct_min: float = 7.0
+    surge_volume_ratio_min: float = 2.0
+    surge_volume_ratio_max: float | None = 5.0
+    surge_turnover_rate_max: float | None = 10.0
+    prior_20d_change_pct_max: float | None = 20.0
+    industry_peers_min: int = 1
+    amount_20d_avg_min: float = 30_000_000.0
+    listed_days_min: int = 90
+    buy_line_ma: int = 10
+    regime_index: str = "000852.SH"
+    regime_change_20d_pct_min: float | None = 5.0
+    regime_off_action: str = "flag"
+
+
+@dataclass
 class ScreeningConfig:
     enabled: bool = False
     market_scope: list[str] = field(default_factory=lambda: ["cn"])
     hard_filters: HardFilterConfig = field(default_factory=HardFilterConfig)
+    setup_scan: SetupScanConfig | None = None
     tech_weight: float = 0.35
     factor_weights: dict[str, float] = field(default_factory=dict)
     scoring_profile: dict[str, Any] = field(default_factory=dict)
@@ -169,6 +195,8 @@ class Pick:
     daily_quality_flags: str = ""
     daily_source: str = ""
     factor_scores: dict[str, float] = field(default_factory=dict)
+    # setup_scan facts for this candidate (surge day, buy line, cancel line, regime)
+    setup: dict[str, Any] = field(default_factory=dict)
     llm_confidence: float | None = None
     llm_sector: str = ""
     llm_theme: str = ""

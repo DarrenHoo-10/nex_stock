@@ -6,9 +6,9 @@
 
 每条 explanation item 包含：
 
-- `code`：稳定原因代码，例如 `selection_reason`、`top_factors`、`news`、`quote_change_pct`、`awaiting_evidence`。
+- `code`：稳定原因代码，例如 `selection_reason`、`top_factors`、`news`、`quote_change_pct`、`awaiting_evidence`；形态预扫描候选另有 `setup_scan`、`setup_buy_line`、`setup_cancel_line`、`setup_regime`。
 - `text`：用户可见说明。
-- `source`：`screening`、`realtime_quote`、新闻来源、事件来源或 `llm`。
+- `source`：`screening`、`setup_scan`、`realtime_quote`、新闻来源、事件来源或 `llm`。
 - `quality`：`observed`、`inferred` 或 `unknown`。
 - `value`：可选数值；真实 `0` 必须原样保留。
 
@@ -25,6 +25,11 @@
 时点解释只使用带来源的证据：DSA 新闻、事件，以及 `dsa_context.quote` 中明确存在的实时行情字段。新闻与事件都必须带可解析的 `published_date`，且发布时间在最近 30 天内；解析复用 SearchService 已支持的 ISO、RFC 2822、中文日期、Unix timestamp 和相对日期格式。缺日期或过期的新闻/事件不标记为 observed，包括复用已补充候选上下文而未重新搜索的路径。候选顶层的 `change_pct=0` 或 `amount=0` 不能单独证明数据真实存在，因为旧数据源可能用 0 表示缺失；没有 quote provenance 时返回 `awaiting_evidence`，不会写成“当前涨跌幅 0%”。
 
 当 `dsa_context.quote.change_pct` 明确存在且为 `0` 时，它是合法平盘数据，返回 `value=0` 和 `quality=observed`。LLM catalyst 可作为 `inferred` 补充，但不能冒充观测事实。
+
+带 `setup`（形态预扫描，见 [选股引擎](screening-engine.md#形态预扫描setup_scan)）的候选额外返回 `setup_scan` 来源的 observed 条目，它们由全市场日线确定性计算，不依赖 LLM：
+
+- Why Selected 返回大涨日、涨幅、量能倍数、换手、此前20日涨幅与同行业共振家数；没有显式 reason 时，这条说明同时作为 `reason`，优先于后分析摘要。
+- Why Now 返回下一交易日买入价格线（`value` 为价格线）、取消线（大涨日最低价）和市场开关状态，排在新闻/行情证据之前。
 若 quote 标记 `is_stale`/`price_stale`，或质量为 partial/unavailable/stale/missing/fetch_failed，则其中数值不进入 Why Now observed；没有其他新鲜证据时返回 `awaiting_evidence`。
 
 ## 当前阶段边界

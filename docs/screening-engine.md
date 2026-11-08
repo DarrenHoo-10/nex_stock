@@ -8,6 +8,7 @@ DSA 将选股能力作为主项目的一部分维护。实现参考 [AlphaSift](
 - `src/services/screening/strategies/`：随 DSA 版本发布的策略 YAML。
 - `src/services/screening/pipeline.py`：筛选流程的直接入口。
 - `src/services/screening_service.py`：DSA 业务编排，直接调用 pipeline，负责配置、数据源上下文、响应归一化、缓存与错误映射。
+- `src/services/screening_setup_scan.py`：DSA 原生的全市场形态预扫描（`setup_scan`，见下文），由 pipeline 调用，不属于 AlphaSift 衍生代码。
 - `src/storage.py`：使用 DSA 现有 SQLAlchemy/SQLite 基础设施持久化已完成的选股运行，不另建文件数据库。
 - `api/v1/endpoints/screening.py`：`/api/v1/screening` API。
 - `apps/dsa-web/src/api/screening.ts` 与 `StockScreeningPage.tsx`：Web 调用与展示。
@@ -132,6 +133,7 @@ Tushare 的接口能力能够覆盖“题材 ∩ 沪深主板 ∩ 策略”：[`
 ```text
 策略加载
   -> 全市场快照与字段标准化
+  -> 形态预扫描（可选，策略声明 setup_scan 时）
   -> 硬过滤
   -> 因子评分与风险调整
   -> 有界候选行情/基本面/新闻与事件上下文补充
@@ -156,6 +158,63 @@ Tushare 的接口能力能够覆盖“题材 ∩ 沪深主板 ∩ 策略”：[`
 - 热点成分股并行获取东方财富与同花顺数据，并按固定数据源优先级合并，避免响应先后改变重复股票的字段：正数 `SCREENING_HOTSPOT_CALL_TIMEOUT_SEC` 作为默认 provider 整次调用的共享预算，板块列表、成分股以及引擎失败后的直接详情 fallback 都进入该预算；AkShare/东方财富的可终止子进程与同花顺 HTTP connect/read timeout 每一步只使用剩余时间，fallback 不会重新获得完整预算。直接详情 fallback 不再额外启动无法由该预算强制回收的实时行情预取，行情字段以已受控的成分股源结果为准。超时子进程会 terminate/kill 并回收；进程级并发槽限制活跃任务数量，方法返回前会等待已接纳的 worker 结束，不遗留后台线程。关闭整次调用预算时，各单源仍保留默认硬超时；单源失败不会阻止另一源和本地核心股回退。
 - “搜索最新消息”复用 DSA 原生搜索服务的 provider 优先级、SearXNG 公共实例能力、结果缓存与请求合并，同一缓存键只有 owner 可以启动供应商链；owner 未产出可缓存结果时，等待者重新竞争且未获得所有权的请求继续等待，但缓存等待、抢占和 provider 执行共用请求的绝对 deadline，不会在排队后重新获得完整超时。搜索只补充有链接的事件/催化，不从网页内容推断板块成分股；增强记录分别追加到展示路线和原始时间线，不覆盖已有 `timeline`。搜索由用户主动触发，摘要在本地确定性压缩，不调用 LLM；响应以 `available`、`no_results`、`unavailable` 区分有结果、有效空结果和超时/容量/供应商失败，Web 不会再把运行失败提示成“没有近期消息”。搜索增强仅存在于本次响应，不写入或续期共享热点详情缓存，默认详情请求不会看到搜索状态或增加搜索等待。供应商子进程在启动、执行或清理任一阶段失败时都会释放进程级容量。
 - 热点实时请求失败时优先使用 last-good cache；无缓存时返回稳定空态与明确错误。
+
+## 形态预扫描（setup_scan）
+
+快照硬过滤只看当日行情，日 K 也只对有限候选补充，回答不了"过去几个交易日谁放量大涨、现在回踩到哪"这类事件型问题。策略 YAML 可在 `screening.setup_scan` 声明全市场形态预扫描：管线在交易板块范围之后、硬过滤之前运行它，只保留仍在有效期内的形态候选，之后照常进入硬过滤、因子评分、LLM 重排和风险/组合流程。
+
+目前支持 `type: surge_pullback`（放量大涨 → 回踩均线），字段与默认值：
+
+| 字段 | 默认 | 含义 |
+| --- | --- | --- |
+| `lookback_days` | 10 | 大涨后多少个交易日内仍可挂单（1–30） |
+| `surge_change_pct_min` | 7.0 | 大涨日收盘涨幅下限（%），涨停亦满足 |
+| `surge_volume_ratio_min` / `surge_volume_ratio_max` | 2.0 / 5.0 | 大涨日成交量相对前 5 日均量的倍数区间；上限设 `null` 即不限 |
+| `surge_turnover_rate_max` | 10.0 | 大涨日换手率上限（%，Tushare `daily_basic`），缺失视为不通过 |
+| `prior_20d_change_pct_max` | 20.0 | 大涨前 20 个交易日涨幅上限（%） |
+| `industry_peers_min` | 1 | 同一 Tushare 行业当日另有几只放量大涨（同样排除 ST、次新和低流动性） |
+| `amount_20d_avg_min` | 30000000 | 大涨前 20 日日均成交额下限（元） |
+| `listed_days_min` | 90 | 上市天数下限 |
+| `buy_line_ma` | 10 | 买入价格线：前一交易日收盘计算的 N 日均线 |
+| `regime_index` / `regime_change_20d_pct_min` | `000852.SH` / 5.0 | 市场开关：指数近 20 个交易日涨幅须大于阈值（%）；阈值设 `null` 即关闭开关 |
+| `regime_off_action` | `flag` | 开关关闭时：`flag` 仍返回观察名单并逐只加风险标签，`block` 返回空名单 |
+
+规则语义：
+
+- 同一股票出现更新的放量大涨时，以最新一次为准，旧形态作废。
+- 大涨后任一收盘跌破大涨日最低价，形态作废。
+- 开关开启的交易日若最低价触及前一日价格线，视为已按规则买入，不再重复列出；开关关闭的交易日不挂单，不算触发。
+- 窗口内按 `pre_close` 链后复权计算，价格线和取消线换算回最新不复权价，除权前后不会错位。
+- 北交所以及名称含 ST/退的股票不参与扫描；快照 `exclude_st` 仍会再过滤一次。
+
+候选的 `setup` 字段记录：大涨日、涨幅、量能倍数、换手、同行业共振家数、下一交易日是大涨后第几天、剩余窗口、`buy_line`、`cancel_line`、`next_session` 和开关状态。这些字段会转成 `setup_scan` 来源的解释条目（见[选股解释契约](screening-explanations.md)）。开关状态和扫描统计排在运行 warnings 最前面。
+
+数据与请求量：
+
+- 需要 `TUSHARE_TOKEN`。扫描复用 DSA 的 Tushare HTTP 客户端，接入地址可用 `TUSHARE_HTTP_URL` 覆盖。未配置或接口失败时，该策略运行失败并给出原因，不会退回未扫描的快照名单。
+- 全市场日线（`daily`）和换手（`daily_basic`）按交易日各请求一次，缓存到 `<SCREENING_DATA_DIR>/market_daily/`，已缓存的交易日不再请求。当日数据未发布（空结果）时不写缓存，回退到上一交易日。
+- 首次运行约 50 次请求（≤5 次/秒）。之后每天约 3–5 次：交易日历、指数，以及新增交易日；股票列表缓存 24 小时。
+
+示例（放在 `SCREENING_EXTRA_STRATEGIES_DIR` 中）：
+
+```yaml
+name: surge_pullback
+display_name: 放量大涨·回踩MA10
+description: 强市中温和放量大涨且板块共振的个股，按前一日 MA10 挂限价单买入
+screening:
+  enabled: true
+  market_scope: [cn]
+  setup_scan:
+    type: surge_pullback
+    regime_off_action: flag
+  hard_filters:
+    exclude_st: true
+  factor_weights:
+    small_cap: 1.0
+  max_output: 20
+```
+
+评分新增 `small_cap` 因子：流通市值越小分数越高，缺流通市值时用总市值，可与其他因子组合；原 `size` 因子仍是大市值优先。
 
 ## 结果轮换
 

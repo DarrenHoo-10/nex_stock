@@ -14,6 +14,7 @@ import yaml
 from src.services.screening.models import (
     HardFilterConfig,
     ScreeningConfig,
+    SetupScanConfig,
     Strategy,
     StrategyInfo,
     StrategyStyle,
@@ -44,8 +45,12 @@ _SCREENING_KEYS = {
     "event_profile",
     "ranking_hints",
     "max_output",
+    "setup_scan",
 }
 _HARD_FILTER_KEYS = set(HardFilterConfig.__dataclass_fields__.keys())
+_SETUP_SCAN_KEYS = set(SetupScanConfig.__dataclass_fields__.keys())
+_SETUP_SCAN_TYPES = {"surge_pullback"}
+_SETUP_REGIME_OFF_ACTIONS = {"flag", "block"}
 _SCORING_PROFILE_KEYS = {
     "momentum_base",
     "momentum_intraday_slope",
@@ -232,6 +237,7 @@ def load_strategy(filepath: Path) -> Strategy:
         ),
         ranking_hints=screening_data.get("ranking_hints", ""),
         max_output=screening_data.get("max_output", 5),
+        setup_scan=_load_setup_scan(screening_data, filepath),
     )
 
     return Strategy(
@@ -664,6 +670,9 @@ def _strategy_data_requirements(strategy: Strategy, *, daily_required: bool) -> 
     requirements = ["snapshot"]
     if daily_required:
         requirements.append("daily_k")
+    if strategy.screening.setup_scan is not None:
+        # full-market daily bars by trade date (Tushare), see screening_setup_scan
+        requirements.append("market_daily_tushare")
     factors = set(strategy.screening.factor_weights)
     if factors & {"theme_heat", "topic_alignment"}:
         requirements.append("industry_context")
@@ -1024,6 +1033,61 @@ def _match_many(
         else:
             missing.append(f"{label}:{item}")
     return score
+
+
+def _load_setup_scan(screening_data: dict, filepath: Path) -> SetupScanConfig | None:
+    """Parse and validate the optional ``screening.setup_scan`` section."""
+    raw = screening_data.get("setup_scan")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid setup_scan section in strategy file: {filepath}")
+    _raise_unknown_keys(raw, _SETUP_SCAN_KEYS, f"setup_scan section of {filepath.name}")
+    try:
+        config = SetupScanConfig(**raw)
+    except TypeError as exc:
+        raise ValueError(f"Invalid setup_scan section in strategy file: {filepath}: {exc}") from exc
+
+    context = f"setup_scan section of {filepath.name}"
+    if config.type not in _SETUP_SCAN_TYPES:
+        raise ValueError(f"Unsupported type in {context}: {config.type!r} (supported: surge_pullback)")
+    if config.regime_off_action not in _SETUP_REGIME_OFF_ACTIONS:
+        raise ValueError(f"Invalid regime_off_action in {context}: {config.regime_off_action!r} (flag|block)")
+    for key, low, high in (
+        ("lookback_days", 1, 30),
+        ("industry_peers_min", 0, 50),
+        ("listed_days_min", 0, 3650),
+        ("buy_line_ma", 2, 60),
+    ):
+        value = getattr(config, key)
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ValueError(f"Invalid {key} in {context}: expected integer {low}-{high}, got {value!r}")
+    for key in (
+        "surge_change_pct_min",
+        "surge_volume_ratio_min",
+        "surge_volume_ratio_max",
+        "surge_turnover_rate_max",
+        "prior_20d_change_pct_max",
+        "amount_20d_avg_min",
+        "regime_change_20d_pct_min",
+    ):
+        value = getattr(config, key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"Invalid {key} in {context}: expected a number, got {value!r}")
+        setattr(config, key, float(value))
+    if config.surge_volume_ratio_min <= 0 or config.amount_20d_avg_min < 0:
+        raise ValueError(f"Invalid thresholds in {context}: volume ratio must be > 0 and amount >= 0")
+    if (
+        config.surge_volume_ratio_max is not None
+        and config.surge_volume_ratio_max < config.surge_volume_ratio_min
+    ):
+        raise ValueError(f"Invalid {context}: surge_volume_ratio_max < surge_volume_ratio_min")
+    config.regime_index = str(config.regime_index or "").strip().upper()
+    if not config.regime_index:
+        raise ValueError(f"Invalid regime_index in {context}: empty")
+    return config
 
 
 def _raise_unknown_keys(data: dict, allowed_keys: set[str], context: str) -> None:
