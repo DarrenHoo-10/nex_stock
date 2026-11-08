@@ -87,6 +87,17 @@ describe('IntradayPanel', () => {
     expect(await screen.findByRole('img', { name: /七匹狼/ })).toBeInTheDocument();
   });
 
+  it('shows the backend reason for a 503 instead of the generic network text', async () => {
+    const message = '历史交易日的分时来自必盈数据源，还没有配置必盈 licence：请在设置的数据源里填写 BIYING_LICENCE 后重试。';
+    getIntraday.mockRejectedValue({
+      response: { status: 503, data: { error: 'intraday_unavailable', message, reason: 'biying_not_configured' } },
+    });
+    renderPanel();
+
+    expect(await screen.findByText(new RegExp(message.slice(0, 20)))).toBeInTheDocument();
+    expect(screen.queryByText(/代理、DNS/)).not.toBeInTheDocument();
+  });
+
   it('shows the empty state for a day without bars', async () => {
     getIntraday.mockResolvedValue({ data: [], isStale: false });
     renderPanel();

@@ -358,8 +358,9 @@ class TestSessionBars(unittest.TestCase):
         biying = MagicMock(spec=BiyingFetcher)
         biying.get_history_bars.return_value = []
         service, _, _ = _service(biying=biying)
-        with self.assertRaises(IntradayDataUnavailable):
+        with self.assertRaises(IntradayDataUnavailable) as empty:
             service.get_session_bars("600000", "2026-11-05")
+        self.assertEqual(empty.exception.reason, "no_bars")
 
         failing = MagicMock(spec=BiyingFetcher)
         failing.get_history_bars.side_effect = DataFetchError("Biying HTTP 500")
@@ -367,11 +368,39 @@ class TestSessionBars(unittest.TestCase):
         with self.assertRaises(IntradayDataUnavailable) as caught:
             service2.get_session_bars("600000", "2026-11-05")
         self.assertIn("Biying HTTP 500", str(caught.exception))
+        self.assertEqual(caught.exception.reason, "source_failed")
 
     def test_missing_biying_is_unavailable_not_a_crash(self):
         service, _, _ = _service()
-        with self.assertRaises(IntradayDataUnavailable):
+        with self.assertRaises(IntradayDataUnavailable) as caught:
             service.get_session_bars("600000", "2026-11-05")
+        self.assertEqual(caught.exception.reason, "biying_not_configured")
+
+    def test_past_date_needs_biying_even_when_tushare_is_configured(self):
+        service, _, _ = _service(tushare=_tushare(_by_pattern(GOOD_FRAMES)))
+        with self.assertRaises(IntradayDataUnavailable) as caught:
+            service.get_session_bars("600000", "2026-11-05")
+        self.assertEqual(caught.exception.reason, "biying_not_configured")
+
+    def test_today_reason_separates_missing_sources_empty_data_and_failures(self):
+        nothing, _, _ = _service()
+        with self.assertRaises(IntradayDataUnavailable) as unconfigured:
+            nothing.get_session_bars("600000", "2026-11-06")
+        self.assertEqual(unconfigured.exception.reason, "not_configured")
+
+        quiet = _tushare(_by_pattern(GOOD_FRAMES))
+        quiet._api.rt_min_daily.return_value = pd.DataFrame()
+        service, _, _ = _service(tushare=quiet)
+        with self.assertRaises(IntradayDataUnavailable) as empty:
+            service.get_session_bars("600000", "2026-11-06")
+        self.assertEqual(empty.exception.reason, "no_bars")
+
+        broken = _tushare(_by_pattern(GOOD_FRAMES))
+        broken._api.rt_min_daily.side_effect = DataFetchError("rt_min_daily HTTP 500")
+        service, _, _ = _service(tushare=broken)
+        with self.assertRaises(IntradayDataUnavailable) as failed:
+            service.get_session_bars("600000", "2026-11-06")
+        self.assertEqual(failed.exception.reason, "source_failed")
 
     def test_malformed_and_future_dates_are_rejected_before_any_fetch(self):
         biying = MagicMock(spec=BiyingFetcher)

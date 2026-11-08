@@ -76,6 +76,28 @@ def test_no_source_is_503_without_leaking_provider_detail(monkeypatch) -> None:
     assert "SECRET-123" not in str(caught.value.detail)
 
 
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("biying_not_configured", "BIYING_LICENCE"),
+        ("not_configured", "Tushare"),
+        ("no_bars", "停牌"),
+        ("source_failed", "稍后重试"),
+        ("unknown_reason", "稍后重试"),
+    ],
+)
+def test_503_carries_the_reason_and_its_message(monkeypatch, reason, expected) -> None:
+    _patch_service(monkeypatch, _service_with(error=IntradayDataUnavailable("detail", reason=reason)))
+    with pytest.raises(HTTPException) as caught:
+        stocks_endpoint.get_stock_intraday("002029", date="2026-09-22")
+    detail = caught.value.detail
+    assert caught.value.status_code == 503
+    assert detail["error"] == "intraday_unavailable"
+    assert detail["reason"] == reason
+    assert expected in detail["message"]
+    assert not isinstance(detail.get("detail"), dict)  # the Web parser would read a detail object as the message
+
+
 def test_unexpected_error_is_500(monkeypatch) -> None:
     _patch_service(monkeypatch, _service_with(error=RuntimeError("boom")))
     with pytest.raises(HTTPException) as caught:
