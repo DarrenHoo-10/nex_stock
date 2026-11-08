@@ -26,7 +26,6 @@ from src.services.screening.source_guard import call_with_timeout, parse_source_
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_CACHE_VERSION = 1
-_DEFAULT_TUSHARE_HTTP_URL = "http://api.waditu.com"
 _EM_REQUEST_MIN_INTERVAL_SECONDS = 1.0
 _EM_REQUEST_JITTER_SECONDS = 0.3
 _SOURCE_HEALTH_FAILURE_THRESHOLD = 3
@@ -582,6 +581,8 @@ def _fetch_tushare() -> pd.DataFrame:
 
     Tushare is not a real-time source here. It is used as a resilient fallback
     by joining the latest open trading day's daily quote and daily_basic data.
+    An empty table stops the fetch at once so the caller falls back to the
+    next snapshot source.
     """
     token = (
         os.getenv("TUSHARE_TOKEN", "").strip()
@@ -590,48 +591,47 @@ def _fetch_tushare() -> pd.DataFrame:
     if not token:
         raise RuntimeError("tushare requires TUSHARE_TOKEN")
 
-    import tushare as ts
-
-    pro = ts.pro_api(token)
-    _configure_tushare_client(pro, token=token)
+    pro = _build_tushare_client(token)
     trade_date = _resolve_tushare_trade_date(pro)
     daily = pro.daily(
         trade_date=trade_date,
         fields="ts_code,trade_date,close,pct_chg,amount",
     )
+    if daily is None or daily.empty:
+        raise RuntimeError(f"tushare daily returned empty data for {trade_date}")
     daily_basic = pro.daily_basic(
         trade_date=trade_date,
         fields="ts_code,turnover_rate,volume_ratio,pe,pb,total_mv,circ_mv",
     )
+    if daily_basic is None or daily_basic.empty:
+        raise RuntimeError(f"tushare daily_basic returned empty data for {trade_date}")
     stock_basic = pro.stock_basic(
         exchange="",
         list_status="L",
         fields="ts_code,symbol,name,industry",
     )
-
-    if daily is None or daily.empty:
-        raise RuntimeError(f"tushare daily returned empty data for {trade_date}")
-    if daily_basic is None or daily_basic.empty:
-        raise RuntimeError(f"tushare daily_basic returned empty data for {trade_date}")
+    if stock_basic is None or stock_basic.empty:
+        raise RuntimeError("tushare stock_basic returned empty data")
 
     return _prepare_tushare_snapshot(daily, daily_basic, stock_basic)
 
 
-def _configure_tushare_client(pro: object, *, token: str) -> None:
-    try:
-        setattr(pro, "_DataApi__token", token)
-    except Exception:
-        pass
+def _build_tushare_client(token: str):
+    """Return DSA's Tushare Pro HTTP client, the one ``data_provider`` uses.
 
-    http_url = (
-        os.getenv("TUSHARE_API_URL", "").strip()
-        or os.getenv("TUSHARE_HTTP_URL", "").strip()
-        or _DEFAULT_TUSHARE_HTTP_URL
-    )
-    try:
-        setattr(pro, "_DataApi__http_url", http_url)
-    except Exception:
-        pass
+    The client posts to the classic endpoint with ``api_name`` in the JSON
+    body, so ``TUSHARE_HTTP_URL`` means the same thing here as in
+    ``data_provider`` (unset: ``http://api.tushare.pro``). It raises on HTTP
+    and API errors. The tushare SDK returns an empty frame on HTTP errors,
+    and tushare>=1.4 appends ``/{api_name}`` to its URL, so overriding the
+    SDK URL emptied every call without an error.
+    """
+    from data_provider.tushare_fetcher import _TushareHttpClient, _resolve_tushare_http_url
+
+    api_url = _resolve_tushare_http_url()
+    if api_url:
+        return _TushareHttpClient(token=token, api_url=api_url)
+    return _TushareHttpClient(token=token)
 
 
 def _resolve_tushare_trade_date(pro) -> str:

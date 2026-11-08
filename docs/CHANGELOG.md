@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增 MCP 管家（mcp_server/，python -m mcp_server）：把分析服务暴露为 Streamable HTTP MCP 接口（服务启停、个股分析、大盘复盘、历史报告），Bearer 认证，已完成 Nex 网关（nex-stock 项目）接入，文档见 docs/mcp-service.md。
 - [新功能] 新增 Windows 常驻化脚本 scripts/nex_stock_service.ps1：计划任务登录自启 MCP 管家（看门狗 5 秒自恢复）+ 防火墙仅放行 ZeroTier 网段；分析服务由管家托管并支持按需拉起。
 - [新功能] 选股硬过滤新增可选字段 `board_whitelist`（按代码前缀过滤沪深主板/创业板/科创板/北交所）与 `concept_keywords`（概念题材关键词包含匹配，快照缺概念列时放行），新增 `SCREENING_EXTRA_STRATEGIES_DIR` 用户自定义选股策略目录（与内置策略合并、同名覆盖）。
+- [修复] 选股的 Tushare 快照与日 K 改用 DSA 数据源层的 Tushare HTTP 客户端：默认请求官方经典端点 `http://api.tushare.pro`，`TUSHARE_HTTP_URL` 与数据源层含义一致。修复 tushare SDK 1.4 下覆盖接入地址后每次请求都静默返回空表、即使配置了 `TUSHARE_TOKEN` 也总是回退到 Sina 的问题。HTTP 错误、接口错误码和空表现在按来源失败处理并继续降级；选股不再读取未文档化的 `TUSHARE_API_URL`。
 
 ## [3.33.0] - 2026-10-15
 
