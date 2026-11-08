@@ -45,47 +45,21 @@ export function persistUiLanguage(storage: Storage | null, language: UiLanguage)
   }
 }
 
-function getBrowserUiLanguage(navigatorLike?: Pick<Navigator, 'language' | 'languages'> | null): UiLanguage {
-  const languageCandidates = [
-    ...(Array.isArray(navigatorLike?.languages) ? navigatorLike?.languages ?? [] : []),
-    navigatorLike?.language,
-  ].filter((language): language is string => Boolean(language));
-
-  for (const candidate of languageCandidates) {
-    const normalized = candidate.toLowerCase();
-    if (normalized.startsWith('zh')) {
-      return 'zh';
-    }
-    if (normalized.startsWith('en')) {
-      return 'en';
-    }
-  }
-
-  return 'zh';
-}
+/** Default UI language. The browser language is not consulted: the product UI is Chinese unless the user switches. */
+export const DEFAULT_UI_LANGUAGE: UiLanguage = 'zh';
 
 export function resolveInitialUiLanguage({
   storage,
-  navigatorLike,
 }: {
   storage?: Storage | null;
-  navigatorLike?: Pick<Navigator, 'language' | 'languages'> | null;
 } = {}): UiLanguage {
-  const stored = getStoredUiLanguage(storage);
-  if (stored) {
-    return stored;
-  }
-
-  return getBrowserUiLanguage(navigatorLike);
+  return getStoredUiLanguage(storage) ?? DEFAULT_UI_LANGUAGE;
 }
 
 export function getRuntimeInitialLanguage(): UiLanguage {
   if (typeof window === 'undefined') {
-    return 'zh';
+    return DEFAULT_UI_LANGUAGE;
   }
 
-  return resolveInitialUiLanguage({
-    storage: getUiLanguageStorage(),
-    navigatorLike: window.navigator,
-  });
+  return resolveInitialUiLanguage({ storage: getUiLanguageStorage() });
 }

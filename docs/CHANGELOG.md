@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 设置页「模型」改为渠道列表 + 编辑区：在同一页添加、编辑、停用、删除渠道（名称、接口地址、API 格式、API Key），获取模型、手动添加、搜索并逐个打开模型；用途里新增轻量模型和三项推理强度；正在使用的模型不能关闭，所在渠道不能停用或删除。
+- [改进] 模型列表获取支持 Anthropic Messages 格式（`{base}/v1/models`，`x-api-key` + `anthropic-version`）。
+- [改进] 新页面不再跳转旧页面：去掉导航「更多」、模型页「高级设置」、助手「在问股页打开」和选股页「去选股工具开启」；飞书应用机器人、群 Webhook 与开启选股改为在新页面直接设置，用户中心登录时导航提供「退出」。
+- [改进] Web 界面默认中文，不再按浏览器语言切换英文；明确切换过的语言仍然保留。
+
 - [新功能] 支持 NexorAI 用户中心登录：`AUTH_MODE=user_center` 时 Web 与 API 改用 nex_user 的共享会话（`user_session`）校验身份，默认只允许管理员（`USER_CENTER_REQUIRED_ROLE`），写操作校验来源与 CSRF 令牌；新增 `/api/session`、`/api/login`、`/api/logout`，前端未登录时跳转用户中心、非管理员显示无权限页；默认 `AUTH_MODE=local` 行为不变。新增配置 `AUTH_MODE`、`USER_CENTER_URL`、`PUBLIC_ORIGIN`、`USER_CENTER_REQUIRED_ROLE`。
 
 - [新功能] 新增部署模板：`deploy/tokyo/`（单容器同时运行 Web API 与定时任务，`.env` 所在目录挂载可写）与 `deploy/seoul/`（nginx 站点：静态前端 + `/api` 反向代理，含证书签发用的 HTTP 引导配置）；Docker 镜像补齐 `scripts/` 与 `templates/`。

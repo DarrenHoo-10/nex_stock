@@ -55,7 +55,7 @@
 | `/preferences` | 设置：仓位规则、模型、异动阈值、运行和推送、数据状态；支持 `?tab=` 深链 | `/system/config`、`/boards/thresholds`、`/plan/*`、`/system/scheduler/status`、`/data/overview` |
 | `/home` | 原首页（从 `/` 移到这里） | 不变 |
 
-- 原有页面（首页、问股、持仓台账、信号、选股工具、回测、提醒、数据中心、用量、高级设置 `/settings`）路由不变，在新导航的「更多」里打开。桌面端深链 `/settings?category=system#desktop-version-info` 不受影响。
+- 新页面不再链接任何旧页面：导航只有异动、选股、我的、设置（用户中心登录时多一个「退出」）；模型渠道、飞书推送、开启选股都在新页面里完成。原有页面（首页、问股、持仓台账、信号、选股工具、回测、提醒、数据中心、用量、`/settings`）的路由暂时保留，只能直接输入地址打开；桌面端深链 `/settings?category=system#desktop-version-info` 不受影响。
 - 登录后默认进入 `/mine`。
 - 新页面使用深色玻璃样式，样式只作用于 `.plan-shell` 容器，旧页面主题不变；动效遵守系统「减少动态效果」设置。
 
@@ -72,8 +72,10 @@
 设置页通过现有 `/system/config` 读写以下键（带 `config_version` 冲突检查，掩码值保持不变）：
 
 - 仓位规则：`POSITION_STOP_LOSS_PCT`、`POSITION_MAX_TOTAL_PCT`、`POSITION_MAX_HOLDINGS`、`POSITION_MAX_SINGLE_PCT`、`POSITION_STOP_MODE`
-- 运行和推送：`SCHEDULE_TIME`、`DAILY_PLAN_ENABLED`；飞书只显示「已配置 / 未配置」，不显示 Webhook
-- 模型（按用途映射现有键）：分析模型 `LITELLM_MODEL`、助手模型 `AGENT_LITELLM_MODEL`（空表示跟随分析模型）、备用模型 `LITELLM_FALLBACK_MODELS`、识图模型 `VISION_MODEL`、温度 `LLM_TEMPERATURE`；渠道与密钥仍在高级设置中编辑
+- 运行和推送：`SCHEDULE_TIME`、`DAILY_PLAN_ENABLED`；飞书应用机器人 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_STREAM_ENABLED`（长连接在服务启动时建立，改动后需重启服务），群 Webhook `FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_WEBHOOK_KEYWORD`；密钥类字段不回显，留空表示不修改
+- 模型（按用途映射现有键）：分析模型 `LITELLM_MODEL`、助手模型 `AGENT_LITELLM_MODEL`（空表示跟随分析模型）、备用模型 `LITELLM_FALLBACK_MODELS`、轻量模型 `LITELLM_LIGHT_MODEL`、识图模型 `VISION_MODEL`、温度 `LLM_TEMPERATURE`，推理强度 `LLM_REASONING_EFFORT`、`AGENT_REASONING_EFFORT`、`LITELLM_LIGHT_REASONING_EFFORT`
+- 模型渠道（同一页左侧渠道列表、右侧编辑）：`LLM_CHANNELS` 与 `LLM_<NAME>_PROTOCOL`、`_BASE_URL`、`_API_KEY(S)`、`_ENABLED`、`_MODELS`（只保存打开的模型）；渠道名只能用小写字母、数字和下划线（`darren-cpa` 保存为 `darren_cpa`）；OpenAI 兼容、DeepSeek、Anthropic Messages 格式可经 `POST /system/config/llm/discover-models` 获取模型列表，其他格式手动添加；正在被某个用途使用的模型不能关闭，所在渠道不能停用或删除
+- 选股：`SCREENING_ENABLED`（选股页「开启选股」按钮）
 - 异动阈值：`BOARD_ANOMALY_THRESHOLDS`（经 `PUT /boards/thresholds` 写入）
 
 `BOARD_ANOMALY_THRESHOLDS` 已随板块异动服务落地：值是一个 JSON 对象，只写被覆盖的键（空表示全部默认），字典型阈值可只写其中的字段（如 `{"excess_floor": {"concept": 3}}`）；它在 `src/core/config_registry.py` 中列为不在通用设置页显示的键（由异动阈值页面通过 `PUT /boards/thresholds` 编辑），`.env.example` 里有说明。`POSITION_*`、`DAILY_PLAN_*` 的默认值、注册与 `.env.example` 说明随次日计划服务一起落地；在此之前设置页按普通值读写，保存后不影响任何现有流程。

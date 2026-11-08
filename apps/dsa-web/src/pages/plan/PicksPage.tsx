@@ -1,8 +1,9 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import type { ScreeningRunSummary, ScreeningScope } from '../../api/screening';
 import { toApiErrorMessage } from '../../api/error';
+import { systemConfigApi } from '../../api/systemConfig';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
 import { SegmentedControl, StaggerItem } from '../../components/plan/motion';
@@ -47,13 +48,32 @@ function scopeTopicNames(scope: ScreeningScope | undefined): string[] {
 /** 机会选股: strategy chips, optional board scope, run -> progress -> candidate cards. */
 const PicksPage: React.FC = () => {
   const { t } = useUiLanguage();
-  const navigate = useNavigate();
+  const [enabling, setEnabling] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const boardId = searchParams.get('board');
   const title = t('plan.page.picks.title');
   const openAssistant = usePlanUiStore((state) => state.openAssistant);
 
   const setup = usePickSetup();
+
+  /** Switches SCREENING_ENABLED on in the config (same key the backend checks) and reloads the strategy list. */
+  const enableScreening = async () => {
+    setEnabling(true);
+    try {
+      const current = await systemConfigApi.getConfig(false);
+      await systemConfigApi.update({
+        configVersion: current.configVersion,
+        items: [{ key: 'SCREENING_ENABLED', value: 'true' }],
+        reloadNow: true,
+      });
+      showPlanToast('选股已开启');
+      setup.reload();
+    } catch (error) {
+      showPlanToast(toApiErrorMessage(error, '没能开启选股，请稍后重试'));
+    } finally {
+      setEnabling(false);
+    }
+  };
   const board = useBoardDetail(boardId);
   const watchlist = useWatchlist();
   const { state: run, start, restoreLatest, skipRestore } = usePickRun();
@@ -291,9 +311,15 @@ const PicksPage: React.FC = () => {
       <div className="empty sm">
         <h3>选股功能未就绪</h3>
         <p>{setup.message}</p>
-        <button type="button" className="btn sm" onClick={() => navigate('/screening')}>
-          去选股工具开启
-        </button>
+        {setup.canEnable ? (
+          <button type="button" className="btn sm" disabled={enabling} onClick={() => void enableScreening()}>
+            {enabling ? '正在开启…' : '开启选股'}
+          </button>
+        ) : (
+          <button type="button" className="btn sm" onClick={setup.reload}>
+            重试
+          </button>
+        )}
       </div>
     );
   } else if (strategies.length === 0) {

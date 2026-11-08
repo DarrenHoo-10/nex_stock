@@ -227,16 +227,21 @@ describe('ModelsPanel', () => {
   );
 
   it('edits roles over the existing keys and never shows secrets', async () => {
+    post.mockResolvedValue({ data: { success: true, message: 'ok', models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-lite'] } });
     const onSave = vi.fn<(items: Array<{ key: string; value: string }>) => Promise<SaveOutcome>>(async () => ({ ok: true }));
     const { container } = wrap(<ModelsPanel config={view} onSave={onSave} onReload={vi.fn()} />);
     expect(container.textContent).not.toContain('******');
-    expect(screen.getByText('密钥已配置', { exact: false })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '高级设置' })).toHaveAttribute('href', '/settings?category=ai_model');
+    expect(screen.getByLabelText('API Key')).toHaveValue('');
+    expect(screen.getByLabelText('API Key')).toHaveAttribute('placeholder', '已保存，留空表示不修改');
+    expect(screen.queryByRole('link', { name: '高级设置' })).not.toBeInTheDocument();
+    expect(container.querySelector('a[href^="/settings"]')).toBeNull();
 
     // Picking the current fallback as primary removes it from the fallback list.
     fireEvent.change(screen.getByLabelText('分析模型'), { target: { value: 'gemini/gemini-3-flash-preview' } });
     fireEvent.change(screen.getByLabelText('助手模型'), { target: { value: 'deepseek/deepseek-v4-pro' } });
     fireEvent.change(screen.getByLabelText('识图模型'), { target: { value: 'gemini/gemini-3-flash-preview' } });
+    fireEvent.change(screen.getByLabelText('轻量模型'), { target: { value: 'deepseek/deepseek-v4-flash' } });
+    fireEvent.change(screen.getByLabelText('推理强度（备用模型同样使用）'), { target: { value: 'max' } });
     fireEvent.click(screen.getByRole('button', { name: '保存模型设置' }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
@@ -244,8 +249,104 @@ describe('ModelsPanel', () => {
       { key: 'LITELLM_MODEL', value: 'gemini/gemini-3-flash-preview' },
       { key: 'LITELLM_FALLBACK_MODELS', value: '' },
       { key: 'AGENT_LITELLM_MODEL', value: 'deepseek/deepseek-v4-pro' },
+      { key: 'LITELLM_LIGHT_MODEL', value: 'deepseek/deepseek-v4-flash' },
       { key: 'VISION_MODEL', value: 'gemini/gemini-3-flash-preview' },
+      { key: 'LLM_REASONING_EFFORT', value: 'max' },
     ]);
+  });
+
+  it('lists fetched models for a saved channel and blocks switching off a model in use', async () => {
+    post.mockResolvedValue({ data: { success: true, message: 'ok', models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-lite'] } });
+    const onSave = vi.fn<(items: Array<{ key: string; value: string }>) => Promise<SaveOutcome>>(async () => ({ ok: true }));
+    wrap(<ModelsPanel config={view} onSave={onSave} onReload={vi.fn()} />);
+
+    // Opening the saved channel fetches its list once with the saved key.
+    const lite = await screen.findByRole('switch', { name: '使用 deepseek-v4-lite' });
+    expect(lite).not.toBeChecked();
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/system/config/llm/discover-models',
+      expect.objectContaining({ name: 'deepseek', protocol: 'deepseek', use_saved_secret: true, api_key: '' }),
+    );
+    expect(screen.getByText(/3 个模型 · 已打开 2/)).toBeInTheDocument();
+
+    // deepseek-v4-flash is the 分析模型: switching it off is refused before saving.
+    fireEvent.click(screen.getByRole('switch', { name: '使用 deepseek-v4-flash' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存渠道' }));
+    expect(await screen.findByText(/deepseek-v4-flash 正在用作分析模型/)).toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('switch', { name: '使用 deepseek-v4-flash' }));
+    fireEvent.click(lite);
+    fireEvent.click(screen.getByRole('button', { name: '保存渠道' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave).toHaveBeenCalledWith([
+      { key: 'LLM_DEEPSEEK_PROTOCOL', value: 'deepseek' },
+      { key: 'LLM_DEEPSEEK_BASE_URL', value: '' },
+      { key: 'LLM_DEEPSEEK_ENABLED', value: 'true' },
+      { key: 'LLM_DEEPSEEK_MODELS', value: 'deepseek-v4-flash,deepseek-v4-pro,deepseek-v4-lite' },
+    ]);
+  });
+
+  it('adds an Anthropic channel: fetches models with the typed key and saves a config-safe name', async () => {
+    post.mockResolvedValue({ data: { success: true, message: 'ok', models: ['claude-opus-5-5', 'claude-haiku-5-5'] } });
+    const onSave = vi.fn<(items: Array<{ key: string; value: string }>) => Promise<SaveOutcome>>(async () => ({ ok: true }));
+    wrap(<ModelsPanel config={buildConfigView([], 'v1', ['anthropic'])} onSave={onSave} onReload={vi.fn()} />);
+
+    expect(screen.getByText('还没有可选的模型。先在上面添加渠道并打开模型。')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'darren-cpa' } });
+    expect(screen.getByText(/保存为 darren_cpa/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('接口地址'), { target: { value: 'https://gw.example.com' } });
+    fireEvent.change(screen.getByLabelText('API 格式'), { target: { value: 'anthropic' } });
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-typed' } });
+    fireEvent.click(screen.getByRole('button', { name: '获取模型' }));
+
+    const opus = await screen.findByRole('switch', { name: '使用 claude-opus-5-5' });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/system/config/llm/discover-models',
+      expect.objectContaining({ name: 'darren_cpa', protocol: 'anthropic', api_key: 'sk-typed', use_saved_secret: false }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    expect(opus).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: '添加渠道' }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave).toHaveBeenCalledWith([
+      { key: 'LLM_CHANNELS', value: 'darren_cpa' },
+      { key: 'LLM_DARREN_CPA_PROTOCOL', value: 'anthropic' },
+      { key: 'LLM_DARREN_CPA_BASE_URL', value: 'https://gw.example.com' },
+      { key: 'LLM_DARREN_CPA_ENABLED', value: 'true' },
+      { key: 'LLM_DARREN_CPA_MODELS', value: 'claude-opus-5-5,claude-haiku-5-5' },
+      { key: 'LLM_DARREN_CPA_API_KEY', value: 'sk-typed' },
+      { key: 'LLM_DARREN_CPA_API_KEYS', value: '' },
+    ]);
+  });
+
+  it('deletes an unused channel after a second confirming click', async () => {
+    post.mockResolvedValue({ data: { success: false, message: 'no', models: [] } });
+    const onSave = vi.fn<(items: Array<{ key: string; value: string }>) => Promise<SaveOutcome>>(async () => ({ ok: true }));
+    const unused = buildConfigView(
+      [
+        item('LLM_CHANNELS', 'deepseek,spare'),
+        item('LLM_DEEPSEEK_PROTOCOL', 'deepseek'),
+        item('LLM_DEEPSEEK_MODELS', 'deepseek-v4-flash'),
+        item('LLM_SPARE_PROTOCOL', 'gemini'),
+        item('LLM_SPARE_MODELS', 'gemini-3-flash-preview'),
+        item('LITELLM_MODEL', 'deepseek/deepseek-v4-flash'),
+      ],
+      'v1',
+      ['deepseek', 'gemini'],
+    );
+    wrap(<ModelsPanel config={unused} onSave={onSave} onReload={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '删除渠道' }));
+    expect(await screen.findByText(/正在用作分析模型/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^spare/ }));
+    fireEvent.click(screen.getByRole('button', { name: '删除渠道' }));
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0][0][0]).toEqual({ key: 'LLM_CHANNELS', value: 'deepseek' });
   });
 
   it('rejects an out-of-range temperature before saving', () => {

@@ -144,7 +144,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 > Compatibility note: `REPORT_SHOW_LLM_MODEL` keeps the previous default-visible behavior (`true`) and only changes report footer rendering. It does not alter provider/model/Base URL, LiteLLM routing, or runtime model persistence/migration/cleanup semantics. Rollback is to remove the variable or set it back to `true`.
 
 > `REPORT_LANGUAGE` affects report text, report-page fixed copy, and Agent Chat replies that do not explicitly select a language. Web UI chrome language (navigation, login, settings, shell labels, shared controls) is intentionally independent and stored in browser `localStorage` as `dsa.uiLanguage`.
-> UI language resolution is: explicit localStorage value (`zh` or `en`) -> browser language (`navigator.languages` / `navigator.language`) -> default `zh`.
+> UI language resolution is: explicit localStorage value (`zh` or `en`) -> default `zh` (the browser language is not used).
 
 #### Other Configuration
 

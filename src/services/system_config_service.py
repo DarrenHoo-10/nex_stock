@@ -1039,7 +1039,7 @@ class SystemConfigService:
                 redaction_values=redaction_values,
             )
 
-        if resolved_protocol not in {"openai", "deepseek"}:
+        if resolved_protocol not in {"openai", "deepseek", "anthropic"}:
             return self._build_llm_channel_result(
                 success=False,
                 message="Model discovery is not supported for this protocol",
@@ -1063,9 +1063,15 @@ class SystemConfigService:
         request_headers = {"Accept": "application/json"}
         if selected_api_key:
             request_headers["Authorization"] = f"Bearer {selected_api_key}"
+        is_anthropic = resolved_protocol == "anthropic"
+        if is_anthropic:
+            # Anthropic Messages gateways list models at {base}/v1/models with x-api-key + anthropic-version.
+            request_headers["anthropic-version"] = "2023-06-01"
+            if selected_api_key:
+                request_headers["x-api-key"] = selected_api_key
 
         try:
-            models_url = self._build_llm_models_url(base_url)
+            models_url = self._build_llm_models_url(base_url, anthropic=is_anthropic)
         except ValueError as exc:
             return self._build_llm_channel_result(
                 success=False,
@@ -3994,8 +4000,13 @@ class SystemConfigService:
         return True
 
     @staticmethod
-    def _build_llm_models_url(base_url: str) -> str:
-        """Convert a channel base URL into a `/models` endpoint."""
+    def _build_llm_models_url(base_url: str, *, anthropic: bool = False) -> str:
+        """Convert a channel base URL into a `/models` endpoint.
+
+        Anthropic channels keep the LiteLLM convention of a base URL without ``/v1`` (LiteLLM appends
+        ``/v1/messages``), so their listing lives at ``{base}/v1/models``; ``limit=1000`` avoids the
+        API's 20-item default page.
+        """
         if not SystemConfigService._is_valid_llm_base_url(base_url):
             raise ValueError("LLM channel base URL must be a valid absolute URL")
         if not SystemConfigService._is_safe_base_url(base_url):
@@ -4003,15 +4014,19 @@ class SystemConfigService:
 
         parsed = urlparse(base_url)
         normalized = (parsed.path or "").rstrip("/")
-        for suffix in ("/chat/completions", "/completions"):
+        suffixes = ("/messages", "/chat/completions", "/completions") if anthropic else ("/chat/completions", "/completions")
+        for suffix in suffixes:
             if normalized.endswith(suffix):
                 normalized = normalized[: -len(suffix)]
                 break
+        if anthropic and not normalized.endswith("/v1") and not normalized.endswith("/models"):
+            normalized = f"{normalized}/v1"
         if normalized.endswith("/models"):
             models_path = normalized or "/models"
         else:
             models_path = f"{normalized}/models" if normalized else "/models"
-        models_url = urlunparse(parsed._replace(path=models_path, params="", query="", fragment=""))
+        query = "limit=1000" if anthropic else ""
+        models_url = urlunparse(parsed._replace(path=models_path, params="", query=query, fragment=""))
         if not SystemConfigService._is_valid_llm_base_url(models_url):
             raise ValueError("LLM channel models URL must be a valid absolute URL")
         if not SystemConfigService._is_safe_base_url(models_url):

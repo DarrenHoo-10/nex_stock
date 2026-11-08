@@ -1,16 +1,15 @@
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, LayoutGroup, MotionConfig, motion } from 'motion/react';
+import { useEffect, useRef } from 'react';
+import { LayoutGroup, MotionConfig, motion } from 'motion/react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey } from '../../i18n/uiText';
 import { RouteOutletBoundary } from '../layout/RouteBoundary';
-import { PLAN_EXIT, PLAN_INSTANT, PLAN_SPRING } from './motion/springs';
+import { PLAN_INSTANT, PLAN_SPRING } from './motion/springs';
 import { usePlanReducedMotion } from './motion/usePlanMotion';
 import { PlanIcon } from './PlanIcon';
 import type { PlanIconName } from './PlanIcon';
-import { PlanPortal } from './PlanPortal';
 import { PlanToast } from './PlanToast';
 import { AssistantDrawerHost } from './assistant/AssistantDrawerHost';
 import '../../styles/plan-glass.css';
@@ -36,24 +35,6 @@ const SETTINGS_ITEM: OrnamentItem = {
   shortKey: 'plan.nav.preferences',
   labelKey: 'plan.nav.preferences',
 };
-
-/** Existing pages, reachable from the 「更多」 popover. */
-const MORE_ITEMS: Array<{ to: string; labelKey: UiTextKey }> = [
-  { to: '/home', labelKey: 'plan.more.home' },
-  { to: '/chat', labelKey: 'plan.more.chat' },
-  { to: '/portfolio', labelKey: 'plan.more.portfolio' },
-  { to: '/decision-signals', labelKey: 'plan.more.decisionSignals' },
-  { to: '/screening', labelKey: 'plan.more.screening' },
-  { to: '/backtest', labelKey: 'plan.more.backtest' },
-  { to: '/alerts', labelKey: 'plan.more.alerts' },
-  { to: '/data', labelKey: 'plan.more.data' },
-  { to: '/usage', labelKey: 'plan.more.usage' },
-  { to: '/settings', labelKey: 'plan.more.settings' },
-];
-
-const MORE_POPOVER_ID = 'plan-more-pages';
-
-type MorePlacement = { pathname: string; left: number; bottom: number };
 
 const OrnamentLink: React.FC<{ item: OrnamentItem; reduced: boolean }> = ({ item, reduced }) => {
   const { t } = useUiLanguage();
@@ -87,11 +68,7 @@ export const PlanShell: React.FC = () => {
   const location = useLocation();
   const reduced = usePlanReducedMotion();
   const mainRef = useRef<HTMLElement>(null);
-  const moreButtonRef = useRef<HTMLButtonElement>(null);
-  const morePopoverRef = useRef<HTMLElement>(null);
-  const [placement, setPlacement] = useState<MorePlacement | null>(null);
-  // The popover closes by itself once the route changes.
-  const moreOpen = placement !== null && placement.pathname === location.pathname;
+  const logoutUrl = authMode === 'user_center' ? userCenter?.logoutUrl : undefined;
 
   // Move focus to <main> and reset scroll after a page change (not on first mount).
   const lastPathRef = useRef(location.pathname);
@@ -103,61 +80,6 @@ export const PlanShell: React.FC = () => {
     mainRef.current?.focus({ preventScroll: true });
     window.scrollTo({ top: 0, behavior: reduced ? 'auto' : 'smooth' });
   }, [location.pathname, reduced]);
-
-  // Popover: outside click and Escape close it; focus moves to the first link on open.
-  useEffect(() => {
-    if (!moreOpen) {
-      return undefined;
-    }
-    morePopoverRef.current?.querySelector<HTMLElement>('a')?.focus();
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target && (morePopoverRef.current?.contains(target) || moreButtonRef.current?.contains(target))) {
-        return;
-      }
-      setPlacement(null);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setPlacement(null);
-        moreButtonRef.current?.focus();
-      }
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [moreOpen]);
-
-  const toggleMore = () => {
-    if (moreOpen) {
-      setPlacement(null);
-      return;
-    }
-    const rect = moreButtonRef.current?.getBoundingClientRect();
-    setPlacement({
-      pathname: location.pathname,
-      left: rect ? rect.right + 14 : 118,
-      bottom: rect ? Math.max(12, window.innerHeight - rect.bottom) : 24,
-    });
-  };
-
-  // Tab leaving either end of the popover returns focus to the button instead of the end of the page.
-  const handlePopoverKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.key !== 'Tab') {
-      return;
-    }
-    const links = event.currentTarget.querySelectorAll<HTMLElement>('a');
-    const first = links[0];
-    const last = links[links.length - 1];
-    if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
-      event.preventDefault();
-      setPlacement(null);
-      moreButtonRef.current?.focus();
-    }
-  };
 
   // Soft spotlight that follows the pointer over glass windows.
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -173,10 +95,6 @@ export const PlanShell: React.FC = () => {
     win.style.setProperty('--mx', `${event.clientX - rect.left}px`);
     win.style.setProperty('--my', `${event.clientY - rect.top}px`);
   };
-
-  const popoverStyle = placement
-    ? ({ '--pop-left': `${placement.left}px`, '--pop-bottom': `${placement.bottom}px` } as React.CSSProperties)
-    : undefined;
 
   return (
     <MotionConfig reducedMotion="user" transition={PLAN_SPRING}>
@@ -205,19 +123,12 @@ export const PlanShell: React.FC = () => {
             ))}
             <span className="orn-sep" aria-hidden="true" />
             <OrnamentLink item={SETTINGS_ITEM} reduced={reduced} />
-            <button
-              ref={moreButtonRef}
-              type="button"
-              className="orn-btn"
-              aria-label={t('plan.nav.more')}
-              aria-haspopup="true"
-              aria-expanded={moreOpen}
-              aria-controls={MORE_POPOVER_ID}
-              onClick={toggleMore}
-            >
-              <PlanIcon name="more" />
-              <span aria-hidden="true">{t('plan.nav.more')}</span>
-            </button>
+            {logoutUrl ? (
+              <a className="orn-btn" href={logoutUrl} aria-label={t('layout.logout')}>
+                <PlanIcon name="logout" />
+                <span aria-hidden="true">{t('layout.logout')}</span>
+              </a>
+            ) : null}
           </nav>
         </LayoutGroup>
 
@@ -227,39 +138,6 @@ export const PlanShell: React.FC = () => {
           </main>
         </div>
 
-        <PlanPortal>
-          <AnimatePresence>
-            {moreOpen ? (
-              <motion.nav
-                key="more"
-                ref={morePopoverRef}
-                id={MORE_POPOVER_ID}
-                className="more-pop"
-                aria-label={t('plan.nav.moreTitle')}
-                style={popoverStyle}
-                initial={{ opacity: 0, scale: 0.94, y: 8 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.96, y: 4, transition: reduced ? PLAN_INSTANT : PLAN_EXIT }}
-                transition={reduced ? PLAN_INSTANT : PLAN_SPRING}
-                onKeyDown={handlePopoverKeyDown}
-              >
-                <h2>{t('plan.nav.moreTitle')}</h2>
-                <ul>
-                  {MORE_ITEMS.map((item) => (
-                    <li key={item.to}>
-                      <NavLink to={item.to}>{t(item.labelKey)}</NavLink>
-                    </li>
-                  ))}
-                  {authMode === 'user_center' && userCenter?.logoutUrl ? (
-                    <li>
-                      <a href={userCenter.logoutUrl}>{t('layout.logout')}</a>
-                    </li>
-                  ) : null}
-                </ul>
-              </motion.nav>
-            ) : null}
-          </AnimatePresence>
-        </PlanPortal>
         <AssistantDrawerHost />
         <PlanToast />
       </div>

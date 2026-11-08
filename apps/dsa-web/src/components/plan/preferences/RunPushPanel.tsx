@@ -2,7 +2,6 @@ import type React from 'react';
 import { useEffect, useId, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Link } from 'react-router-dom';
 import { isPlanRunConflict, isPlanServiceUnavailable, triggerRun } from '../../../api/dailyPlan';
 import { systemConfigApi } from '../../../api/systemConfig';
 import { useLatestPlanRun } from '../../../hooks/useLatestPlanRun';
@@ -10,6 +9,7 @@ import { showPlanToast } from '../../../stores/planToastStore';
 import { usePlanUiStore } from '../../../stores/planUiStore';
 import type { PlanRun, PushStatus, RunStatus } from '../../../types/dailyPlan';
 import type { SchedulerStatusResponse } from '../../../types/systemConfig';
+import { FeishuSettings } from './FeishuSettings';
 import { formatClock, formatDateClock, formatDuration } from './format';
 import { PanelHead, SaveProblem } from './shared';
 import type { ConfigView, SaveOutcome } from './usePreferencesConfig';
@@ -153,8 +153,11 @@ export const RunPushPanel: React.FC<RunPushPanelProps> = ({ config, onSave, onRe
   const dirty = changes.length > 0;
   const multiTimes = config.value('SCHEDULE_TIMES').trim() !== '';
 
-  const feishuFromConfig = config.get('FEISHU_WEBHOOK_URL') ? config.isSet('FEISHU_WEBHOOK_URL') : null;
   const latestRun = latest.status === 'ready' ? latest.run : null;
+  const feishuFromConfig =
+    config.get('FEISHU_WEBHOOK_URL') || config.get('FEISHU_APP_ID')
+      ? config.isSet('FEISHU_WEBHOOK_URL') || (config.isSet('FEISHU_APP_ID') && config.isSet('FEISHU_APP_SECRET'))
+      : null;
   const feishuConfigured = feishuFromConfig ?? latestRun?.push.configured ?? false;
   const runActive = latestRun?.status === 'running' || latestRun?.status === 'pending';
 
@@ -251,7 +254,7 @@ export const RunPushPanel: React.FC<RunPushPanelProps> = ({ config, onSave, onRe
         </div>
         <p className="note" id={`${idPrefix}-time-note`}>
           顺序：板块异动 → 选股 → 自选和持仓 → 换股判断 → 推送。一只股票失败不影响其他股票。
-          {multiTimes ? ' 已在高级设置里配置了多个运行时间（SCHEDULE_TIMES），以那里为准。' : ''}
+          {multiTimes ? ' 配置文件里设置了多个运行时间（SCHEDULE_TIMES），以那里为准。' : ''}
         </p>
         <p className="note pref-scheduler" data-testid="scheduler-status">
           {scheduler === null
@@ -278,20 +281,15 @@ export const RunPushPanel: React.FC<RunPushPanelProps> = ({ config, onSave, onRe
 
       <section className="pref-section inset" aria-labelledby={`${idPrefix}-feishu`}>
         <div className="sec-head">
-          <h3 id={`${idPrefix}-feishu`}>飞书群机器人</h3>
+          <h3 id={`${idPrefix}-feishu`}>飞书推送</h3>
           <span className={`tag ${feishuConfigured ? 'ok' : 'warn'}`} data-testid="feishu-status">
             {feishuConfigured ? '已配置' : '未配置'}
           </span>
         </div>
         <p className="note pref-flush">
-          Webhook 地址、签名密钥和关键词只保存在本机配置里，这里不显示。
-          {feishuConfigured ? '' : '没有配置时，计划只在网页里查看，不会推送。'}
+          密钥保存后不再显示。{feishuConfigured ? '' : '没有配置时，计划只在网页里查看，不会推送。'}
         </p>
-        <div className="actions pref-actions">
-          <Link className="btn sm" to="/settings?category=notification">
-            在高级设置里配置
-          </Link>
-        </div>
+        <FeishuSettings config={config} onSave={onSave} onReload={onReload} />
       </section>
 
       <section className="pref-section" aria-labelledby={`${idPrefix}-latest`}>

@@ -1,17 +1,31 @@
 import type { ConfigView } from './usePreferencesConfig';
 
 /**
- * The 模型 tab is a by-role view over the LLM keys the advanced settings page already writes:
+ * The 模型 tab is a by-role view over the runtime LLM keys:
  *   分析模型 = LITELLM_MODEL, 助手模型 = AGENT_LITELLM_MODEL, 备用模型 = LITELLM_FALLBACK_MODELS,
- *   识图模型 = VISION_MODEL, 温度 = LLM_TEMPERATURE; choices come from LLM_CHANNELS / LLM_<NAME>_*.
+ *   轻量模型 = LITELLM_LIGHT_MODEL, 识图模型 = VISION_MODEL, 温度 = LLM_TEMPERATURE, plus the three reasoning-effort
+ *   keys; choices come from LLM_CHANNELS / LLM_<NAME>_* (edited on the same tab).
  */
 export const MODEL_KEYS = {
   primary: 'LITELLM_MODEL',
   agent: 'AGENT_LITELLM_MODEL',
   fallbacks: 'LITELLM_FALLBACK_MODELS',
+  light: 'LITELLM_LIGHT_MODEL',
   vision: 'VISION_MODEL',
   temperature: 'LLM_TEMPERATURE',
+  effort: 'LLM_REASONING_EFFORT',
+  agentEffort: 'AGENT_REASONING_EFFORT',
+  lightEffort: 'LITELLM_LIGHT_REASONING_EFFORT',
 } as const;
+
+/** Standard `reasoning_effort` values; '' means "not sent" (or "follow" for the assistant). */
+export const EFFORT_LEVELS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '很高' },
+  { value: 'max', label: '最高' },
+];
 
 const PROTOCOL_ALIASES: Record<string, string> = {
   vertexai: 'vertex_ai',
@@ -135,8 +149,12 @@ export interface ModelValues {
   primary: string;
   agent: string;
   fallbacks: string[];
+  light: string;
   vision: string;
   temperature: string;
+  effort: string;
+  agentEffort: string;
+  lightEffort: string;
 }
 
 export function readModelValues(config: ConfigView): ModelValues {
@@ -144,8 +162,12 @@ export function readModelValues(config: ConfigView): ModelValues {
     primary: config.value(MODEL_KEYS.primary).trim(),
     agent: config.value(MODEL_KEYS.agent).trim(),
     fallbacks: splitList(config.value(MODEL_KEYS.fallbacks)),
+    light: config.value(MODEL_KEYS.light).trim(),
     vision: config.value(MODEL_KEYS.vision).trim(),
     temperature: config.value(MODEL_KEYS.temperature).trim(),
+    effort: config.value(MODEL_KEYS.effort).trim().toLowerCase(),
+    agentEffort: config.value(MODEL_KEYS.agentEffort).trim().toLowerCase(),
+    lightEffort: config.value(MODEL_KEYS.lightEffort).trim().toLowerCase(),
   };
 }
 
@@ -158,14 +180,11 @@ export function diffModelItems(saved: ModelValues, draft: ModelValues): Array<{ 
   if (draft.fallbacks.join(',') !== saved.fallbacks.join(',')) {
     items.push({ key: MODEL_KEYS.fallbacks, value: draft.fallbacks.join(',') });
   }
-  if (draft.agent !== saved.agent) {
-    items.push({ key: MODEL_KEYS.agent, value: draft.agent });
-  }
-  if (draft.vision !== saved.vision) {
-    items.push({ key: MODEL_KEYS.vision, value: draft.vision });
-  }
-  if (draft.temperature !== saved.temperature) {
-    items.push({ key: MODEL_KEYS.temperature, value: draft.temperature });
+  const singles = ['agent', 'light', 'vision', 'temperature', 'effort', 'agentEffort', 'lightEffort'] as const;
+  for (const field of singles) {
+    if (draft[field] !== saved[field]) {
+      items.push({ key: MODEL_KEYS[field], value: draft[field] });
+    }
   }
   return items;
 }
