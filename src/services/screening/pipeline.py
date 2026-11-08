@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from src.services.screening.config import Config
@@ -46,6 +47,7 @@ from src.services.screening.selection_variant import apply_seeded_selection_vari
 from src.services.screening.scope import ScreeningScope, apply_scope
 from src.services.screening.snapshot import fetch_snapshot_with_fallback
 from src.services.screening.strategy import load_all_strategies_with_extra
+from src.services.screening_setup_scan import REGIME_OFF_FLAG, SetupScanDataError, apply_setup_scan
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +205,18 @@ def screen(
     snapshot_df, scope_counts = apply_scope(
         snapshot_df, scope or ScreeningScope(),
     )
+
+    # 2.5 Optional market-wide setup pre-scan: event rules look back over recent
+    # sessions, so candidates come from full-market daily bars, not today's snapshot.
+    if screening.setup_scan is not None:
+        if market != "cn":
+            raise ValueError("形态预扫描（setup_scan）仅支持 A 股")
+        _emit_progress(progress_callback, 35, "正在扫描近期放量大涨形态")
+        try:
+            snapshot_df, setup_notes = apply_setup_scan(snapshot_df, screening.setup_scan, config=config)
+        except SetupScanDataError as exc:
+            raise RuntimeError(f"形态预扫描失败：{exc}") from exc
+        degradation[0:0] = setup_notes  # switch status first
 
     # 3. L1 hard filter. If a strategy needs daily features, first apply only
     # snapshot-safe filters, then enrich a narrowed candidate pool.
@@ -613,6 +627,7 @@ def _df_to_picks(df: pd.DataFrame) -> list[Pick]:
             for factor, col in factor_cols.items()
             if col in df.columns
         }
+        setup = _setup_payload(row)
         picks.append(Pick(
             rank=i + 1,
             code=normalize_code(row.get("code", row.get("代码", "")), allow_ticker=True),
@@ -660,8 +675,30 @@ def _df_to_picks(df: pd.DataFrame) -> list[Pick]:
             daily_quality_flags=_safe_text(row.get("daily_quality_flags")),
             daily_source=_safe_text(row.get("daily_source")),
             factor_scores=factor_scores,
+            setup=setup,
+            risk_flags=[REGIME_OFF_FLAG] if setup.get("regime_on") is False else [],
         ))
     return picks
+
+
+def _setup_payload(row: pd.Series) -> dict[str, object]:
+    """Collect ``setup_*`` columns from the setup pre-scan into plain JSON values."""
+    payload: dict[str, object] = {}
+    for key, value in row.items():
+        if not isinstance(key, str) or not key.startswith("setup_"):
+            continue
+        if value is None or (isinstance(value, float) and pd.isna(value)) or value is pd.NA:
+            value = None
+        elif isinstance(value, (bool, np.bool_)):
+            value = bool(value)
+        elif isinstance(value, (int, np.integer)):
+            value = int(value)
+        elif isinstance(value, (float, np.floating)):
+            value = float(value)
+        else:
+            value = str(value)
+        payload[key[len("setup_"):]] = value
+    return payload
 
 
 def _sort_screened_candidates(df: pd.DataFrame, screening=None) -> pd.DataFrame:

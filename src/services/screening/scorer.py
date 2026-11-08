@@ -15,6 +15,7 @@ _FACTOR_COLUMNS = {
     "activity": "factor_activity_score",
     "stability": "factor_stability_score",
     "size": "factor_size_score",
+    "small_cap": "factor_small_cap_score",
     "theme_heat": "factor_theme_heat_score",
     "topic_alignment": "factor_topic_alignment_score",
 }
@@ -151,6 +152,7 @@ def _compute_factor_scores(df: pd.DataFrame, config: ScreeningConfig | None = No
         "activity": _compute_activity_score(df, profile),
         "stability": _compute_stability_score(df, profile),
         "size": _compute_size_score(df),
+        "small_cap": _compute_small_cap_score(df),
         "theme_heat": _compute_theme_heat_score(df, profile),
         "topic_alignment": _compute_topic_alignment_score(df, profile),
     }
@@ -387,6 +389,16 @@ def _compute_size_score(df: pd.DataFrame) -> pd.Series:
     mv = pd.to_numeric(df["total_mv"], errors="coerce")
     log_mv = np.log10(mv.clip(lower=1))
     return _rank_score(log_mv.where(mv > 0), lower_is_better=False, na_score=35)
+
+
+def _compute_small_cap_score(df: pd.DataFrame) -> pd.Series:
+    """Rank smaller float market cap higher; falls back to total market cap."""
+    for column in ("circ_mv", "total_mv"):
+        if column in df.columns:
+            mv = pd.to_numeric(df[column], errors="coerce")
+            if mv.gt(0).any():
+                return _rank_score(mv.where(mv > 0), lower_is_better=True, na_score=35)
+    return pd.Series(50.0, index=df.index)
 
 
 def _compute_theme_heat_score(df: pd.DataFrame, profile: dict[str, float]) -> pd.Series:
