@@ -1029,6 +1029,14 @@ def get_feishu_stream_client() -> Optional[FeishuStreamClient]:
     return _stream_client
 
 
+def reset_idle_feishu_stream_client() -> None:
+    """Drop a client that is not running so the next start rebuilds it from the current config."""
+    global _stream_client
+    with _start_lock:
+        if _stream_client is not None and not _stream_client.is_running:
+            _stream_client = None
+
+
 def start_feishu_stream_background() -> bool:
     """
     在后台启动飞书 Stream 客户端

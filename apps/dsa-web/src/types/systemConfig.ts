@@ -230,6 +230,20 @@ export interface SchedulerStatusResponse {
   lastSkipReason?: string | null;
 }
 
+export interface FeishuRegistrationStart {
+  sessionId: string;
+  verificationUrl: string;
+  expiresIn: number;
+  interval: number;
+}
+
+export interface FeishuRegistrationStatus {
+  status: 'pending' | 'success' | 'denied' | 'expired' | 'error';
+  interval?: number | null;
+  message?: string | null;
+  restartRequired: boolean;
+}
+
 export interface SchedulerRunNowResponse {
   accepted: boolean;
   running: boolean;

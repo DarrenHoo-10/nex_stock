@@ -7,6 +7,8 @@ import type {
   DiscoverLLMChannelModelsRequest,
   DiscoverLLMChannelModelsResponse,
   ExportSystemConfigResponse,
+  FeishuRegistrationStart,
+  FeishuRegistrationStatus,
   GenerationBackendStatusPreviewRequest,
   GenerationBackendStatusResponse,
   ImportSystemConfigRequest,
@@ -254,6 +256,18 @@ export const systemConfigApi = {
   async runSchedulerNow(): Promise<SchedulerRunNowResponse> {
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/system/scheduler/run-now');
     return toCamelCase<SchedulerRunNowResponse>(response.data);
+  },
+
+  async startFeishuRegistration(): Promise<FeishuRegistrationStart> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/system/feishu/register', {});
+    return toCamelCase<FeishuRegistrationStart>(response.data);
+  },
+
+  async pollFeishuRegistration(sessionId: string): Promise<FeishuRegistrationStatus> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/system/feishu/register/${encodeURIComponent(sessionId)}`,
+    );
+    return toCamelCase<FeishuRegistrationStatus>(response.data);
   },
 
   async validate(payload: ValidateSystemConfigRequest): Promise<ValidateSystemConfigResponse> {

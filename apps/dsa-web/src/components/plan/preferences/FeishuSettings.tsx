@@ -1,5 +1,8 @@
 import type React from 'react';
-import { useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
+import { systemConfigApi } from '../../../api/systemConfig';
+import { getParsedApiError } from '../../../api/error';
 import { showPlanToast } from '../../../stores/planToastStore';
 import { SaveProblem } from './shared';
 import type { ConfigView, SaveOutcome } from './usePreferencesConfig';
@@ -26,6 +29,72 @@ const WEBHOOK_FIELDS: FieldSpec[] = [
   { key: 'FEISHU_WEBHOOK_KEYWORD', label: '关键词', placeholder: '群机器人设置了关键词时填写' },
 ];
 
+type ScanState =
+  | { phase: 'idle' }
+  | { phase: 'starting' }
+  | { phase: 'waiting'; url: string }
+  | { phase: 'done'; restartRequired: boolean }
+  | { phase: 'failed'; message: string };
+
+const SCAN_FAILURE: Record<string, string> = {
+  denied: '你在飞书里取消了授权，需要的话重新扫码。',
+  expired: '二维码已过期，请重新生成。',
+};
+
+/**
+ * Scan-to-create flow: the backend asks Feishu for a QR link, polls until the scan is authorised and saves the new
+ * bot's credentials itself (they never reach the browser).
+ */
+function useFeishuScan(onConnected: () => void) {
+  const [scan, setScan] = useState<ScanState>({ phase: 'idle' });
+  const runRef = useRef(0);
+
+  const cancel = useCallback(() => {
+    runRef.current += 1;
+  }, []);
+  useEffect(() => cancel, [cancel]);
+
+  const start = useCallback(async () => {
+    const run = ++runRef.current;
+    setScan({ phase: 'starting' });
+    try {
+      const session = await systemConfigApi.startFeishuRegistration();
+      if (run !== runRef.current) return;
+      setScan({ phase: 'waiting', url: session.verificationUrl });
+      let interval = session.interval;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(interval, 1) * 1000));
+        if (run !== runRef.current) return;
+        const status = await systemConfigApi.pollFeishuRegistration(session.sessionId);
+        if (run !== runRef.current) return;
+        if (status.status === 'pending') {
+          interval = status.interval ?? interval;
+          continue;
+        }
+        if (status.status === 'success') {
+          setScan({ phase: 'done', restartRequired: status.restartRequired });
+          showPlanToast(status.restartRequired ? '飞书机器人已连接，重启服务后长连接生效' : '飞书机器人已连接');
+          onConnected();
+        } else {
+          setScan({ phase: 'failed', message: SCAN_FAILURE[status.status] ?? status.message ?? '扫码创建失败，请重试。' });
+        }
+        return;
+      }
+    } catch (error) {
+      if (run === runRef.current) {
+        setScan({ phase: 'failed', message: getParsedApiError(error).message });
+      }
+    }
+  }, [onConnected]);
+
+  const reset = useCallback(() => {
+    cancel();
+    setScan({ phase: 'idle' });
+  }, [cancel]);
+
+  return { scan, start, reset };
+}
+
 interface FeishuSettingsProps {
   config: ConfigView;
   onSave: (items: Array<{ key: string; value: string }>) => Promise<SaveOutcome>;
@@ -47,6 +116,9 @@ export const FeishuSettings: React.FC<FeishuSettingsProps> = ({ config, onSave, 
   const stream = streamEdit ?? savedStream;
   const appReady = config.isSet('FEISHU_APP_ID') && config.isSet('FEISHU_APP_SECRET');
   const webhookReady = config.isSet('FEISHU_WEBHOOK_URL');
+
+  const { scan, start: startScan, reset: resetScan } = useFeishuScan(onReload);
+  const scanning = scan.phase === 'starting' || scan.phase === 'waiting';
 
   const valueOf = (key: string) => edits[key] ?? (SECRET_KEYS.has(key) ? '' : config.value(key));
 
@@ -109,10 +181,48 @@ export const FeishuSettings: React.FC<FeishuSettingsProps> = ({ config, onSave, 
     <form className="feishu-form" onSubmit={save} noValidate>
       <div className="feishu-group">
         <div className="sec-head">
-          <h4>应用机器人（推荐）</h4>
+          <h4>扫码连接飞书（推荐）</h4>
           <span className={`tag ${appReady ? 'ok' : 'warn'}`} data-testid="feishu-app-status">
-            {appReady ? '已配置' : '未配置'}
+            {appReady ? '已连接' : '未配置'}
           </span>
+        </div>
+        <p className="note">
+          用飞书扫一下二维码，会自动创建你自己的机器人并填好凭证，计划默认推送到你和机器人的私聊。
+          在飞书里发 /bind 可以改成推送到某个群。
+        </p>
+        {scan.phase === 'waiting' ? (
+          <div className="feishu-qr" data-testid="feishu-qr">
+            <QRCodeSVG value={scan.url} size={168} marginSize={2} />
+            <p className="note">打开飞书，扫描二维码并确认。扫码后这里会自动完成。</p>
+          </div>
+        ) : null}
+        {scan.phase === 'done' ? (
+          <p className="note" data-testid="feishu-scan-done">
+            已连接飞书机器人。
+            {scan.restartRequired ? '长连接需要重启服务后才会用上新机器人。' : '长连接已启动，现在可以在飞书里直接问助手。'}
+          </p>
+        ) : null}
+        {scan.phase === 'failed' ? (
+          <p className="note" role="alert" data-testid="feishu-scan-error">{scan.message}</p>
+        ) : null}
+        <div className="actions pref-actions">
+          {scanning ? (
+            <button type="button" className="btn quiet" onClick={resetScan}>
+              取消扫码
+            </button>
+          ) : (
+            <button type="button" className="btn primary" onClick={() => void startScan()} data-testid="feishu-scan-start">
+              {appReady ? '重新扫码创建' : '扫码创建飞书机器人'}
+            </button>
+          )}
+          {scan.phase === 'starting' ? <span className="note">正在生成二维码…</span> : null}
+        </div>
+      </div>
+
+      <details className="feishu-group feishu-manual">
+        <summary>手动配置（已有机器人 / 群 Webhook）</summary>
+        <div className="sec-head">
+          <h4>应用机器人</h4>
         </div>
         <div className="form-grid feishu-grid">{APP_FIELDS.map(renderField)}</div>
         <label className="switch" htmlFor={`${idPrefix}-stream`}>
@@ -130,9 +240,8 @@ export const FeishuSettings: React.FC<FeishuSettingsProps> = ({ config, onSave, 
           <span>开启长连接：在飞书里直接问助手，发送 /bind 设定推送到哪个会话</span>
         </label>
         <p className="note">长连接在服务启动时建立，改动 App ID、Secret 或这个开关后需要重启服务才生效。</p>
-      </div>
 
-      <div className="feishu-group">
+      <div className="feishu-sub">
         <div className="sec-head">
           <h4>群 Webhook（备选）</h4>
           <span className={`tag ${webhookReady ? 'ok' : 'line'}`} data-testid="feishu-webhook-status">
@@ -154,6 +263,7 @@ export const FeishuSettings: React.FC<FeishuSettingsProps> = ({ config, onSave, 
           </button>
         ) : null}
       </div>
+      </details>
     </form>
   );
 };

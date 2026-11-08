@@ -243,6 +243,28 @@ class UpdateSystemConfigResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+class FeishuRegistrationStartRequest(BaseModel):
+    """Start a scan-to-create Feishu bot session."""
+
+    domain: Literal["feishu", "lark"] = "feishu"
+
+
+class FeishuRegistrationStartResponse(BaseModel):
+    session_id: str
+    verification_url: str
+    expires_in: int
+    interval: int
+
+
+class FeishuRegistrationStatusResponse(BaseModel):
+    """Scan progress. Credentials are saved server side and never returned."""
+
+    status: Literal["pending", "success", "denied", "expired", "error"]
+    interval: Optional[int] = None
+    message: Optional[str] = None
+    restart_required: bool = False
+
+
 class ValidateSystemConfigRequest(BaseModel):
     """Validation request payload."""
 

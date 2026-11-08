@@ -153,6 +153,12 @@
 }
 .plan-shell .feishu-grid label.f input::placeholder { color: var(--t4); }
 .plan-shell .feishu-form .switch { padding-top: 14px; }
+.plan-shell .feishu-qr { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 12px; }
+.plan-shell .feishu-qr svg { background: #fff; border-radius: 14px; padding: 4px; flex: none; }
+.plan-shell .feishu-qr .note { margin: 0; max-width: 260px; }
+.plan-shell .feishu-manual > summary { cursor: pointer; font-size: 13.5px; color: var(--t3); }
+.plan-shell .feishu-manual[open] > summary { margin-bottom: 14px; }
+.plan-shell .feishu-sub { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .plan-shell .pref-run-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
 .plan-shell .pref-run-head .big { font-family: var(--display); font-size: 28px; font-weight: 700; line-height: 1.15; }
 .plan-shell .pref-steps { margin-top: 10px; }

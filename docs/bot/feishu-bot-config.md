@@ -26,6 +26,10 @@
 
 ## 一、创建应用
 
+**推荐：扫码创建（Web「设置 → 运行和推送」）。** 点「扫码创建飞书机器人」，用飞书扫描二维码并确认，系统会自动创建你自己的机器人（PersonalAgent），把 App ID / App Secret 写入配置、打开长连接，并把你和机器人的私聊设为推送目标（`FEISHU_CHAT_ID` = 你的 open_id，`FEISHU_RECEIVE_ID_TYPE=open_id`）。凭证只在服务端保存，不会传到浏览器。飞书国内版 / Lark 国际版由扫码账号自动识别并写入 `FEISHU_DOMAIN`。重新扫码会换成新的机器人并清除旧的 `/bind` 绑定（会话 ID 属于具体应用）。长连接已在运行时需要重启服务才会换用新机器人。接口：`POST /api/v1/system/feishu/register`、`GET /api/v1/system/feishu/register/{session_id}`。
+
+下面是手动创建（已有机器人，或不方便扫码时）：
+
 1. 打开 [飞书开放平台](https://open.feishu.cn/app)（国际版 Lark 用 [open.larksuite.com](https://open.larksuite.com/app)，并设置 `FEISHU_DOMAIN=lark`）→ 创建企业自建应用。
 2. 「凭证与基础信息」里复制 **App ID** 和 **App Secret**，写入运行环境：
 

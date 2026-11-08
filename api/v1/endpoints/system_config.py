@@ -15,6 +15,9 @@ from api.v1.schemas.system_config import (
     DiscoverLLMChannelModelsRequest,
     DiscoverLLMChannelModelsResponse,
     ExportSystemConfigResponse,
+    FeishuRegistrationStartRequest,
+    FeishuRegistrationStartResponse,
+    FeishuRegistrationStatusResponse,
     GenerationBackendStatusPreviewRequest,
     GenerationBackendStatusResponse,
     ImportSystemConfigRequest,
@@ -40,6 +43,12 @@ from src.services.system_config_service import (
     ConfigImportError,
     ConfigValidationError,
     SystemConfigService,
+)
+from src.services.feishu_registration_service import (
+    RegistrationError,
+    RegistrationSessionNotFound,
+    apply_registration,
+    get_registration_service,
 )
 from src.services.runtime_scheduler import RuntimeSchedulerService
 
@@ -423,6 +432,56 @@ def update_system_config(
                 "message": "Failed to update system configuration",
             },
         )
+
+
+@router.post(
+    "/feishu/register",
+    response_model=FeishuRegistrationStartResponse,
+    responses={502: {"description": "Feishu account service unavailable", "model": ErrorResponse}},
+    summary="Start scan-to-create Feishu bot",
+    description="Request a QR verification URL; scanning it in Feishu creates a bot app for the scanner.",
+)
+def start_feishu_registration(
+    request: FeishuRegistrationStartRequest | None = None,
+) -> FeishuRegistrationStartResponse:
+    try:
+        payload = get_registration_service().start((request or FeishuRegistrationStartRequest()).domain)
+    except RegistrationError as exc:
+        raise HTTPException(status_code=502, detail={"error": "feishu_registration_unavailable", "message": str(exc)})
+    return FeishuRegistrationStartResponse(**payload)
+
+
+@router.get(
+    "/feishu/register/{session_id}",
+    response_model=FeishuRegistrationStatusResponse,
+    responses={404: {"description": "Unknown or expired session", "model": ErrorResponse}},
+    summary="Poll scan-to-create Feishu bot",
+    description="On success the new App ID / Secret are saved into the config server side.",
+)
+def poll_feishu_registration(
+    session_id: str,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> FeishuRegistrationStatusResponse:
+    registry = get_registration_service()
+    try:
+        result = registry.poll(session_id)
+    except RegistrationSessionNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": "扫码会话已失效，请重新生成二维码"},
+        )
+    if result["status"] != "success":
+        return FeishuRegistrationStatusResponse(
+            status=result["status"], interval=result.get("interval"), message=result.get("message"),
+        )
+    try:
+        applied = apply_registration(result, service)
+    except Exception as exc:
+        logger.error("Failed to save Feishu credentials after scan: %s", exc, exc_info=True)
+        registry.finish(session_id)
+        return FeishuRegistrationStatusResponse(status="error", message="已创建机器人，但保存配置失败，请重试扫码")
+    registry.finish(session_id)
+    return FeishuRegistrationStatusResponse(status="success", restart_required=applied["restart_required"])
 
 
 @router.get(
