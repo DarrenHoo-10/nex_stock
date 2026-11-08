@@ -498,6 +498,8 @@ def get_stock_quote(stock_code: str) -> StockQuote:
             prev_close=result.get("prev_close"),
             volume=result.get("volume"),
             amount=result.get("amount"),
+            turnover_rate=result.get("turnover_rate"),
+            float_shares=result.get("float_shares"),
             update_time=result.get("update_time")
         )
         
@@ -528,7 +530,7 @@ def get_stock_quote(stock_code: str) -> StockQuote:
 def get_stock_history(
     stock_code: str,
     period: str = Query("daily", description="K 线周期", pattern="^(daily|weekly|monthly)$"),
-    days: int = Query(30, ge=1, le=365, description="获取天数")
+    days: int = Query(30, ge=1, le=1000, description="获取天数（数据源按约 2 倍日历日取数）")
 ) -> StockHistoryResponse:
     """
     获取股票历史行情

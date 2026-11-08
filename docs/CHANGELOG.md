@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 「我的股票」标题栏新增股票 / ETF 搜索框（代码、名称、拼音），点开显示日K/周K/月K 蜡烛图、MA5/10/20/60、成交量和筹码分布（获利比例、平均成本、90%/70% 成本区间），可缩放、平移；光标处为十字线（横线标价位/成交量，竖线浮出该 K 线的开高低收、涨跌幅、振幅、成交量额、换手），所在日即显示当天筹码，并可直接加入自选。
+- [新功能] 自动补全索引新增 1737 只沪深在市 ETF（`assetType=etf`，别名含「跟踪指数名+ETF」）；seed 为 `scripts/stock_index_seeds/etf_list.csv`，由 `fetch_tushare_stock_list.py --etf-seed` 刷新、`generate_index_from_csv.py --etf-only` 合并，全量重建时自动保留。
+- [改进] `GET /api/v1/stocks/{code}/quote` 新增可选字段 `turnover_rate`、`float_shares`（流通股本，股）；`GET /api/v1/stocks/{code}/history` 的 `days` 上限由 365 提高到 1000。原有字段和默认行为不变。
 - [改进] 设置页「模型」改为渠道列表 + 编辑区：在同一页添加、编辑、停用、删除渠道（名称、接口地址、API 格式、API Key），获取模型、手动添加、搜索并逐个打开模型；用途里新增轻量模型和三项推理强度；正在使用的模型不能关闭，所在渠道不能停用或删除。
 - [改进] 模型列表获取支持 Anthropic Messages 格式（`{base}/v1/models`，`x-api-key` + `anthropic-version`）。
 - [改进] 新页面不再跳转旧页面：去掉导航「更多」、模型页「高级设置」、助手「在问股页打开」和选股页「去选股工具开启」；飞书应用机器人、群 Webhook 与开启选股改为在新页面直接设置，用户中心登录时导航提供「退出」。
