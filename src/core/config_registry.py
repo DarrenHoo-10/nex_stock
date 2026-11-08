@@ -4886,21 +4886,21 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_CONTEXT_COMPRESSION_ENABLED": {
         "title": "Agent Context Compression",
-        "description": "Enable rolling compression of visible Agent chat history. Default is off to preserve existing behavior.",
+        "description": "Enable rolling compression of visible Agent chat history (default on). History is summarized once it reaches AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO of the model context window.",
         "category": "agent",
         "data_type": "boolean",
         "ui_control": "switch",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "false",
+        "default_value": "true",
         "options": [],
         "validation": {},
         "display_order": 72,
         "help_key": "settings.agent.context_compression",
         "examples": [
-            "AGENT_CONTEXT_COMPRESSION_ENABLED=false",
             "AGENT_CONTEXT_COMPRESSION_ENABLED=true",
+            "AGENT_CONTEXT_COMPRESSION_ENABLED=false",
         ],
         "docs": [
             {
@@ -4951,7 +4951,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS": {
         "title": "Context Compression Trigger Tokens",
-        "description": "Token threshold for visible chat history compression. Leave empty to follow the selected compression profile preset.",
+        "description": "Fixed token threshold for visible chat history compression, used when the trigger ratio is 0 or the model context window is unknown. Leave empty to follow the selected compression profile preset.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -4975,6 +4975,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {
                 "label": "完整指南：环境变量完整列表",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO": {
+        "title": "Context Compression Trigger Ratio",
+        "description": "Compress visible chat history once it reaches this share of the Agent model's context window (default 0.8). 0 uses the fixed trigger tokens only.",
+        "category": "agent",
+        "data_type": "number",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "0.8",
+        "options": [],
+        "validation": {"min": 0, "max": 0.95},
+        "display_order": 74,
+        "help_key": "settings.agent.context_compression",
+        "examples": [
+            "AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO=0.8",
+            "AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO=0",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南：问股可见对话上下文压缩",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md#问股可见对话上下文压缩",
             },
         ],
         "warning_codes": [],

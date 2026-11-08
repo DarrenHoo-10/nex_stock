@@ -206,6 +206,7 @@ class AgentContextCompressionPreset:
 
 
 AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE = "balanced"
+AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO_DEFAULT = 0.8
 AGENT_CONTEXT_COMPRESSION_PROFILES: Dict[str, AgentContextCompressionPreset] = {
     "cost": AgentContextCompressionPreset(
         trigger_tokens=6000,
@@ -1284,9 +1285,11 @@ class Config:
     agent_memory_enabled: bool = False  # Enable memory & calibration system
     agent_skill_autoweight: bool = True  # Weight skills by attributable Outcome performance
     agent_skill_routing: str = "auto"  # Skill routing: 'auto' (regime-based) or 'manual'
-    agent_context_compression_enabled: bool = False  # Compress visible chat history before Agent calls
+    agent_context_compression_enabled: bool = True  # Compress visible chat history before Agent calls
     agent_context_compression_profile: str = AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE
-    agent_context_compression_trigger_tokens: int = 12000
+    agent_context_compression_trigger_tokens: int = 12000  # used when the ratio is 0 or the window is unknown
+    # Compress once history reaches this share of the Agent model's context window (0 = fixed tokens only)
+    agent_context_compression_trigger_ratio: float = AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO_DEFAULT
     agent_context_protected_turns: int = 4
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
     # === 助手记忆（笔记 + 可插拔长期回忆）===
@@ -2405,10 +2408,17 @@ class Config:
             ).lower(),
             agent_context_compression_enabled=parse_env_bool(
                 os.getenv('AGENT_CONTEXT_COMPRESSION_ENABLED'),
-                default=False,
+                default=True,
             ),
             agent_context_compression_profile=agent_context_compression_profile,
             agent_context_compression_trigger_tokens=agent_context_compression_trigger_tokens,
+            agent_context_compression_trigger_ratio=parse_env_float(
+                os.getenv('AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO'),
+                AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO_DEFAULT,
+                field_name='AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO',
+                minimum=0.0,
+                maximum=0.95,
+            ),
             agent_context_protected_turns=agent_context_protected_turns,
             agent_event_monitor_enabled=os.getenv('AGENT_EVENT_MONITOR_ENABLED', 'false').lower() == 'true',
             assistant_recall_provider=(os.getenv('ASSISTANT_RECALL_PROVIDER') or 'none').strip().lower() or 'none',

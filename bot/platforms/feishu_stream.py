@@ -229,17 +229,22 @@ class FeishuReplyClient:
         }
         return json.dumps(card_data, ensure_ascii=False)
 
-    def reply_card(self, message_id: str, content: str, updatable: bool = True) -> Optional[str]:
-        """Reply with a card and return the new message id (``None`` on failure)."""
+    def reply_card(self, message_id: str, content: str, updatable: bool = True,
+                   in_thread: bool = False) -> Optional[str]:
+        """Reply with a card and return the new message id (``None`` on failure).
+
+        ``in_thread`` replies as a topic (``reply_in_thread``): the replied
+        message becomes the topic root, or the reply joins its existing topic.
+        """
         try:
+            body = ReplyMessageRequestBody.builder() \
+                .content(self.build_card_json(content, updatable=updatable)) \
+                .msg_type("interactive")
+            if in_thread:
+                body = body.reply_in_thread(True)
             request = ReplyMessageRequest.builder() \
                 .message_id(message_id) \
-                .request_body(
-                ReplyMessageRequestBody.builder()
-                .content(self.build_card_json(content, updatable=updatable))
-                .msg_type("interactive")
-                .build()
-            ) \
+                .request_body(body.build()) \
                 .build()
             response = self._client.im.v1.message.reply(request)
             if not response.success():
@@ -287,7 +292,8 @@ class FeishuReplyClient:
             logger.error(f"[Feishu Stream] 回复分段失败，按单条发送: {exc}")
             return [formatted]
 
-    def finish_card(self, placeholder_id: Optional[str], message_id: str, text: str) -> list:
+    def finish_card(self, placeholder_id: Optional[str], message_id: str, text: str,
+                    in_thread: bool = False) -> list:
         """Put ``text`` into the placeholder card and send any overflow as follow-up cards.
 
         Returns the ids of the messages that now carry the answer (placeholder
@@ -304,7 +310,7 @@ class FeishuReplyClient:
             else:
                 logger.warning("[Feishu Stream] 占位卡片更新失败，改为直接回复答案")
         for index, chunk in enumerate(rest):
-            new_id = self.reply_card(message_id, chunk, updatable=False)
+            new_id = self.reply_card(message_id, chunk, updatable=False, in_thread=in_thread)
             if new_id:
                 carried.append(new_id)
             if index < len(rest) - 1:
@@ -514,7 +520,10 @@ class FeishuStreamHandler:
     def _conversation_key(self, bot_message: BotMessage) -> str:
         """Return the ordering key used for per-conversation FIFO processing."""
         if bot_message.chat_type == ChatType.PRIVATE:
-            return bot_message.chat_id or bot_message.user_id or bot_message.message_id
+            # Each p2p topic is its own session: topics run in parallel, one topic stays FIFO.
+            chat_key = bot_message.chat_id or bot_message.user_id or "unknown-chat"
+            topic = self._event_ids(bot_message)["root_id"] or bot_message.message_id
+            return f"{chat_key}:{topic}"
 
         chat_id = bot_message.chat_id or "unknown-chat"
         user_id = bot_message.user_id or "unknown-user"
@@ -557,8 +566,16 @@ class FeishuStreamHandler:
 
             self._process_message(bot_message)
 
+    @staticmethod
+    def _answers_in_thread(bot_message: BotMessage) -> bool:
+        """p2p answers go into a topic so follow-ups there share one session."""
+        return bot_message.chat_type == ChatType.PRIVATE
+
     def _post_placeholder(self, bot_message: BotMessage) -> Optional[str]:
-        return self._reply_client.reply_card(bot_message.message_id, PLACEHOLDER_TEXT, updatable=True)
+        return self._reply_client.reply_card(
+            bot_message.message_id, PLACEHOLDER_TEXT, updatable=True,
+            in_thread=self._answers_in_thread(bot_message),
+        )
 
     def _event_ids(self, bot_message: BotMessage) -> dict:
         event = (bot_message.raw_data or {}).get("event") or {}
@@ -574,7 +591,8 @@ class FeishuStreamHandler:
 
         chat_type = binding.CHAT_TYPE_P2P if bot_message.chat_type == ChatType.PRIVATE else binding.CHAT_TYPE_GROUP
         session_id = binding.resolve_session_id(
-            chat_id=bot_message.chat_id, chat_type=chat_type, **self._event_ids(bot_message),
+            chat_id=bot_message.chat_id, chat_type=chat_type, message_id=bot_message.message_id,
+            **self._event_ids(bot_message),
         )
         placeholder_id: Optional[str] = None
         future = self._placeholders.pop(bot_message.message_id, None)
@@ -592,7 +610,10 @@ class FeishuStreamHandler:
             self._logger.exception("[Feishu Stream] 助手调用异常: %s", exc)
             answer_text = "分析失败，请稍后重试。"
         try:
-            carried = self._reply_client.finish_card(placeholder_id, bot_message.message_id, answer_text)
+            carried = self._reply_client.finish_card(
+                placeholder_id, bot_message.message_id, answer_text,
+                in_thread=self._answers_in_thread(bot_message),
+            )
         except Exception as exc:
             self._logger.error("[Feishu Stream] 发送答案失败: %s", exc)
             carried = []

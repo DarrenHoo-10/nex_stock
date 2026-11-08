@@ -729,3 +729,63 @@ def test_summary_failure_with_old_summary_returns_candidate() -> None:
 def test_token_estimator_falls_back_to_character_heuristic() -> None:
     with patch("src.agent.chat_context.get_effective_agent_primary_model", side_effect=RuntimeError("no model")):
         assert estimate_text_tokens("abcdefg", _config()) == math.ceil(7 / 3)
+
+
+def test_trigger_ratio_uses_model_context_window() -> None:
+    from src.agent.chat_context import resolve_compression_trigger_tokens
+
+    config = _config(trigger=12000)
+    config.agent_context_compression_trigger_ratio = 0.8
+    with patch("src.services.agent_model_service.resolve_model_context_window", return_value=200000):
+        assert resolve_compression_trigger_tokens(config) == 160000
+    # unknown window -> fixed trigger
+    with patch("src.services.agent_model_service.resolve_model_context_window", return_value=None):
+        assert resolve_compression_trigger_tokens(config) == 12000
+    # ratio 0 -> fixed trigger, window not consulted
+    config.agent_context_compression_trigger_ratio = 0
+    with patch("src.services.agent_model_service.resolve_model_context_window", side_effect=AssertionError):
+        assert resolve_compression_trigger_tokens(config) == 12000
+
+
+def test_history_below_ratio_trigger_is_kept_verbatim_then_compressed_past_it() -> None:
+    db = _reset_db()
+    session_id = "ratio-session"
+    _add_messages(db, session_id, [
+        ("user" if i % 2 == 0 else "assistant", f"message {i} " + "x" * 400) for i in range(30)
+    ])
+    config = _config(trigger=1000)  # fixed trigger alone would compress
+    config.agent_context_compression_trigger_ratio = 0.8
+    adapter = MagicMock()
+    adapter.call_text.return_value = SimpleNamespace(content="摘要", provider="openai", model="m", usage={})
+
+    with patch("src.services.agent_model_service.resolve_model_context_window", return_value=1_000_000):
+        history = build_visible_chat_history(session_id, adapter, config, db_manager=db)
+    assert len(history) == 30 and not adapter.call_text.called
+
+    with patch("src.services.agent_model_service.resolve_model_context_window", return_value=2000):
+        history = build_visible_chat_history(session_id, adapter, config, db_manager=db)
+    assert adapter.call_text.called
+    assert history[0]["content"].startswith(SUMMARY_USER_PREFIX)
+
+
+def test_summary_timeout_scales_with_input_size() -> None:
+    from src.agent.chat_context import (
+        SUMMARY_LLM_MAX_TIMEOUT_SECONDS,
+        SUMMARY_LLM_TIMEOUT_SECONDS,
+        _summary_timeout_seconds,
+    )
+
+    assert _summary_timeout_seconds(10_000) == SUMMARY_LLM_TIMEOUT_SECONDS
+    assert _summary_timeout_seconds(400_000) == 100
+    assert _summary_timeout_seconds(5_000_000) == SUMMARY_LLM_MAX_TIMEOUT_SECONDS
+
+
+def test_config_defaults_enable_compression_at_80_percent(monkeypatch) -> None:
+    for key in ("AGENT_CONTEXT_COMPRESSION_ENABLED", "AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+    Config.reset_instance()
+    config = Config._load_from_env()
+    assert config.agent_context_compression_enabled is True
+    assert config.agent_context_compression_trigger_ratio == 0.8
+    monkeypatch.setenv("AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO", "0")
+    assert Config._load_from_env().agent_context_compression_trigger_ratio == 0.0

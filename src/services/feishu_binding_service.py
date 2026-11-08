@@ -4,10 +4,12 @@
 * Target order for pushes: active ``/bind`` binding -> ``FEISHU_CHAT_ID`` ->
   (caller falls back to the legacy webhook). Both app targets need
   ``FEISHU_APP_ID`` + ``FEISHU_APP_SECRET``.
-* Session mapping: a p2p chat has one stable assistant session
-  (``feishu:<chat_id>``); a group has one per topic/thread
-  (``feishu:<chat_id>:<thread>``) and ``feishu:<chat_id>`` for plain messages.
-  A message replying to a known push / bot answer continues that message's session.
+* Session mapping: in p2p every plain message opens a new topic and session
+  (``feishu:<chat_id>:<root message id>``), and messages inside that topic stay
+  in it; a group has one per topic/thread (``feishu:<chat_id>:<thread>``) and
+  ``feishu:<chat_id>`` for plain messages. A message replying to a known push /
+  bot answer continues that message's session. Pushes are recorded into
+  ``feishu:<chat_id>``.
 * A pushed notification is recorded into the target chat's assistant session so
   follow-up questions have it in context.
 """
@@ -66,11 +68,17 @@ def resolve_session_id(
     thread_id: Optional[str] = None,
     root_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    message_id: Optional[str] = None,
     repo: Optional[FeishuBindingRepository] = None,
 ) -> str:
-    """Map an incoming Feishu message to its assistant session id."""
-    if chat_type == CHAT_TYPE_P2P:
-        return chat_session_id(chat_id)
+    """Map an incoming Feishu message to its assistant session id.
+
+    * Reply to a known push / bot answer -> that message's session.
+    * p2p: a plain message starts a new session keyed by its own id (the bot
+      answers in a topic rooted at it); messages inside that topic carry the
+      root id and continue it.
+    * group: per topic/thread, otherwise one session per chat.
+    """
     linked: Optional[str] = None
     if parent_id or root_id:
         try:
@@ -79,6 +87,9 @@ def resolve_session_id(
             logger.warning("[Feishu] message->session lookup failed: %s", exc)
     if linked:
         return linked
+    if chat_type == CHAT_TYPE_P2P:
+        topic = root_id or thread_id or message_id
+        return thread_session_id(chat_id, topic) if topic else chat_session_id(chat_id)
     topic = thread_id or root_id
     if topic:
         return thread_session_id(chat_id, topic)
