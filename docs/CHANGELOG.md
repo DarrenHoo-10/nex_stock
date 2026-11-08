@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 选股硬过滤新增可选字段 `board_whitelist`（按代码前缀过滤沪深主板/创业板/科创板/北交所）与 `concept_keywords`（概念题材关键词包含匹配，快照缺概念列时放行），新增 `SCREENING_EXTRA_STRATEGIES_DIR` 用户自定义选股策略目录（与内置策略合并、同名覆盖）。
 - [新功能] 选股策略新增 `screening.setup_scan` 全市场形态预扫描（`surge_pullback`：放量大涨→回踩 MA10），按交易日缓存 Tushare 全市场日线，候选附带大涨日、下一交易日买入价格线、取消线与市场开关状态；开关关闭时默认只给观察名单并标注，可配置为空名单。
 - [新功能] 选股评分新增 `small_cap` 小市值优先因子（流通市值越小分越高，原 `size` 仍为大市值优先）。
+- [修复] 选股的 Tushare 快照与日 K 改用 DSA 数据源层的 Tushare HTTP 客户端：默认请求官方经典端点 `http://api.tushare.pro`，`TUSHARE_HTTP_URL` 与数据源层含义一致。修复 tushare SDK 1.4 下覆盖接入地址后每次请求都静默返回空表、即使配置了 `TUSHARE_TOKEN` 也总是回退到 Sina 的问题。HTTP 错误、接口错误码和空表现在按来源失败处理并继续降级；选股不再读取未文档化的 `TUSHARE_API_URL`。
 
 ## [3.33.0] - 2026-10-15
 
