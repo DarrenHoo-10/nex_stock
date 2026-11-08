@@ -672,9 +672,10 @@ WebUI 中保存的运行时配置默认写入容器内部配置文件，不等�
 
 ### 公网部署（用户中心登录 + 单容器）
 
-前端静态文件放在首尔 nginx、后端放在东京的拆分部署，以及 `AUTH_MODE=user_center`（NexorAI 用户中心、仅管理员）的完整步骤见：
+拆分部署（前端静态文件放在首尔 nginx，后端经 ZeroTier 内网反向代理）与 `AUTH_MODE=user_center`（NexorAI 用户中心、仅管理员）的完整步骤见：
 
-- 后端（东京）：[deploy/tokyo/README.md](../deploy/tokyo/README.md) —— 单容器同时运行 Web/API 与全部调度任务（`python main.py --serve --schedule --no-run-immediately`），飞书长连接只启动一次；不要同时启动 `docker/docker-compose.yml` 里的 `analyzer` 与 `server`。
+- 后端（当前，Mac）：[deploy/mac/README.md](../deploy/mac/README.md) —— 原生 Python 3.11 进程，由 launchd 守护，命令与容器相同；同一时间只能运行一个后端实例。
+- 后端（备用 / 回滚，东京 Docker）：[deploy/tokyo/README.md](../deploy/tokyo/README.md) —— 单容器同时运行 Web/API 与全部调度任务（`python main.py --serve --schedule --no-run-immediately`），飞书长连接只启动一次；不要同时启动 `docker/docker-compose.yml` 里的 `analyzer` 与 `server`。
 - 前端与 nginx（首尔）：[deploy/seoul/README.md](../deploy/seoul/README.md)
 - 生产 `.env` 键名模板：`deploy/tokyo/env.production.example`
 

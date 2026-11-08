@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  nex-stock 后端 launchd 用户代理模板（见 deploy/mac/README.md）。
+  安装时替换占位符：
+    __HOME__   登录用户的主目录（如 /Users/<用户名>），部署根目录为 __HOME__/nex-stock
+    __ZT_IP__  这台 Mac 的 ZeroTier 内网 IP；只监听该地址，不要用 0.0.0.0
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>cn.nexorai.nex-stock</string>
+  <key>WorkingDirectory</key><string>__HOME__/nex-stock/app</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/nex-stock/venv/bin/python</string><string>main.py</string>
+    <string>--serve</string><string>--schedule</string><string>--no-run-immediately</string>
+    <string>--host</string><string>__ZT_IP__</string><string>--port</string><string>8000</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ENV_FILE</key><string>__HOME__/nex-stock/config/.env</string>
+    <key>DATABASE_PATH</key><string>__HOME__/nex-stock/data/stock_analysis.db</string>
+    <key>LOG_DIR</key><string>__HOME__/nex-stock/logs</string>
+    <key>WEBUI_HOST</key><string>__ZT_IP__</string>
+    <key>WEBUI_AUTO_BUILD</key><string>false</string>
+    <!-- 调度时间按北京时间解析；Mac 系统时区可能不是 Asia/Shanghai -->
+    <key>TZ</key><string>Asia/Shanghai</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+    <key>PATH</key><string>__HOME__/nex-stock/venv/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <!-- ZeroTier 网卡晚于进程就绪时绑定会失败，KeepAlive 按 ThrottleInterval 自动重试 -->
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__HOME__/nex-stock/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/nex-stock/logs/launchd.err.log</string>
+</dict>
+</plist>
