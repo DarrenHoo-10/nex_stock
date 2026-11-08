@@ -90,7 +90,8 @@ class RegistrationSessionTests(unittest.TestCase):
 
 class ApplyRegistrationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # Windows keeps the sqlite file open after Config reload, so cleanup may fail there.
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.env_path = Path(self.tmp.name) / ".env"
         self.env_path.write_text("STOCK_LIST=600519\nFEISHU_APP_ID=cli_old\n", encoding="utf-8")
         self._env = {k: os.environ.get(k) for k in ("ENV_FILE", "DATABASE_PATH")}
@@ -100,6 +101,9 @@ class ApplyRegistrationTests(unittest.TestCase):
         self.service = SystemConfigService(manager=ConfigManager(env_path=self.env_path))
 
     def tearDown(self):
+        # A config reload exports saved keys into os.environ; don't leak them into other tests.
+        for key in [k for k in os.environ if k.startswith("FEISHU_")]:
+            os.environ.pop(key, None)
         for key, value in self._env.items():
             if value is None:
                 os.environ.pop(key, None)
