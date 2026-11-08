@@ -109,14 +109,17 @@
 
 ```bash
 python scripts/backfill_market_snapshot.py            # 首次：回填个股、板块与成分
-python scripts/run_board_pipeline.py                  # 补全上一交易日 -> 上一日全量成分 -> 入库 -> 指标 -> 判定，写 daily_runs
+python scripts/run_board_pipeline.py                  # 补全上一交易日 -> 上一日概念板块成分（逐板块）-> 入库 -> 指标 -> 判定，写 daily_runs
 python scripts/run_board_pipeline.py --date 2026-11-06 --skip-ingest   # 只用本地数据重新计算
 python scripts/backfill_market_snapshot.py --members-only              # 人工修复：按板块、按区间重刷成分
+python scripts/run_board_pipeline.py --industry-membership             # 按需运行每周的行业板块成分刷新
 ```
+
+**行业板块成分每周刷新**：行业板块成分变化慢，不放进每日流程，由独立的定时任务每周刷新一次（`BOARD_INDUSTRY_MEMBERSHIP_ENABLED` 默认开启，`BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY` 默认 `6` = 周六，ISO 星期：1 周一 … 7 周日，`BOARD_INDUSTRY_MEMBERSHIP_TIME` 默认 `10:00`，本机时区）；任务每天在设定时间触发一次但只在设定的星期执行，不管当天是否交易日，取今天之前最近一个交易日的成分，逐个行业板块请求，已折叠的板块不再请求，未配置 `TUSHARE_TOKEN` 时记日志跳过。
 
 **定时运行**：在开启定时模式（`SCHEDULE_ENABLED=true` 或 `--schedule`，Web / API 常驻进程或命令行定时循环均可）时，调度器每个交易日（A 股交易日历）按 `BOARD_PIPELINE_SCHEDULE_TIME`（默认 `17:00`，本机时区，与 `SCHEDULE_TIME` 相同；不影响每日分析的 `SCHEDULE_TIME`）运行一次；`BOARD_PIPELINE_ENABLED=false` 可关闭。需要配置 `TUSHARE_TOKEN`，未配置时当次运行跳过并写一行日志；每次运行都重新读取令牌，在 Web 设置里补上后无需重启。运行放在独立线程，上一次没跑完则跳过下一次；失败只记日志，不影响调度器和每日分析，`partial` 记为警告。调度器在 17:00 之后才启动时当天不会补跑，手动运行脚本即可（幂等）。
 
-流程入口是 `src/services/board_pipeline.py::run_board_pipeline(trade_date, force=False, skip_ingest=False, skip_members=False, recompute_days=0)`，步骤和推算规则见[核心流程后端设计](design/core-backend-design.md) 2.9：D 日 17:00 `daily_basic`、`limit_list_d`、`dc_*` 还没发布，所以先补全 D-1（真实值替换前一天的推算值、取 D-1 的板块目录 / 行情 / 全量成分，并重算 D-1 的指标，D-1 已写下的信号不改写），再入库 D（换手率、流通市值、涨跌停由 `daily` + `stk_limit` + 上一日数据推算，`open_times` 留空，来源记在 `market_daily.quality`）。已有成功运行的交易日默认跳过；数据不完整的运行记为 `partial`，补齐数据后可直接再跑。助手工具 `get_board_signal` 读取同一份结果。
+流程入口是 `src/services/board_pipeline.py::run_board_pipeline(trade_date, force=False, skip_ingest=False, skip_members=False, recompute_days=0)`，步骤和推算规则见[核心流程后端设计](design/core-backend-design.md) 2.9：D 日 17:00 `daily_basic`、`limit_list_d`、`dc_*` 还没发布，所以先补全 D-1（真实值替换前一天的推算值、取 D-1 的板块目录 / 行情 / 概念板块成分（逐板块 `dc_member`，失败或空返回的板块保留现有成分），并重算 D-1 的指标，D-1 已写下的信号不改写），再入库 D（换手率、流通市值、涨跌停由 `daily` + `stk_limit` + 上一日数据推算，`open_times` 留空，来源记在 `market_daily.quality`）。已有成功运行的交易日默认跳过；数据不完整的运行记为 `partial`，补齐数据后可直接再跑。助手工具 `get_board_signal` 读取同一份结果。
 
 ## 回滚
 

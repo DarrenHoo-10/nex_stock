@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import operator
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from src.repositories.board_analysis_repo import BoardAnalysisRepository
@@ -50,6 +50,21 @@ _STATE_DISPLAY_RANK = {
 }
 TAG_ORDER = ("mainline", "supported", "single_stock", "cooling", "merged")
 MIN_AXIS_SESSIONS = 20
+# States whose driver is looked up in the news pool (boards with no state have nothing to explain).
+NEWS_DRIVER_STATES = ("first_launch", "strengthening", "divergence", "ebbing", "abnormal_drop")
+NEWS_PREVIOUS_CLOSE = dtime(15, 0)
+NEWS_WINDOW_END = dtime(17, 0)
+NEWS_HEADLINES_IN_EVIDENCE = 3
+NEWS_CANDIDATE_LIMIT = 500
+_NEWS_HEADLINE_CHARS = 60
+
+NewsLoader = Callable[[datetime, datetime, int], List[Dict[str, Any]]]
+
+
+def _default_news_loader(since: datetime, until: datetime, min_importance: int) -> List[Dict[str, Any]]:
+    from src.services.news_digest_service import build_news_digest
+
+    return build_news_digest(since, until, min_importance=min_importance, limit=NEWS_CANDIDATE_LIMIT)
 
 _OPS: Dict[str, Callable[[float, float], bool]] = {
     ">=": operator.ge, "<=": operator.le, ">": operator.gt, "<": operator.lt,
@@ -559,11 +574,23 @@ class BoardSignalService:
         repo: Optional[BoardAnalysisRepository] = None,
         thresholds: Optional[Dict[str, Any]] = None,
         calendar_fn: Optional[CalendarFn] = default_calendar_fn,
+        news_loader: Optional[NewsLoader] = None,
+        news_min_importance: Optional[int] = None,
     ) -> None:
         self._repo = repo
         self._thresholds = thresholds
         self._calendar_fn = calendar_fn
+        self._news_loader = news_loader or _default_news_loader
+        self._news_min_importance = news_min_importance
         self.threshold_warnings: List[str] = []
+
+    @property
+    def news_min_importance(self) -> int:
+        if self._news_min_importance is None:
+            from src.config import get_config
+
+            self._news_min_importance = int(getattr(get_config(), "news_board_driver_min_importance", 4))
+        return self._news_min_importance
 
     @property
     def repo(self) -> BoardAnalysisRepository:
@@ -634,6 +661,7 @@ class BoardSignalService:
             signals[board["id"]] = self._judge_board(board, today, rows, broad, batch)
 
         self._apply_merge(catalog, signals)
+        self._apply_news_drivers(day, axis, signals, batch)
         for board in catalog:
             sig = signals[board["id"]]
             sig["flags"]["tags"] = [t for t in TAG_ORDER if t in sig["flags"]["tags"]]
@@ -805,6 +833,44 @@ class BoardSignalService:
         return strong_day(ctx, 0) is True or weak_day(ctx, 0) is True or in_top5
 
     # ------------------------------------------------------------------
+    def news_window(self, day: date, axis: Sequence[date]) -> Tuple[datetime, datetime]:
+        """News relevant to trade date ``day``: previous session's close (15:00) to ``day`` 17:00, China time."""
+        previous = next((d for d in axis if d < day), None)
+        if previous is None:
+            previous = day - timedelta(days=1)
+        return datetime.combine(previous, NEWS_PREVIOUS_CLOSE), datetime.combine(day, NEWS_WINDOW_END)
+
+    def _apply_news_drivers(
+        self, day: date, axis: Sequence[date], signals: Dict[int, Dict[str, Any]], batch: SignalBatch,
+    ) -> None:
+        """Boards with a state and classified news (importance >= threshold) in the window get driver ``news``.
+
+        The headline text is copied into the signal evidence: the news pool purges after a few days,
+        the evidence must stay readable afterwards.
+        """
+        candidates = [sig for sig in signals.values() if sig["signal_type"] in NEWS_DRIVER_STATES]
+        if not candidates:
+            return
+        since, until = self.news_window(day, axis)
+        try:
+            news = self._news_loader(since, until, self.news_min_importance)
+        except Exception as exc:  # noqa: BLE001 - news is an enrichment; judgment must not depend on it
+            logger.warning("读取板块相关消息失败，驱动因素不含消息面: %s", exc)
+            batch.warnings.append("消息面数据读取失败，驱动因素未包含消息")
+            return
+        by_board: Dict[int, List[Dict[str, Any]]] = {}
+        for item in news:
+            for board_id in item.get("board_ids") or []:
+                by_board.setdefault(int(board_id), []).append(item)
+        if not by_board:
+            return
+        # the digest is already ranked (breaking, importance, newest); keep that order per board
+        for board_id, sig in signals.items():
+            items = by_board.get(board_id)
+            if not items or sig["signal_type"] not in NEWS_DRIVER_STATES:
+                continue
+            _set_news_driver(sig, items[:NEWS_HEADLINES_IN_EVIDENCE], len(items), since, until)
+
     def _apply_merge(self, catalog: List[Dict[str, Any]], signals: Dict[int, Dict[str, Any]]) -> None:
         groups: Dict[str, List[Dict[str, Any]]] = {}
         for board in catalog:
@@ -929,6 +995,52 @@ def _driver(state: str, row: Dict[str, Any], th: Dict[str, Any]) -> Tuple[str, s
     if state in ("first_launch", "strengthening") and ratio is not None and ratio >= th["amount_ratio_strong"]:
         return "capital", f"资金推动：成交额放大至 {ratio:.1f} 倍；消息面与业绩未核实"
     return "unknown", "原因未明：未接入消息 / 业绩数据，仅按行情判断"
+
+
+def _news_clock(published_at: Optional[str]) -> str:
+    try:
+        return datetime.fromisoformat(published_at).strftime("%m-%d %H:%M") if published_at else ""
+    except ValueError:
+        return ""
+
+
+def _set_news_driver(
+    sig: Dict[str, Any], items: List[Dict[str, Any]], total: int, since: datetime, until: datetime,
+) -> None:
+    """Switch the signal's driver to ``news`` and copy the headlines into its evidence."""
+    evidence = sig["evidence"]
+    previous = evidence.get("driver") or {}
+    copied = [
+        {
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "source": item.get("source"),
+            "published_at": item.get("published_at"),
+            "importance": item.get("importance"),
+            "is_breaking": bool(item.get("is_breaking")),
+            "url": item.get("url") or "",
+        }
+        for item in items
+    ]
+    headlines = "；".join(
+        f"{str(c['title'])[:_NEWS_HEADLINE_CHARS]}（{c['source']} {_news_clock(c['published_at'])}）".replace(" ）", "）")
+        for c in copied
+    )
+    text = f"消息驱动：{headlines}"
+    if total > len(copied):
+        text += f"；另有 {total - len(copied)} 条相关消息"
+    ratio = (evidence.get("inputs") or {}).get("amount_ratio_5d")
+    if previous.get("kind") == "capital" and ratio is not None:
+        text += f"；同时成交额放大至 {ratio:.1f} 倍"
+    evidence["driver"] = {
+        "kind": "news",
+        "text": text,
+        "news": copied,
+        "news_window": [since.isoformat(), until.isoformat()],
+    }
+    lines = evidence.setdefault("lines", [])
+    lines.append("消息面：" + "；".join(f"{c['title']}（{c['source']}）" for c in copied))
+    sig["driver"] = "news"
 
 
 def _reason(state: str, ctx: _Ctx, ev: Eval) -> str:

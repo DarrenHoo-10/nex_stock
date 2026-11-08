@@ -2135,6 +2135,16 @@ class SystemConfigService:
             "SCHEDULE_TIMES",
             "BOARD_PIPELINE_ENABLED",
             "BOARD_PIPELINE_SCHEDULE_TIME",
+            "BOARD_INDUSTRY_MEMBERSHIP_ENABLED",
+            "BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY",
+            "BOARD_INDUSTRY_MEMBERSHIP_TIME",
+            "PREOPEN_PUSH_ENABLED",
+            "PREOPEN_PUSH_TIME",
+            "NEWS_INTEL_AUTO_FETCH_ENABLED",
+            "NEWS_POLL_INTERVAL_MINUTES",
+            "NEWS_POLL_OFFHOURS_INTERVAL_MINUTES",
+            "NEWS_DAILY_FETCH_TIME",
+            "NEWS_CLASSIFY_ENABLED",
         }:
             try:
                 self._runtime_scheduler.reconcile_from_config(
@@ -3079,7 +3089,9 @@ class SystemConfigService:
         dispatch = {
             "wechat": lambda: WechatSender(config).send_to_wechat(titled_content, timeout_seconds=timeout_seconds),
             "dingtalk": lambda: DingtalkSender(config).send_to_dingtalk(titled_content, title="Test Message", timeout_seconds=timeout_seconds),
-            "feishu": lambda: FeishuSender(config).send_to_feishu(titled_content, timeout_seconds=timeout_seconds),
+            "feishu": lambda: FeishuSender(config).send_to_feishu(
+                titled_content, timeout_seconds=timeout_seconds, record_in_session=False,
+            ),
             "telegram": lambda: TelegramSender(config).send_to_telegram(titled_content, timeout_seconds=timeout_seconds),
             "email": lambda: EmailSender(config).send_to_email(content, subject=title, timeout_seconds=timeout_seconds),
             "pushover": lambda: PushoverSender(config).send_to_pushover(content, title=title, timeout_seconds=timeout_seconds),

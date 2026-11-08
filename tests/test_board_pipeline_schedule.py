@@ -417,3 +417,217 @@ def test_runtime_scheduler_board_job_failure_to_build_does_not_block_analysis(fa
             patch("src.services.runtime_scheduler.threading.Thread", _NoopThread):
         service.reconcile_from_config()
     assert [job.at_time for job in fake_schedule.get_jobs()] == ["09:20"]
+
+# ----------------------------------------------------------------------
+# Weekly industry-board membership job
+# ----------------------------------------------------------------------
+INDUSTRY_JOB = schedule_module.INDUSTRY_MEMBERSHIP_JOB_NAME
+
+
+def industry_config(**overrides):
+    values = dict(
+        board_pipeline_enabled=True, board_pipeline_schedule_time="17:00", tushare_token="token-for-tests",
+        board_industry_membership_enabled=True, board_industry_membership_weekday=6,
+        board_industry_membership_time="10:00",
+    )
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+class RecordingRefresher:
+    def __init__(self, result=None, error=None):
+        self.calls = []
+        self.result = result if result is not None else {
+            "status": "succeeded", "trade_date": "2026-11-06", "detail": "行业板块成分 ok", "result": {}}
+        self.error = error
+
+    def __call__(self, *, today):
+        self.calls.append(today)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def test_weekly_job_runs_on_the_configured_weekday_regardless_of_trading_days():
+    refresher = RecordingRefresher()
+    result = schedule_module.run_scheduled_industry_membership(
+        lambda: industry_config(), today=SATURDAY, refresher=refresher)  # a Saturday is never a trading day
+    assert result["status"] == "succeeded" and refresher.calls == [SATURDAY]
+
+
+def test_weekly_job_skips_every_other_weekday_without_calling_the_refresher():
+    refresher = RecordingRefresher()
+    for offset in range(7):
+        day = date(2026, 11, 2 + offset)  # Mon .. Sun
+        result = schedule_module.run_scheduled_industry_membership(
+            lambda: industry_config(), today=day, refresher=refresher)
+        if day == SATURDAY:
+            assert result["status"] == "succeeded"
+        else:
+            assert result == {"status": "skipped", "reason": "not_scheduled_weekday", "run_date": day.isoformat()}
+    assert refresher.calls == [SATURDAY]
+
+
+def test_weekly_job_weekday_is_iso_and_read_from_the_live_config():
+    refresher = RecordingRefresher()
+    run = schedule_module.run_scheduled_industry_membership
+    assert run(lambda: industry_config(board_industry_membership_weekday=1), today=MONDAY, refresher=refresher)["status"] == "succeeded"
+    assert run(lambda: industry_config(board_industry_membership_weekday=7), today=date(2026, 11, 8), refresher=refresher)["status"] == "succeeded"
+    assert run(lambda: industry_config(board_industry_membership_weekday=7), today=SATURDAY, refresher=refresher)["status"] == "skipped"
+    assert refresher.calls == [MONDAY, date(2026, 11, 8)]
+
+
+def test_weekly_job_skips_with_a_log_when_the_token_is_missing(caplog):
+    refresher = RecordingRefresher()
+    with caplog.at_level(logging.INFO, logger=schedule_module.logger.name):
+        for token in (None, "", "   "):
+            result = schedule_module.run_scheduled_industry_membership(
+                lambda: industry_config(tushare_token=token), today=SATURDAY, refresher=refresher)
+            assert result["status"] == "skipped" and result["reason"] == "no_tushare_token"
+    assert "TUSHARE_TOKEN" in caplog.text and refresher.calls == []
+
+
+def test_weekly_job_skips_when_disabled_by_either_switch():
+    refresher = RecordingRefresher()
+    run = schedule_module.run_scheduled_industry_membership
+    assert run(lambda: industry_config(board_industry_membership_enabled=False), today=SATURDAY, refresher=refresher)["reason"] == "disabled"
+    assert run(lambda: industry_config(board_pipeline_enabled=False), today=SATURDAY, refresher=refresher)["reason"] == "disabled"
+    assert refresher.calls == []
+
+
+def test_weekly_job_reports_an_already_folded_day_as_skipped():
+    already_done = {"status": "skipped", "trade_date": "2026-11-06", "detail": "2026-11-06 行业板块该日成分已折叠入拉链表", "result": {}}
+    refresher = RecordingRefresher(result=already_done)
+    result = schedule_module.run_scheduled_industry_membership(lambda: industry_config(), today=SATURDAY, refresher=refresher)
+    assert result["status"] == "skipped" and "已折叠" in result["detail"]
+
+
+def test_weekly_job_contains_failures_and_overlapping_runs():
+    boom = schedule_module.run_scheduled_industry_membership(
+        lambda: industry_config(), today=SATURDAY, refresher=RecordingRefresher(error=RuntimeError("boom")))
+    assert boom["status"] == "failed" and "boom" in boom["error"]
+
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(*, today):
+        entered.set()
+        release.wait(timeout=5)
+        return {"status": "succeeded", "trade_date": "2026-11-06", "detail": "ok", "result": {}}
+
+    worker = threading.Thread(target=lambda: schedule_module.run_scheduled_industry_membership(
+        lambda: industry_config(), today=SATURDAY, refresher=slow))
+    worker.start()
+    try:
+        assert entered.wait(timeout=5)
+        second = schedule_module.run_scheduled_industry_membership(
+            lambda: industry_config(), today=SATURDAY, refresher=RecordingRefresher())
+        assert second["status"] == "skipped" and second["reason"] == "already_running"
+    finally:
+        release.set()
+        worker.join(timeout=5)
+
+
+def test_industry_job_builder_defaults_to_10_00_and_follows_the_live_time():
+    config = industry_config()
+    [job] = schedule_module.build_industry_membership_jobs(config, config_provider=lambda: config)
+    assert job["name"] == INDUSTRY_JOB and job["schedule_time"] == "10:00"
+    config.board_industry_membership_time = "09:30"
+    assert job["schedule_time_provider"]() == "09:30"
+    config.board_industry_membership_time = ""
+    assert job["schedule_time_provider"]() == "10:00"
+
+
+def test_industry_job_builder_registers_only_when_both_switches_are_on(caplog):
+    for overrides in ({"board_pipeline_enabled": False}, {"board_industry_membership_enabled": False}):
+        off = industry_config(**overrides)
+        assert schedule_module.build_industry_membership_jobs(off, config_provider=lambda: off) == []
+    bare = SimpleNamespace()
+    assert schedule_module.build_industry_membership_jobs(bare, config_provider=lambda: bare) == []
+    no_token = industry_config(tushare_token=None)  # still registered: the token is re-read on every firing
+    with caplog.at_level(logging.INFO, logger=schedule_module.logger.name):
+        assert len(schedule_module.build_industry_membership_jobs(no_token, config_provider=lambda: no_token)) == 1
+    assert "TUSHARE_TOKEN" in caplog.text
+
+
+def test_industry_job_task_runs_one_scheduled_occurrence(monkeypatch):
+    seen = []
+    monkeypatch.setattr(schedule_module, "run_scheduled_industry_membership", lambda provider: seen.append(provider()))
+    config = industry_config()
+    [job] = schedule_module.build_industry_membership_jobs(config, config_provider=lambda: config)
+    job["task"]()
+    assert seen == [config]
+
+
+class IndustryConfigKeysTestCase(unittest.TestCase):
+    def tearDown(self):
+        Config.reset_instance()
+
+    def _load(self, env):
+        with patch("src.config.setup_env"), patch.object(Config, "_parse_litellm_yaml", return_value=[]), \
+                patch.object(Config, "_parse_stock_email_groups", return_value=[]), \
+                patch.dict(os.environ, env, clear=True):
+            return Config._load_from_env()
+
+    def test_defaults(self):
+        config = self._load({})
+        self.assertTrue(config.board_industry_membership_enabled)
+        self.assertEqual(config.board_industry_membership_weekday, 6)  # Saturday (ISO)
+        self.assertEqual(config.board_industry_membership_time, "10:00")
+        self.assertFalse(config.board_membership_full_day_fallback)  # the all-boards query is opt-in
+        self.assertEqual(config.market_snapshot_members_requests_per_minute, 200)
+        self.assertEqual(config.market_snapshot_requests_per_minute, 60)  # other ingestion stays conservative
+
+    def test_env_overrides(self):
+        config = self._load({
+            "BOARD_INDUSTRY_MEMBERSHIP_ENABLED": "false", "BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY": "7",
+            "BOARD_INDUSTRY_MEMBERSHIP_TIME": "09:15", "BOARD_MEMBERSHIP_FULL_DAY_FALLBACK": "true",
+            "MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE": "120",
+        })
+        self.assertFalse(config.board_industry_membership_enabled)
+        self.assertEqual(config.board_industry_membership_weekday, 7)
+        self.assertEqual(config.board_industry_membership_time, "09:15")
+        self.assertTrue(config.board_membership_full_day_fallback)
+        self.assertEqual(config.market_snapshot_members_requests_per_minute, 120)
+
+    def test_invalid_values_fall_back_to_defaults(self):
+        for bad in ("0", "8", "-1", "sat", "6.5"):
+            self.assertEqual(self._load({"BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY": bad}).board_industry_membership_weekday, 6, bad)
+        self.assertEqual(self._load({"BOARD_INDUSTRY_MEMBERSHIP_TIME": "25:99"}).board_industry_membership_time, "10:00")
+        self.assertEqual(self._load({"MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE": "0"}).market_snapshot_members_requests_per_minute, 1)
+        self.assertEqual(self._load({"MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE": "x"}).market_snapshot_members_requests_per_minute, 200)
+
+
+def test_runtime_scheduler_registers_the_weekly_job_next_to_the_board_job(fake_schedule):
+    config = SimpleNamespace(
+        schedule_enabled=True, schedule_time="18:00", schedule_times=["09:20"],
+        board_pipeline_enabled=True, board_pipeline_schedule_time="17:00", tushare_token="token-for-tests",
+        board_industry_membership_enabled=True, board_industry_membership_weekday=6,
+        board_industry_membership_time="10:00",
+    )
+    service = _runtime_service(config)
+    with patch("src.services.runtime_scheduler.threading.Thread", _NoopThread):
+        service.reconcile_from_config()
+    assert sorted(job.at_time for job in fake_schedule.get_jobs()) == ["09:20", "10:00", "17:00"]
+
+    config.board_industry_membership_time = "09:45"  # a saved setting rebuilds the schedule, no duplicate left behind
+    with patch("src.services.runtime_scheduler.threading.Thread", _NoopThread):
+        service.reconcile_from_config()
+    assert sorted(job.at_time for job in fake_schedule.get_jobs()) == ["09:20", "09:45", "17:00"]
+
+    config.board_industry_membership_enabled = False
+    with patch("src.services.runtime_scheduler.threading.Thread", _NoopThread):
+        service.reconcile_from_config()
+    assert sorted(job.at_time for job in fake_schedule.get_jobs()) == ["09:20", "17:00"]
+
+
+def test_runtime_scheduler_weekly_job_build_failure_does_not_block_other_jobs(fake_schedule):
+    config = SimpleNamespace(
+        schedule_enabled=True, schedule_time="18:00", schedule_times=["09:20"],
+        board_pipeline_enabled=True, board_pipeline_schedule_time="17:00", tushare_token="token-for-tests",
+        board_industry_membership_enabled=True,
+    )
+    service = _runtime_service(config)
+    with patch("src.services.board_pipeline_schedule.build_industry_membership_jobs", side_effect=RuntimeError("boom")), \
+            patch("src.services.runtime_scheduler.threading.Thread", _NoopThread):
+        service.reconcile_from_config()
+    assert sorted(job.at_time for job in fake_schedule.get_jobs()) == ["09:20", "17:00"]

@@ -85,6 +85,7 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "MARKET_SNAPSHOT_BACKFILL_DAYS",
     "MARKET_BENCHMARK_CODE",
     "MARKET_SNAPSHOT_REQUESTS_PER_MINUTE",
+    "MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE",
     # Board anomaly threshold overrides (JSON object) are edited through the
     # dedicated thresholds page / PUT /api/v1/boards/thresholds, not the generic form.
     "BOARD_ANOMALY_THRESHOLDS",
@@ -92,6 +93,37 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     # scheduler owners; the switch/time are not part of the generic settings form.
     "BOARD_PIPELINE_ENABLED",
     "BOARD_PIPELINE_SCHEDULE_TIME",
+    # Board membership refresh: concept boards daily inside the 17:00 pipeline, industry boards in a
+    # weekly job (switch / weekday / time), plus the opt-in all-boards fallback. Ops-level, edited in .env.
+    "BOARD_MEMBERSHIP_FULL_DAY_FALLBACK",
+    "BOARD_INDUSTRY_MEMBERSHIP_ENABLED",
+    "BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY",
+    "BOARD_INDUSTRY_MEMBERSHIP_TIME",
+    # US leaders (JSON watch list + move thresholds) and the 08:15 pre-open push are
+    # ops-level: read by the US overnight service and the scheduler owners, edited in .env.
+    "US_LEADERS",
+    "US_MOVE_STOCK_PCT",
+    "US_MOVE_INDEX_PCT",
+    "PREOPEN_PUSH_ENABLED",
+    "PREOPEN_PUSH_TIME",
+    # AKShare news pool knobs (cadence, retention tiers, dedup, announcement mode, classification
+    # batching, board-driver threshold) are ops-level, read by the news scheduler jobs and services;
+    # NEWS_INTEL_AUTO_FETCH_ENABLED keeps its existing switch semantics.
+    "NEWS_POLL_INTERVAL_MINUTES",
+    "NEWS_POLL_OFFHOURS_INTERVAL_MINUTES",
+    "NEWS_DAILY_FETCH_TIME",
+    "NEWS_AKSHARE_CLS_SYMBOL",
+    "NEWS_FLASH_RETENTION_DAYS",
+    "NEWS_COMPANY_RETENTION_DAYS",
+    "NEWS_DEDUP_WINDOW_MINUTES",
+    "NEWS_FETCH_TIMEOUT_SEC",
+    "NEWS_ANNOUNCEMENT_MODE",
+    "NEWS_ANNOUNCEMENT_BY_CODE_MAX",
+    "NEWS_CLASSIFY_ENABLED",
+    "NEWS_CLASSIFY_BATCH_SIZE",
+    "NEWS_CLASSIFY_MAX_ITEMS_PER_RUN",
+    "NEWS_CLASSIFY_MAX_ATTEMPTS",
+    "NEWS_BOARD_DRIVER_MIN_IMPORTANCE",
     "USE_PROXY",
     "PROXY_HOST",
     "PROXY_PORT",
@@ -385,6 +417,36 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["inherits_primary_when_empty"],
     },
+    "LITELLM_LIGHT_MODEL": {
+        "title": "Light Model",
+        "description": "Optional cheap model for light chores such as news classification, tagging and short summaries, in the same provider/model format as the primary model (channel model names from LLM_CHANNELS also work). When empty, the effective primary model is used; if the light model call fails, the primary model is tried once. It does not change any other feature.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 3,
+        "help_key": "settings.ai_model.LITELLM_LIGHT_MODEL",
+        "examples": [
+            "LITELLM_LIGHT_MODEL=deepseek/deepseek-v4-flash",
+            "LITELLM_LIGHT_MODEL=gemini/gemini-3.1-flash-lite",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+            {
+                "label": "完整指南：AI 模型配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
+            },
+        ],
+        "warning_codes": ["inherits_primary_when_empty"],
+    },
     "LITELLM_FALLBACK_MODELS": {
         "title": "Fallback Models",
         "description": "Comma-separated fallback models tried when the primary model fails (e.g. anthropic/claude-sonnet-4-6,openai/gpt-5.4-mini). Useful for cross-provider redundancy.",
@@ -490,6 +552,105 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             },
         ],
         "warning_codes": ["channels_override_legacy_keys"],
+    },
+    "LLM_REASONING_EFFORT": {
+        "title": "Reasoning Effort",
+        "description": "Standard reasoning_effort request parameter for the primary analysis model and its fallbacks (stock analysis, market review). Empty = not sent (model default). Values: low, medium, high, xhigh, max. Higher effort is slower and uses more tokens.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "",
+        "options": [
+            {"label": "Not set (model default)", "value": ""},
+            {"label": "low", "value": "low"},
+            {"label": "medium", "value": "medium"},
+            {"label": "high", "value": "high"},
+            {"label": "xhigh", "value": "xhigh"},
+            {"label": "max", "value": "max"},
+        ],
+        "validation": {"enum": ["", "low", "medium", "high", "xhigh", "max"]},
+        "display_order": 4,
+        "help_key": "settings.ai_model.LLM_REASONING_EFFORT",
+        "examples": [
+            "LLM_REASONING_EFFORT=high",
+            "LLM_REASONING_EFFORT=",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：AI 模型配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "AGENT_REASONING_EFFORT": {
+        "title": "Assistant Reasoning Effort",
+        "description": "reasoning_effort for assistant / agent chat. Empty follows LLM_REASONING_EFFORT. Values: low, medium, high, xhigh, max.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "",
+        "options": [
+            {"label": "Not set (model default)", "value": ""},
+            {"label": "low", "value": "low"},
+            {"label": "medium", "value": "medium"},
+            {"label": "high", "value": "high"},
+            {"label": "xhigh", "value": "xhigh"},
+            {"label": "max", "value": "max"},
+        ],
+        "validation": {"enum": ["", "low", "medium", "high", "xhigh", "max"]},
+        "display_order": 4,
+        "help_key": "settings.ai_model.AGENT_REASONING_EFFORT",
+        "examples": [
+            "AGENT_REASONING_EFFORT=high",
+            "AGENT_REASONING_EFFORT=",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：AI 模型配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "LITELLM_LIGHT_REASONING_EFFORT": {
+        "title": "Light Model Reasoning Effort",
+        "description": "reasoning_effort for light-model chores such as news classification. Empty = not sent. A light call that falls back to the primary model uses LLM_REASONING_EFFORT for that attempt. Values: low, medium, high, xhigh, max.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "",
+        "options": [
+            {"label": "Not set (model default)", "value": ""},
+            {"label": "low", "value": "low"},
+            {"label": "medium", "value": "medium"},
+            {"label": "high", "value": "high"},
+            {"label": "xhigh", "value": "xhigh"},
+            {"label": "max", "value": "max"},
+        ],
+        "validation": {"enum": ["", "low", "medium", "high", "xhigh", "max"]},
+        "display_order": 4,
+        "help_key": "settings.ai_model.LITELLM_LIGHT_REASONING_EFFORT",
+        "examples": [
+            "LITELLM_LIGHT_REASONING_EFFORT=high",
+            "LITELLM_LIGHT_REASONING_EFFORT=",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：AI 模型配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
+            },
+        ],
+        "warning_codes": [],
     },
     "LLM_TEMPERATURE": {
         "title": "Temperature",
@@ -2028,7 +2189,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # ------------------------------------------------------------------
     "FEISHU_WEBHOOK_URL": {
         "title": "Feishu Webhook URL",
-        "description": "Feishu custom bot webhook URL for group notifications. This is the webhook push channel; FEISHU_APP_ID / FEISHU_APP_SECRET do not enable webhook delivery by themselves.",
+        "description": "Feishu custom bot webhook URL for group notifications (legacy fallback, not recommended). Used only when no bot-app target resolves (a /bind chat or FEISHU_CHAT_ID); FEISHU_APP_ID / FEISHU_APP_SECRET do not enable webhook delivery by themselves.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "password",
@@ -2118,7 +2279,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "FEISHU_STREAM_ENABLED": {
         "title": "Feishu Stream Mode",
-        "description": "Enable Feishu application bot stream mode. This is separate from Feishu group webhook delivery.",
+        "description": "Enable the Feishu application bot long connection (event subscription without a public URL): plain text is answered by the assistant, messages starting with / run commands, /bind sets the notification target. Runs in serve and --schedule modes. Separate from Feishu group webhook delivery.",
         "category": "notification",
         "data_type": "boolean",
         "ui_control": "switch",
@@ -2150,7 +2311,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "FEISHU_CHAT_ID": {
         "title": "Feishu Chat ID",
-        "description": "Target chat_id (group mode, oc_xxx) or open_id (P2P mode, ou_xxx) for Feishu App Bot notification delivery. Requires FEISHU_APP_ID + FEISHU_APP_SECRET.",
+        "description": "Fallback target chat_id (group mode, oc_xxx) or open_id (P2P mode, ou_xxx) for Feishu App Bot notification delivery; a chat bound with /bind takes priority. Requires FEISHU_APP_ID + FEISHU_APP_SECRET.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "text",

@@ -249,6 +249,7 @@ class StockAnalysisPipeline:
         portfolio_context: Optional[Dict[str, Any]] = None,
         daily_market_context_enabled: Optional[bool] = None,
         daily_market_context_allow_generate: bool = True,
+        extra_context_section: Optional[str] = None,
     ):
         """
         初始化调度器
@@ -256,6 +257,8 @@ class StockAnalysisPipeline:
         Args:
             config: 配置对象（可选，默认使用全局配置）
             max_workers: 最大并发线程数（可选，默认从配置读取）
+            extra_context_section: 调用方提供的额外 Prompt 背景段落（如 8:45 盘前版的隔夜美股与资讯），
+                原样注入每只股票的分析 Prompt；仅作运行时输入，不写入分析快照
         """
         self.config = config or get_config()
         self.max_workers = max_workers or self.config.max_workers
@@ -276,6 +279,7 @@ class StockAnalysisPipeline:
             else bool(daily_market_context_enabled)
         )
         self.daily_market_context_allow_generate = daily_market_context_allow_generate
+        self.extra_context_section = (extra_context_section or "").strip() or None
         
         # 初始化各模块
         self.db = get_db()
@@ -796,6 +800,7 @@ class StockAnalysisPipeline:
                 enhanced_context["portfolio_context"] = dict(portfolio_context)
             if isinstance(market_structure_context, dict):
                 enhanced_context["market_structure_context"] = market_structure_context
+            self._attach_extra_context_section(enhanced_context)
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             (
@@ -1522,6 +1527,7 @@ class StockAnalysisPipeline:
                 daily_market_context,
                 report_language=report_language,
             )
+            self._attach_extra_context_section(initial_context)
             
             if realtime_quote:
                 initial_context["realtime_quote"] = self._safe_to_dict(realtime_quote)
@@ -2152,6 +2158,12 @@ class StockAnalysisPipeline:
             return
         target_context["daily_market_context"] = safe_context
         target_context["daily_market_context_summary"] = prompt_section
+
+    def _attach_extra_context_section(self, target_context: Dict[str, Any]) -> None:
+        """Attach the caller-provided extra prompt section (pre-open edition) to the runtime context."""
+        section = getattr(self, "extra_context_section", None)
+        if section:
+            target_context["extra_context_section"] = section
 
     def _agent_result_to_analysis_result(
         self,
@@ -3222,10 +3234,12 @@ class StockAnalysisPipeline:
         sanitized.pop("analysis_context_pack", None)
         sanitized.pop("analysis_context_pack_summary", None)
         sanitized.pop("daily_market_context_summary", None)
+        sanitized.pop("extra_context_section", None)
         enhanced_context = sanitized.get("enhanced_context")
         if isinstance(enhanced_context, dict):
             enhanced_context = dict(enhanced_context)
             enhanced_context.pop("daily_market_context_summary", None)
+            enhanced_context.pop("extra_context_section", None)
             sanitized["enhanced_context"] = enhanced_context
         return sanitized
 

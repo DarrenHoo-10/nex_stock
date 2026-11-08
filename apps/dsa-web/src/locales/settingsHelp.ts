@@ -145,6 +145,17 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响默认模型问股、策略选择和相关工具调用；不影响 Codex 本地 Agent。'],
     notes: ['请确认该模型存在于已启用渠道、YAML 路由或 legacy provider key 可达范围内。'],
   },
+  'settings.ai_model.LITELLM_LIGHT_MODEL': {
+    title: '轻量模型',
+    summary: '为资讯分类、打标签、短摘要等轻量杂活单独指定一个更便宜的模型。',
+    usage: '使用与主模型相同的 provider/model 格式（也可以填 LLM_CHANNELS 渠道里声明的模型名）。留空时使用主模型；轻量模型调用失败时，会退回主模型再试一次。',
+    valueNotes: [
+      '目前用于资讯池的 LLM 分类（范围、重要程度、关联板块、美股龙头、是否突发）。',
+      '该字段不会改变个股分析、大盘复盘、Agent 等现有功能使用的模型。',
+    ],
+    impact: ['影响资讯分类的成本、速度和质量；留空时分类沿用主模型。'],
+    notes: ['请确认该模型存在于已启用渠道、YAML 路由或 legacy provider key 可达范围内。'],
+  },
   'settings.ai_model.LITELLM_FALLBACK_MODELS': {
     title: '备用模型',
     summary: '主模型失败时按顺序尝试的备用模型列表。',
@@ -177,6 +188,34 @@ const settingsHelpZhCN: SettingsHelpMap = {
     ],
     impact: ['影响分析文本、报告语气和结构化输出稳定性。'],
     notes: ['不同 provider 对 temperature 的实际支持范围可能不同。'],
+  },
+  'settings.ai_model.LLM_REASONING_EFFORT': {
+    title: '推理强度',
+    summary: '主分析模型及其备选模型的标准 reasoning_effort 请求参数。',
+    usage: '留空表示不发送、使用模型默认强度；可选 low、medium、high、xhigh、max。强度越高越慢、消耗的 token 越多。',
+    valueNotes: [
+      '适用于单股分析、大盘复盘等经过主模型调用链的请求；问股助手用 AGENT_REASONING_EFFORT，轻量模型杂活用 LITELLM_LIGHT_REASONING_EFFORT。',
+      '网关通常也认 xhigh、max 这类非 OpenAI 取值；是否生效以模型和网关为准。',
+      '这是推荐的设置方式；模型名带 :high 等后缀的写法仍然保留，但由网关解释，项目不会改写模型名。',
+    ],
+    impact: ['影响分析质量、耗时和 token 用量。'],
+    notes: ['服务端明确拒绝该参数时，项目会在当次请求内去掉它重试一次，并记录日志。'],
+  },
+  'settings.ai_model.AGENT_REASONING_EFFORT': {
+    title: '助手推理强度',
+    summary: '问股助手（Agent）对话使用的 reasoning_effort。',
+    usage: '留空表示跟随 LLM_REASONING_EFFORT；可选 low、medium、high、xhigh、max。',
+    valueNotes: ['助手对话需要快速响应时，可以单独设得比分析低。'],
+    impact: ['影响助手对话的响应速度和 token 用量。'],
+    notes: ['服务端明确拒绝该参数时，当次请求会去掉它重试一次。'],
+  },
+  'settings.ai_model.LITELLM_LIGHT_REASONING_EFFORT': {
+    title: '轻量模型推理强度',
+    summary: '轻量模型杂活（如资讯分类）使用的 reasoning_effort。',
+    usage: '留空表示不发送；可选 low、medium、high、xhigh、max。',
+    valueNotes: ['轻量调用失败退回主模型时，那一次改用 LLM_REASONING_EFFORT。'],
+    impact: ['影响资讯分类等杂活的耗时和 token 用量。'],
+    notes: ['杂活通常不需要高强度，建议留空或设为 low。'],
   },
   'settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED': {
     title: 'Prompt Cache 遥测',
@@ -441,9 +480,10 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.notification.FEISHU_WEBHOOK_URL': {
     title: '飞书群机器人 Webhook',
-    summary: '配置飞书自定义群机器人，用于把分析报告推送到指定飞书群。',
+    summary: '配置飞书自定义群机器人，用于把分析报告推送到指定飞书群（兼容方式，不推荐；推荐使用应用机器人并在目标会话发送 /bind）。',
     usage: '在飞书群中添加自定义机器人后，复制 open-apis/bot/v2/hook 开头的 Webhook URL 到这里。',
     valueNotes: [
+      '仅在没有应用机器人推送目标（/bind 绑定会话或 FEISHU_CHAT_ID）时才会使用 Webhook。',
       '如果机器人开启“签名校验”，还需要填写 FEISHU_WEBHOOK_SECRET。',
       '如果机器人开启“关键词”，还需要填写 FEISHU_WEBHOOK_KEYWORD，系统会自动补到消息前。',
       'FEISHU_APP_ID / FEISHU_APP_SECRET 用于飞书应用、云文档或 Stream Bot，不会直接启用群 Webhook 推送。',
@@ -458,10 +498,10 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.notification.FEISHU_STREAM_ENABLED': {
     title: '飞书 Stream 模式',
-    summary: '启用飞书应用机器人 / Stream Bot 长连接模式，不是飞书群 Webhook 推送开关。',
-    usage: '只有在已创建飞书应用、完成应用发布、权限和事件订阅配置后才开启；同时需要 FEISHU_APP_ID 和 FEISHU_APP_SECRET。',
+    summary: '启用飞书应用机器人长连接（事件订阅，无需公网地址）：普通文本由助手回答，/ 开头的消息走命令，/bind 绑定通知目标；不是飞书群 Webhook 推送开关。',
+    usage: '只有在已创建飞书应用、完成应用发布、权限和事件订阅（长连接 + im.message.receive_v1）配置后才开启；同时需要 FEISHU_APP_ID 和 FEISHU_APP_SECRET。',
     valueNotes: [
-      'true 表示允许运行时使用应用机器人 Stream 模式。',
+      'true 表示服务模式与 --schedule 定时模式都会启动应用机器人长连接（同一进程只启动一个）。',
       'false 表示不启用 Stream 模式；群消息推送仍应使用 FEISHU_WEBHOOK_URL。',
       '只填写 App ID/Secret 或只开启 Stream，不等于启用群 Webhook 推送。',
     ],
@@ -476,11 +516,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.notification.FEISHU_CHAT_ID': {
     title: '飞书 App Bot 推送目标',
-    summary: '配置飞书应用机器人主动推送的目标 chat_id（群聊模式）或 open_id（私聊模式）。',
+    summary: '配置飞书应用机器人主动推送的备用目标 chat_id（群聊模式）或 open_id（私聊模式）；在会话里发送 /bind 绑定的目标优先于它。',
     usage: '需要同时填写 FEISHU_APP_ID 和 FEISHU_APP_SECRET。群聊模式填写 oc_ 开头的 chat_id；私聊模式填写 ou_ 开头的 open_id 并将 FEISHU_RECEIVE_ID_TYPE 设为 open_id。',
     valueNotes: [
       '仅凭 FEISHU_APP_ID / FEISHU_APP_SECRET 不会自动启用群 Webhook 推送。',
-      'App Bot 模式与 Webhook 模式互斥：Webhook URL 优先，未配置 Webhook 时才走 App Bot。',
+      '推送目标顺序：/bind 绑定的会话 > FEISHU_CHAT_ID > Webhook（兼容方式）。已配置应用凭据且解析到目标时，Webhook 不再使用。',
     ],
     impact: [
       '影响飞书 App Bot 通知渠道的送达目标。',
@@ -1471,6 +1511,17 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects default-model Agent chat, strategy selection, and Agent tool calls; it does not affect Codex local Agent.'],
     notes: ['Make sure the model is reachable through enabled channels, YAML routing, or legacy provider keys.'],
   },
+  'settings.ai_model.LITELLM_LIGHT_MODEL': {
+    title: 'Light Model',
+    summary: 'Sets a cheaper model for light chores such as news classification, tagging, and short summaries.',
+    usage: 'Use the same provider/model format as the primary model (channel model names declared in LLM_CHANNELS also work). When empty, the primary model is used; if the light model call fails, the primary model is tried once.',
+    valueNotes: [
+      'Currently used by the LLM classification of the news pool (scope, importance, related boards, US tickers, breaking flag).',
+      'It does not change the model used by stock analysis, market review, Agent, or any other existing feature.',
+    ],
+    impact: ['Affects cost, speed, and quality of news classification; when empty, classification uses the primary model.'],
+    notes: ['Make sure the model is reachable through enabled channels, YAML routing, or legacy provider keys.'],
+  },
   'settings.ai_model.LITELLM_FALLBACK_MODELS': {
     title: 'Fallback Models',
     summary: 'Models tried in order when the primary model fails.',
@@ -1494,6 +1545,34 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Use low values for stable structured output.', '0.7 is the general default.'],
     impact: ['Affects report wording and structured-output stability.'],
     notes: ['Provider-specific limits can differ.'],
+  },
+  'settings.ai_model.LLM_REASONING_EFFORT': {
+    title: 'Reasoning Effort',
+    summary: 'Standard reasoning_effort request parameter for the primary analysis model and its fallbacks.',
+    usage: 'Empty sends nothing (model default). Choose low, medium, high, xhigh, or max. Higher effort is slower and uses more tokens.',
+    valueNotes: [
+      'Applies to single-stock analysis, market review, and other calls through the primary-model chain; the assistant uses AGENT_REASONING_EFFORT and light-model chores use LITELLM_LIGHT_REASONING_EFFORT.',
+      'Gateways often accept non-OpenAI values such as xhigh and max; whether they take effect depends on the model and gateway.',
+      'This is the preferred way to set effort; a model-name suffix such as :high still works but is interpreted by the gateway, and the project never rewrites model names.',
+    ],
+    impact: ['Affects analysis quality, latency, and token usage.'],
+    notes: ['When the server explicitly rejects the parameter, the request is retried once without it and the event is logged.'],
+  },
+  'settings.ai_model.AGENT_REASONING_EFFORT': {
+    title: 'Assistant Reasoning Effort',
+    summary: 'reasoning_effort used by assistant (agent) chat.',
+    usage: 'Empty follows LLM_REASONING_EFFORT. Choose low, medium, high, xhigh, or max.',
+    valueNotes: ['Set it lower than analysis when the assistant needs to answer quickly.'],
+    impact: ['Affects assistant latency and token usage.'],
+    notes: ['When the server explicitly rejects the parameter, the request is retried once without it.'],
+  },
+  'settings.ai_model.LITELLM_LIGHT_REASONING_EFFORT': {
+    title: 'Light Model Reasoning Effort',
+    summary: 'reasoning_effort used by light-model chores such as news classification.',
+    usage: 'Empty sends nothing. Choose low, medium, high, xhigh, or max.',
+    valueNotes: ['A light call that falls back to the primary model uses LLM_REASONING_EFFORT for that attempt.'],
+    impact: ['Affects latency and token usage of chores such as news classification.'],
+    notes: ['Chores rarely need high effort; leave it empty or use low.'],
   },
   'settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED': {
     title: 'Prompt Cache Telemetry',
@@ -1749,9 +1828,10 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.notification.FEISHU_WEBHOOK_URL': {
     title: 'Feishu Webhook URL',
-    summary: 'Sends analysis reports to a Feishu group through a custom bot webhook.',
+    summary: 'Sends analysis reports to a Feishu group through a custom bot webhook (legacy fallback, not recommended; prefer the app bot and send /bind in the target chat).',
     usage: 'Create a custom bot in the target Feishu group and paste the open-apis/bot/v2/hook webhook URL here.',
     valueNotes: [
+      'The webhook is used only when no app bot target (a /bind chat or FEISHU_CHAT_ID) resolves.',
       'If signing is enabled, also set FEISHU_WEBHOOK_SECRET.',
       'If keyword protection is enabled, also set FEISHU_WEBHOOK_KEYWORD; the sender prepends it automatically.',
       'FEISHU_APP_ID / FEISHU_APP_SECRET are for app, cloud-doc, or Stream Bot modes and do not enable group webhook delivery.',
@@ -1764,10 +1844,10 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.notification.FEISHU_STREAM_ENABLED': {
     title: 'Feishu Stream Mode',
-    summary: 'Enables Feishu application bot / Stream Bot long-connection mode. It is not the Feishu group webhook switch.',
-    usage: 'Enable it only after the Feishu app is created, published, granted permissions, and configured for events. FEISHU_APP_ID and FEISHU_APP_SECRET are also required.',
+    summary: 'Enables the Feishu application bot long connection (event subscription, no public URL): plain text is answered by the assistant, messages starting with / run commands, /bind sets the notification target. It is not the Feishu group webhook switch.',
+    usage: 'Enable it only after the Feishu app is created, published, granted permissions, and subscribed to im.message.receive_v1 over the long connection. FEISHU_APP_ID and FEISHU_APP_SECRET are also required.',
     valueNotes: [
-      'true allows runtime Feishu app bot stream mode.',
+      'true starts the app bot long connection in serve mode and in --schedule mode (one client per process).',
       'false disables stream mode; group message delivery still uses FEISHU_WEBHOOK_URL.',
       'App credentials or this switch alone do not enable group webhook delivery.',
     ],
@@ -1782,11 +1862,11 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.notification.FEISHU_CHAT_ID': {
     title: 'Feishu App Bot Push Target',
-    summary: 'Configures the target chat_id (group mode) or open_id (P2P mode) for Feishu App Bot notification delivery.',
+    summary: 'Fallback target chat_id (group mode) or open_id (P2P mode) for Feishu App Bot notification delivery; a chat bound with /bind takes priority.',
     usage: 'FEISHU_APP_ID and FEISHU_APP_SECRET must also be configured. For groups, use a chat_id starting with oc_. For P2P, use an open_id starting with ou_ and set FEISHU_RECEIVE_ID_TYPE to open_id.',
     valueNotes: [
       'FEISHU_APP_ID / FEISHU_APP_SECRET alone do not enable group webhook delivery.',
-      'App Bot mode and Webhook mode are mutually exclusive: webhook URL takes priority; App Bot is used only when no webhook URL is configured.',
+      'Push target order: the /bind chat > FEISHU_CHAT_ID > webhook (legacy). Once app credentials are set and a target resolves, the webhook is no longer used.',
     ],
     impact: [
       'Affects the target destination for the Feishu App Bot notification channel.',

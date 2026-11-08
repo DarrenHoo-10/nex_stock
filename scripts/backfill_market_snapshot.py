@@ -8,13 +8,13 @@
 
 进度保存在数据库本身：已完整入库的日期、成分已刷新到终点的板块都会被跳过，
 中断后直接重跑即可续传。请求走 TushareFetcher 的限速，每分钟上限见
-MARKET_SNAPSHOT_REQUESTS_PER_MINUTE。
+MARKET_SNAPSHOT_REQUESTS_PER_MINUTE；逐板块 dc_member 成分请求使用 MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE。
 
 使用方法：
     python scripts/backfill_market_snapshot.py                  # 回填 MARKET_SNAPSHOT_BACKFILL_DAYS 个交易日 + 成分
     python scripts/backfill_market_snapshot.py --days 30
     python scripts/backfill_market_snapshot.py --skip-members   # 只回填个股与板块行情
-    python scripts/backfill_market_snapshot.py --members-only   # 按板块、按区间重刷成分（人工修复；每日流程已自动折叠全量成分）
+    python scripts/backfill_market_snapshot.py --members-only   # 按板块、按区间重刷成分（冷启动 / 人工修复；每日流程逐板块折叠概念成分，行业成分每周折叠一次）
     python scripts/backfill_market_snapshot.py --force          # 重新入库已完整的日期
 
 环境要求：.env 中配置 TUSHARE_TOKEN（daily_basic 2000 积分，limit_list_d 5000 积分，dc_* 6000 积分）。

@@ -492,6 +492,17 @@ class NotificationService(
         return bool(getattr(self._config, "report_show_llm_model", self._report_show_llm_model))
 
     @staticmethod
+    def _feishu_bound_target_configured(config: Config) -> bool:
+        """App credentials + a ``/bind`` chat stored in the database (no FEISHU_CHAT_ID needed)."""
+        try:
+            from src.services.feishu_binding_service import has_app_credentials, get_binding
+
+            return has_app_credentials(config) and get_binding() is not None
+        except Exception as exc:
+            logger.debug("读取飞书通知绑定失败: %s", exc)
+            return False
+
+    @staticmethod
     def detect_configured_channels(config: Config) -> List[NotificationChannel]:
         """
         Detect statically configured notification channels from Config.
@@ -507,7 +518,7 @@ class NotificationService(
         if getattr(config, "dingtalk_webhook_url", None):
             channels.append(NotificationChannel.DINGTALK)    
 
-        if is_feishu_static_configured(config):
+        if is_feishu_static_configured(config) or NotificationService._feishu_bound_target_configured(config):
             channels.append(NotificationChannel.FEISHU)
 
         if (
@@ -2598,8 +2609,15 @@ class NotificationService(
                 filepath = self.save_report_to_file(
                     sanitized_content, filename=f"report_{date_str}.md"
                 )
-                return self.send_feishu_file(filepath)
-            return self.send_to_feishu(sanitized_content)
+                send = lambda: self.send_feishu_file(filepath)  # noqa: E731
+            else:
+                send = lambda: self.send_to_feishu(sanitized_content)  # noqa: E731
+            # Lets the sender tag the push it records into the assistant session.
+            self._push_route_type = route_type
+            try:
+                return send()
+            finally:
+                self._push_route_type = None
         if channel == NotificationChannel.DINGTALK:
             return self.send_to_dingtalk(sanitized_content)
         if channel == NotificationChannel.TELEGRAM:

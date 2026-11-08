@@ -4,26 +4,35 @@
 Designed to run at 17:00 on D, when ``daily_basic`` / ``limit_list_d`` / ``dc_*`` of D are not
 published yet (they arrive 17:00-19:00 / 18:30-19:30 / 20:30):
 
-    previous  ->  membership  ->  ingest  ->  metrics  ->  signals
+    previous  ->  membership  ->  ingest  ->  metrics  ->  signals  ->  us_link
 
 * ``previous``: complete D-1 (the previous session): its real ``daily_basic`` / ``limit_list_d``
   replace the values derived the day before, and its ``dc_index`` / ``dc_daily`` are fetched.
-* ``membership``: fold D-1's ``dc_member`` (all boards, one paged query) into the zipper table.
-  D uses the latest membership, so new concepts appear one day late.
+* ``membership``: fold D-1's ``dc_member`` for the active CONCEPT boards into the zipper table, one
+  ``dc_member(ts_code, trade_date)`` call per board (the all-boards query cannot finish: Tushare caps the
+  paging offset at 100000 and a day has more than 105k rows). A board whose call fails or returns nothing
+  keeps its membership; boards already folded for D-1 are skipped, so a re-run resumes. D uses the latest
+  membership, so new concepts appear one day late. Industry boards change rarely and are refreshed weekly by
+  ``run_industry_membership`` (scheduled by ``board_pipeline_schedule``) instead.
 * ``ingest``: D's ``daily`` (required) / ``stk_limit`` / ``suspend_d``; turnover, float cap and
   limit facts are derived when the real interfaces are not there yet (recorded in
   ``market_daily.quality``).
 * ``metrics``: recompute D-1's facts-only metrics when step 1 or 2 changed its inputs, then D.
 * ``signals``: D only. Signals already written for D-1 are judgments tied to their run and are
   never rewritten.
+* ``us_link`` (non-fatal, last): fetch the previous completed US session of the US leaders
+  (``board_us_link``, docs 5.1 - 5.3) and add ``evidence["us_link"]`` to the boards mapped from leaders
+  that crossed their threshold. A failure only marks the step ``partial`` / ``failed`` (a warning);
+  states and reasons are not touched. It runs when ``us_service`` is given, or by default when the
+  pipeline does its own live ingestion (no ``ingest_service`` injected and not ``skip_ingest``).
 
 and one ``daily_runs`` row carrying the per-step results and the threshold snapshot.
 Every step is idempotent: re-running a date re-uses ingested data, writes the same metric
 rows, and (with ``force``) adds a new run whose signals supersede the older run's for
 readers (the older run is kept as history).
 
-``board_pipeline_schedule`` registers this flow with the scheduler (``BOARD_PIPELINE_*``);
-``scripts/run_board_pipeline.py`` runs it by hand.
+``board_pipeline_schedule`` registers this flow with the scheduler (``BOARD_PIPELINE_*``) and the weekly
+industry-membership job (``BOARD_INDUSTRY_MEMBERSHIP_*``); ``scripts/run_board_pipeline.py`` runs either by hand.
 """
 
 from __future__ import annotations
@@ -52,6 +61,9 @@ def _china_today() -> date:
     return datetime.now(_CN_TZ).date()
 
 
+_AUTO_US = object()  # ``us_service`` default: run the US linkage only on a live (non-injected) ingestion
+
+
 def _step(key: str, label: str, status: str, detail: str = "", data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return {"key": key, "label": label, "status": status, "finished_at": _now_iso(), "detail": detail, "data": data or {}}
 
@@ -68,6 +80,7 @@ def run_board_pipeline(
     metrics_service: Optional[BoardMetricsService] = None,
     signal_service: Optional[BoardSignalService] = None,
     calendar_fn: Optional[CalendarFn] = default_calendar_fn,
+    us_service: Any = _AUTO_US,
 ) -> Dict[str, Any]:
     """Run previous -> membership -> ingest -> metrics -> signals for ``trade_date`` (default: today in CN).
 
@@ -77,6 +90,8 @@ def run_board_pipeline(
     daily flow.
     """
     day = as_date(trade_date) if trade_date is not None else _china_today()
+    if us_service is _AUTO_US:
+        us_service = _AUTO_US if (ingest_service is None and not skip_ingest) else None
     repo = repo or BoardAnalysisRepository()
     signal_service = signal_service or BoardSignalService(repo=repo)
     metrics_service = metrics_service or BoardMetricsService(repo=repo, thresholds=signal_service.thresholds)
@@ -116,7 +131,7 @@ def run_board_pipeline(
             steps.append(step)
             save()
 
-            # 2. membership of D-1 (all boards, one paged query) ----------------------------------
+            # 2. membership of D-1 (concept boards, one dc_member call per board) ---------------------
             if skip_members:
                 steps.append(_step("membership", "板块成分", "skipped", "按参数跳过"))
             else:
@@ -172,6 +187,11 @@ def run_board_pipeline(
             f"{len(batch.signals)} 个板块，状态分布 {batch.counts}", batch.summary(),
         ))
         save()
+
+        # 5. us_link (non-fatal): previous US session -> evidence on mapped boards ------------
+        if us_service is not None:
+            steps.append(_us_link_step(run_id, day, repo, None if us_service is _AUTO_US else us_service))
+            save()
     except _NoData as exc:
         run_status, error = "failed", str(exc)
     except Exception as exc:  # noqa: BLE001
@@ -184,6 +204,61 @@ def run_board_pipeline(
             run_status = "partial"
     repo.update_run(run_id, status=run_status, steps=steps, error=error, finished=True)
     return {"status": run_status, "run_id": run_id, "trade_date": day.isoformat(), "steps": steps, "error": error}
+
+
+def latest_completed_session(today: date, calendar_fn: Optional[CalendarFn] = default_calendar_fn) -> date:
+    """The latest trading day strictly before ``today`` (its ``dc_member`` is published 20:30 that day).
+
+    Exchange calendar first; without one, the previous Monday-Friday day.
+    """
+    sessions = None
+    if calendar_fn is not None:
+        try:
+            sessions = calendar_fn(today - timedelta(days=20), today - timedelta(days=1))
+        except Exception as exc:  # noqa: BLE001 - the calendar is best effort
+            logger.debug("[BoardPipeline] calendar lookup failed: %s", exc)
+    earlier = [s for s in (sessions or []) if s < today]
+    if earlier:
+        return max(earlier)
+    day = today - timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day
+
+
+def run_industry_membership(
+    trade_date: Any = None,
+    *,
+    today: Optional[date] = None,
+    ingest_service: Any = None,
+    calendar_fn: Optional[CalendarFn] = default_calendar_fn,
+    progress: Any = None,
+) -> Dict[str, Any]:
+    """Weekly job body: fold the latest trading day's ``dc_member`` for every active INDUSTRY board.
+
+    ``trade_date`` defaults to the latest trading day before ``today`` (China date). One
+    ``dc_member(ts_code, trade_date)`` call per board with the same failure rules as the daily concept step
+    (failed / empty boards keep their membership, counts recorded under
+    ``market_daily.quality.ingestion.membership.industry``); boards already folded for that day are
+    skipped, so a repeated run makes no request. Never raises; returns
+    ``{"status": succeeded / partial / failed / skipped, "trade_date", "detail", "result"}``.
+    """
+    day = as_date(trade_date) if trade_date is not None else latest_completed_session(today or _china_today(), calendar_fn)
+    try:
+        service = ingest_service or _default_ingest_service()
+        result = service.refresh_board_membership(day, "industry", progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[BoardPipeline] industry membership refresh failed: %s", exc, exc_info=True)
+        return {"status": "failed", "trade_date": day.isoformat(), "detail": f"{day}: {str(exc)[:200]}", "result": {}}
+    step_status, detail = membership_step_outcome(day, result, "行业板块")
+    return {"status": step_status, "trade_date": day.isoformat(), "detail": detail, "result": result}
+
+
+def _us_link_step(run_id: int, day: date, repo: BoardAnalysisRepository, us_service: Any) -> Dict[str, Any]:
+    from src.services.board_us_link import attach_us_link
+
+    status, detail, data = attach_us_link(run_id, day, repo, us_service=us_service)
+    return _step("us_link", "隔夜美股联动", status, detail, data)
 
 
 class _NoData(RuntimeError):
@@ -239,32 +314,49 @@ def _complete_previous(previous_day: Optional[date], ingest_service: Any) -> Tup
 
 
 def _refresh_membership(previous_day: Optional[date], ingest_service: Any) -> Tuple[Dict[str, Any], bool]:
-    """Fold D-1's full-day membership; returns (step, membership_changed)."""
+    """Fold D-1's concept-board membership board by board; returns (step, membership_changed)."""
     label = "板块成分"
     if previous_day is None:
         return _step("membership", label, "skipped", "无法确定上一交易日"), False
     try:
-        result = ingest_service.refresh_membership_for_day(previous_day)
+        result = ingest_service.refresh_daily_membership(previous_day)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[BoardPipeline] membership refresh failed: %s", exc, exc_info=True)
         return _step("membership", label, "failed", f"{previous_day}: {str(exc)[:200]}"), False
+    status, detail = membership_step_outcome(previous_day, result, "概念板块")
+    folded = result.get("ok", 0) > 0 or (bool(result.get("fallback")) and result.get("status") == "ok")
+    return _step("membership", label, status, detail, result), folded
+
+
+def membership_step_outcome(day: date, result: Dict[str, Any], label: str) -> Tuple[str, str]:
+    """Step status + detail for a membership refresh result (shared by the daily step and the weekly job)."""
     state = result.get("status")
-    if state == "ok":
-        detail = (f"{previous_day} 全量成分 {result.get('rows')} 条（{result.get('boards')} 个板块），"
-                  f"新增 {result.get('opened')}，移出 {result.get('closed')}")
-        return _step("membership", label, "succeeded", detail, result), True
-    if state == "skipped":
-        return _step("membership", label, "skipped", f"{previous_day} {result.get('reason', '无需刷新')}", result), False
     reason = result.get("reason") or result.get("error") or ""
-    if state == "incomplete":
-        detail = f"{previous_day} 全量成分不完整（{reason}），保留上一日成分"
-    elif state == "empty":
-        detail = f"{previous_day} 全量成分返回为空，保留上一日成分"
-    elif state == "no_boards":
-        detail = "板块目录为空，无法折叠成分（先运行 scripts/backfill_market_snapshot.py）"
-    else:
-        detail = f"{previous_day} 全量成分获取失败: {reason}"
-    return _step("membership", label, "failed" if state == "error" else "partial", detail, result), False
+    if result.get("fallback"):  # per-board refresh failed, the opt-in all-boards query ran instead
+        per_board = result.get("per_board") or {}
+        if state == "ok":
+            return "partial", (f"{day} {label}逐板块成分刷新失败（{per_board.get('error') or per_board.get('failed')}），"
+                               f"已按 BOARD_MEMBERSHIP_FULL_DAY_FALLBACK 用全量成分补上：{result.get('rows')} 条，"
+                               f"新增 {result.get('opened')}，移出 {result.get('closed')}")
+        return "failed", f"{day} {label}逐板块成分刷新失败，全量成分兜底也未成功（{state}: {reason}），保留现有成分"
+    if state == "skipped":
+        return "skipped", f"{day} {label}{result.get('reason', '成分已是最新')}"
+    if state == "no_boards":
+        return "partial", f"{label}目录为空，无法折叠成分（先运行 scripts/backfill_market_snapshot.py）"
+    if state == "error":
+        return "failed", f"{day} {label}成分获取失败: {reason}"
+    counts = (f"成功 {result.get('ok', 0)}，失败 {result.get('failed', 0)}，空返回 {result.get('empty', 0)}，"
+              f"已是最新 {result.get('skipped', 0)}（共 {result.get('boards', 0)} 个）")
+    effect = f"新增 {result.get('opened', 0)}，移出 {result.get('closed', 0)}"
+    tail = ""
+    if result.get("failed_boards"):
+        tail += f"；失败/空返回的板块保留现有成分，如 {result['failed_boards'][:3]}"
+    if result.get("aborted"):
+        tail += f"；连续失败已中止，剩余 {result.get('remaining', 0)} 个未处理"
+    detail = f"{day} {label}成分：{counts}；{effect}{tail}"
+    if state == "ok":
+        return "succeeded", detail
+    return ("failed" if state == "failed" else "partial"), detail
 
 
 def _ingest_day(day: date, ingest_service: Any) -> Dict[str, Any]:

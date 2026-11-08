@@ -43,6 +43,11 @@ class GenerationParamRecovery:
 
 _GENERATION_PARAM_RECOVERY_CACHE: Dict[str, GenerationParamRecovery] = {}
 
+# Standard ``reasoning_effort`` values accepted by the project settings. They are the values LiteLLM maps natively for
+# Anthropic / Gemini / OpenAI routes and that OpenAI-compatible gateways (which may also honour non-OpenAI values such as
+# ``xhigh`` / ``max``) receive verbatim.
+REASONING_EFFORT_VALUES: Tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
 _LITELLM_ENDPOINT_PARAM_KEYS = (
     "api_base",
     "base_url",
@@ -437,3 +442,77 @@ def apply_litellm_generation_params(
     if cached_recovery:
         updated = apply_litellm_param_recovery(updated, cached_recovery)
     return updated
+
+
+def normalize_reasoning_effort(value: Any) -> str:
+    """Return a valid lower-case reasoning effort, or ``""`` for blank / unknown values."""
+    text = str(value or "").strip().lower()
+    return text if text in REASONING_EFFORT_VALUES else ""
+
+
+def _litellm_supports_openai_param(wire_model: str, param: str) -> Optional[bool]:
+    """Whether LiteLLM itself maps ``param`` for this model's provider (``None`` when it cannot tell)."""
+    try:
+        import litellm
+
+        resolved_model, provider, _key, _base = litellm.get_llm_provider(model=wire_model)
+        supported = litellm.get_supported_openai_params(model=resolved_model, custom_llm_provider=provider)
+    except Exception:  # noqa: BLE001 - unmapped model / provider, or LiteLLM unavailable
+        return None
+    if not isinstance(supported, (list, tuple, set)):
+        return None
+    return param in supported
+
+
+def build_litellm_reasoning_params(
+    model: str,
+    effort: Any,
+    *,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Request kwargs that send the standard ``reasoning_effort`` for one LiteLLM call (``{}`` when unset / invalid).
+
+    LiteLLM rejects ``reasoning_effort`` (``UnsupportedParamsError``) for OpenAI-compatible custom model names that
+    are not in its model map (e.g. ``openai/<gateway>/<model>``), and silently drops it when ``drop_params`` is on.
+    For routes where LiteLLM does not list the parameter as supported (or cannot tell), the call also opts in with
+    ``allowed_openai_params=["reasoning_effort"]`` so it is forwarded to the gateway as-is; routes LiteLLM maps
+    natively (Anthropic -> ``thinking``, Gemini, o-series / GPT-5) get the plain parameter. A provider that still
+    refuses it is repaired by ``classify_litellm_generation_param_error`` (retry once without it).
+    """
+    normalized = normalize_reasoning_effort(effort)
+    if not normalized:
+        return {}
+    params: Dict[str, Any] = {"reasoning_effort": normalized}
+    wire_model = resolve_litellm_wire_model(model, model_list)
+    if _litellm_supports_openai_param(wire_model, "reasoning_effort") is not True:
+        params["allowed_openai_params"] = ["reasoning_effort"]
+    return params
+
+
+def resolve_required_max_tokens(
+    model: str,
+    *,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """The model's own maximum output for providers that REQUIRE ``max_tokens`` (LiteLLM's native Anthropic route).
+
+    The project sets no output cap of its own. Anthropic's Messages API cannot omit ``max_tokens``; LiteLLM then
+    fills in the model's maximum output (or, for an unmapped model / older LiteLLM, a small 4096 default). Use the
+    model's real maximum from LiteLLM model info when it is known, so that default never silently truncates a long
+    or reasoning answer; ``None`` (OpenAI-compatible routes, unknown models) means "send nothing".
+    """
+    wire_model = resolve_litellm_wire_model(model, model_list)
+    if not wire_model.lower().startswith("anthropic/"):
+        return None
+    try:
+        import litellm
+
+        info = litellm.get_model_info(model=wire_model)
+    except Exception:  # noqa: BLE001 - unmapped model or LiteLLM unavailable: let LiteLLM apply its default
+        return None
+    if not isinstance(info, Mapping):
+        return None
+    value = info.get("max_output_tokens") or info.get("max_tokens")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None

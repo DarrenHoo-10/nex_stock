@@ -52,6 +52,7 @@ class FakeTushareApi:
         self.errors: Dict[str, Any] = {}  # api_name -> Exception or callable(n_calls) -> Exception|None
         self.server_cap: Dict[str, int] = {}
         self.ignore_offset = False
+        self.member_errors: Dict[str, Exception] = {}  # dc_member ts_code -> exception for that board only
 
     def __getattr__(self, api_name: str):
         if api_name.startswith("_"):
@@ -67,6 +68,8 @@ class FakeTushareApi:
 
     def _query(self, api_name: str, **kwargs) -> pd.DataFrame:
         self.calls.append((api_name, dict(kwargs)))
+        if api_name == "dc_member" and kwargs.get("ts_code") in self.member_errors:
+            raise self.member_errors[kwargs["ts_code"]]
         err = self.errors.get(api_name)
         if callable(err):
             err = err(len(self.calls_of(api_name)))
@@ -194,6 +197,8 @@ def config():
         market_snapshot_backfill_days=60,
         market_benchmark_code="000985.CSI",
         market_snapshot_requests_per_minute=10000,
+        market_snapshot_members_requests_per_minute=10000,
+        board_membership_full_day_fallback=False,
     )
 
 
@@ -622,6 +627,40 @@ def test_range_refresh_resumes_per_board_and_never_repeats_finished_boards(servi
     assert again["up_to_date"] == 2 and not api.calls_of("dc_member")
 
 
+def test_range_refresh_since_bounds_a_never_refreshed_board_to_the_window(service, api):
+    """Backfill passes the window start: a new board is fetched from there, not from 2024-12-20."""
+    _members(api, "BK1184.DC", {"20261102": ["600519.SH"]})
+    _members(api, "BK0477.DC", {"20261102": ["600519.SH"]})
+    service.ingest_trade_date(D1)
+    api.calls.clear()
+    service.refresh_all_membership(D1, since=D1)
+    starts = {kw["ts_code"]: kw["start_date"] for kw in api.calls_of("dc_member")}
+    assert starts == {"BK1184.DC": D1.strftime("%Y%m%d"), "BK0477.DC": D1.strftime("%Y%m%d")}
+
+
+def test_range_refresh_splits_a_huge_board_on_the_offset_cap(service, monkeypatch):
+    """Live: 沪股通/深股通/融资融券 over 60 days exceed Tushare's offset cap; the range is halved."""
+    from datetime import date as _date, timedelta as _td
+
+    calls = []
+
+    def fake_fetch(code, start_date=None, end_date=None, trade_date=None):
+        calls.append((start_date, end_date))
+        if (end_date - start_date).days > 3:
+            raise Exception("查询数据失败，请确认参数！offset不能大于100000, 请通过其他条件缩小查询范围。")
+        days = [(start_date + _td(days=i)) for i in range((end_date - start_date).days + 1)]
+        return pd.DataFrame({"trade_date": days, "ts_code": code, "con_code": "600519.SH", "code": "600519"})
+
+    monkeypatch.setattr(service.fetcher, "fetch_dc_member", fake_fetch)
+    start, end = _date(2026, 8, 1), _date(2026, 8, 20)
+    df = service._fetch_member_range("BK0707.DC", start, end)
+    assert sorted(df["trade_date"]) == [start + _td(days=i) for i in range(20)]  # every day once, no gaps
+    assert len(calls) > 1 and all((e - s).days <= 3 for s, e in calls[1:] if (e - s).days <= 3)
+    with pytest.raises(Exception):  # other errors are not swallowed
+        monkeypatch.setattr(service.fetcher, "fetch_dc_member", lambda *a, **k: (_ for _ in ()).throw(Exception("boom")))
+        service._fetch_member_range("BK0707.DC", start, end)
+
+
 def test_membership_failure_of_one_board_does_not_stop_the_batch(service, api):
     _members(api, "BK0477.DC", {"20261102": ["600519.SH"]})
     service.ingest_trade_date(D1)
@@ -971,7 +1010,7 @@ def _board_members(api, board: str, day: str, codes: List[str]) -> None:
     _concat(api, "dc_member", ["trade_date", "ts_code", "con_code"], [(day, board, c) for c in codes])
 
 
-def test_full_day_membership_is_paged_and_folded_for_all_boards(evening, db, monkeypatch):
+def test_full_day_membership_fallback_is_paged_and_folded_for_all_boards(evening, db, monkeypatch):
     api = evening.api
     evening.ingest_trade_date(D1)
     _board_members(api, "BK1184.DC", "20261102", ["600519.SH", "300750.SZ", "000001.SZ"])
@@ -989,14 +1028,14 @@ def test_full_day_membership_is_paged_and_folded_for_all_boards(evening, db, mon
     bk, liquor = _board_id(evening, "BK1184.DC"), _board_id(evening, "BK0477.DC")
     assert evening.repo.get_members_on(bk, D1) == {"600519", "300750", "000001"}
     assert evening.repo.get_members_on(liquor, D1) == {"600519", "000333"}
-    assert quality(db, D1)["membership"]["status"] == "ok"
+    assert quality(db, D1)["membership"]["full_day"]["status"] == "ok"
     assert quality(db, D1)["status"] == "complete"  # the marker lives next to the stock-fact quality
 
     api.calls.clear()  # idempotent: a folded day makes no request
     assert evening.refresh_membership_for_day(D1)["status"] == "skipped" and not api.calls_of("dc_member")
     # a re-ingest of the day's stock facts keeps the membership marker
     evening.ingest_trade_date(D1, force=True)
-    assert quality(db, D1)["membership"]["status"] == "ok"
+    assert quality(db, D1)["membership"]["full_day"]["status"] == "ok"
 
 
 def test_full_day_membership_closes_and_opens_rows_against_yesterday(evening, db):
@@ -1033,7 +1072,7 @@ def test_implausibly_small_full_day_membership_keeps_yesterdays_rows(evening, db
         assert all(r.valid_to is None for r in rows)  # nothing closed
         assert len(rows) == 8
         assert all(b.membership_checked_date == D1 for b in session.execute(select(BoardCatalog)).scalars())
-    assert quality(db, D2)["membership"]["status"] == "incomplete"
+    assert quality(db, D2)["membership"]["full_day"]["status"] == "incomplete"
 
     # the vendor completes the day later: not skipped, folded now
     _board_members(api, "BK1184.DC", "20261103", ["000001.SZ", "688001.SH"])
@@ -1065,3 +1104,239 @@ def test_membership_failure_and_empty_response_are_reported_not_raised(evening, 
     failed = evening.refresh_membership_for_day(D1)
     assert failed["status"] == "error" and "boom" in failed["error"]
     assert evening.refresh_membership_for_day(date(2024, 12, 1))["status"] == "skipped"  # before dc_member history
+
+# ----------------------------------------------------------------------
+# Per-board membership (concept boards daily, industry boards weekly)
+# ----------------------------------------------------------------------
+def _add_concepts(service, *codes: str) -> None:
+    service.repo.upsert_catalog(D1, "concept", [{"code": c, "name": f"概念{c}", "level": None} for c in codes])
+
+
+def _member_calls(api) -> List[Dict[str, Any]]:
+    return api.calls_of("dc_member")
+
+
+def _folded(service, code: str, day: date):
+    return service.repo.get_members_on(_board_id(service, code), day)
+
+
+def _seed_three_concepts(evening):
+    """D1 folded for three concept boards (BK1184 + two more) and the industry board."""
+    api = evening.api
+    evening.ingest_trade_date(D1)
+    _add_concepts(evening, "BKA.DC", "BKB.DC")
+    _board_members(api, "BK1184.DC", "20261102", ["600519.SH", "300750.SZ", "000001.SZ"])
+    _board_members(api, "BKA.DC", "20261102", ["600519.SH", "000333.SZ"])
+    _board_members(api, "BKB.DC", "20261102", ["688001.SH", "002001.SZ"])
+    _board_members(api, "BK0477.DC", "20261102", ["600519.SH", "000333.SZ"])
+    result = evening.refresh_board_membership(D1, "concept")
+    assert result["status"] == "ok" and result["ok"] == 3
+    api.calls.clear()
+    return api
+
+
+def test_concept_membership_is_fetched_per_board_and_never_without_ts_code(evening, db):
+    api = evening.api
+    evening.ingest_trade_date(D1)
+    _add_concepts(evening, "BKA.DC")
+    _board_members(api, "BK1184.DC", "20261102", ["600519.SH", "300750.SZ"])
+    _board_members(api, "BKA.DC", "20261102", ["000333.SZ"])
+    _board_members(api, "BK0477.DC", "20261102", ["600519.SH"])  # an industry board: not part of the concept run
+
+    result = evening.refresh_board_membership(D1, "concept")
+
+    calls = _member_calls(api)
+    assert sorted(kw["ts_code"] for kw in calls) == ["BK1184.DC", "BKA.DC"]
+    assert all(kw["trade_date"] == "20261102" for kw in calls)
+    assert result["status"] == "ok"
+    assert (result["boards"], result["ok"], result["failed"], result["empty"], result["skipped"]) == (2, 2, 0, 0, 0)
+    assert result["rows"] == 3 and result["opened"] == 3 and result["closed"] == 0
+    assert _folded(evening, "BK1184.DC", D1) == {"600519", "300750"}
+    assert _folded(evening, "BKA.DC", D1) == {"000333"}
+    assert _folded(evening, "BK0477.DC", D1) == set()  # the industry board waits for the weekly job
+    assert quality(db, D1)["membership"]["concept"]["ok"] == 2
+    assert quality(db, D1)["status"] == "complete"  # the record sits next to the stock-fact quality
+
+
+def test_failed_and_empty_boards_keep_their_membership_and_are_counted(evening, db):
+    api = _seed_three_concepts(evening)
+    evening.ingest_trade_date(D2, allow_derived=True)
+    # D2: BK1184 changes (300750 out, 688001 in); BKA's call fails; BKB answers nothing
+    _board_members(api, "BK1184.DC", "20261103", ["600519.SH", "000001.SZ", "688001.SH"])
+    api.member_errors["BKA.DC"] = Exception("boom")
+
+    result = evening.refresh_board_membership(D2, "concept")
+
+    assert result["status"] == "partial"
+    assert (result["boards"], result["ok"], result["failed"], result["empty"], result["skipped"]) == (3, 1, 1, 1, 0)
+    assert result["failed_boards"] == ["BKA.DC"] and result["empty_boards"] == ["BKB.DC"]
+    assert "boom" in result["errors"]["BKA.DC"]
+    assert result["opened"] == 1 and result["closed"] == 1
+    assert _folded(evening, "BK1184.DC", D2) == {"600519", "000001", "688001"}
+    for code, members in (("BKA.DC", {"600519", "000333"}), ("BKB.DC", {"688001", "002001"})):
+        assert _folded(evening, code, D2) == members  # still the D1 members: nothing was closed
+    with db.get_session() as session:
+        by_code = {b.code: b for b in session.execute(select(BoardCatalog)).scalars()}
+        assert by_code["BKA.DC"].membership_checked_date == D1 and by_code["BKB.DC"].membership_checked_date == D1
+        assert by_code["BK1184.DC"].membership_checked_date == D2
+    recorded = quality(db, D2)["membership"]["concept"]
+    assert (recorded["ok"], recorded["failed"], recorded["empty"], recorded["skipped"]) == (1, 1, 1, 0)
+    assert recorded["status"] == "partial" and recorded["trade_date"] == "2026-11-03"
+
+
+def test_membership_rerun_is_idempotent_and_resumes_unfinished_boards(evening, db):
+    api = _seed_three_concepts(evening)
+    evening.ingest_trade_date(D2, allow_derived=True)
+    _board_members(api, "BK1184.DC", "20261103", ["600519.SH", "000001.SZ"])
+    _board_members(api, "BKB.DC", "20261103", ["688001.SH", "002001.SZ"])
+    api.member_errors["BKA.DC"] = Exception("boom")
+    first = evening.refresh_board_membership(D2, "concept")
+    assert (first["ok"], first["failed"]) == (2, 1)
+    assert sorted({kw["ts_code"] for kw in _member_calls(api)}) == ["BK1184.DC", "BKA.DC", "BKB.DC"]  # BKA retried
+
+    # re-run: only the board that was not folded is requested again
+    api.calls.clear()
+    api.member_errors.clear()
+    _board_members(api, "BKA.DC", "20261103", ["600519.SH", "000333.SZ", "002002.SZ"])
+    second = evening.refresh_board_membership(D2, "concept")
+    assert [kw["ts_code"] for kw in _member_calls(api)] == ["BKA.DC"]
+    assert (second["status"], second["ok"], second["skipped"], second["failed"]) == ("ok", 1, 2, 0)
+    assert _folded(evening, "BKA.DC", D2) == {"600519", "000333", "002002"}
+
+    # re-run of a finished day: no request at all
+    api.calls.clear()
+    third = evening.refresh_board_membership(D2, "concept")
+    assert third["status"] == "skipped" and third["skipped"] == 3 and _member_calls(api) == []
+    with db.get_session() as session:
+        rows = session.execute(select(BoardMembership)).scalars().all()
+        assert len({(r.board_id, r.stock_code, r.valid_from) for r in rows}) == len(rows)  # no duplicated rows
+
+
+def test_consecutive_board_failures_abort_the_run_and_keep_everything(evening, db):
+    api = _seed_three_concepts(evening)
+    evening.ingest_trade_date(D2, allow_derived=True)
+    api.errors["dc_member"] = Exception("api down")
+
+    result = evening.refresh_board_membership(D2, "concept", max_consecutive_failures=2)
+
+    assert result["status"] == "failed" and result["aborted"] is True
+    assert result["failed"] == 2 and result["remaining"] == 1 and result["ok"] == 0
+    with db.get_session() as session:
+        assert all(r.valid_to is None for r in session.execute(select(BoardMembership)).scalars())
+
+
+def test_rate_limit_error_is_retried_with_backoff_then_succeeds(evening, db):
+    api = evening.api
+    evening.ingest_trade_date(D1)
+    _board_members(api, "BK1184.DC", "20261102", ["600519.SH"])
+
+    def _throttle_once(n_calls):
+        return Exception("抱歉，您每分钟最多访问该接口200次") if n_calls == 1 else None
+
+    api.errors["dc_member"] = _throttle_once
+    result = evening.refresh_board_membership(D1, "concept")
+    assert result["status"] == "ok" and result["ok"] == 1
+    assert len(_member_calls(api)) == 2  # one throttled attempt + one retry
+
+
+def test_implausible_board_shrink_is_not_folded(evening, db):
+    api = evening.api
+    evening.ingest_trade_date(D1)
+    codes = [f"60{n:04d}.SH" for n in range(1, 21)]
+    _board_members(api, "BK1184.DC", "20261102", codes)
+    assert evening.refresh_board_membership(D1, "concept")["ok"] == 1
+    evening.ingest_trade_date(D2, allow_derived=True)
+    _board_members(api, "BK1184.DC", "20261103", codes[:3])  # 3 of 20: a truncated answer
+
+    result = evening.refresh_board_membership(D2, "concept")
+
+    assert result["status"] == "failed" and result["failed"] == 1 and "不完整" in result["errors"]["BK1184.DC"]
+    assert len(_folded(evening, "BK1184.DC", D2)) == 20
+
+
+def test_industry_membership_uses_the_same_per_board_rules(evening, db):
+    api = evening.api
+    evening.ingest_trade_date(D1)
+    _board_members(api, "BK0477.DC", "20261102", ["600519.SH", "000333.SZ"])
+    _board_members(api, "BK1184.DC", "20261102", ["300750.SZ"])
+
+    result = evening.refresh_board_membership(D1, "industry")
+
+    assert [kw["ts_code"] for kw in _member_calls(api)] == ["BK0477.DC"]
+    assert result["status"] == "ok" and result["board_type"] == "industry" and result["ok"] == 1
+    assert _folded(evening, "BK0477.DC", D1) == {"600519", "000333"}
+    assert _folded(evening, "BK1184.DC", D1) == set()
+    q = quality(db, D1)["membership"]
+    assert q["industry"]["ok"] == 1 and "concept" not in q  # separate sub-records per board type
+    api.calls.clear()
+    assert evening.refresh_board_membership(D1, "industry")["status"] == "skipped" and _member_calls(api) == []
+
+
+def test_default_daily_membership_never_uses_the_all_boards_query(evening, db):
+    api = evening.api
+    evening.ingest_trade_date(D1)
+    api.errors["dc_member"] = Exception("api down")  # everything fails
+    result = evening.refresh_daily_membership(D1)
+    assert result["status"] == "failed" and not result.get("fallback")
+    assert _member_calls(api) and all("ts_code" in kw for kw in _member_calls(api))  # fallback off by default
+    assert "full_day" not in (quality(db, D1).get("membership") or {})
+
+
+def test_full_day_fallback_runs_only_when_enabled_and_per_board_failed(evening, db, config):
+    api = evening.api
+    evening.ingest_trade_date(D1)
+    _board_members(api, "BK1184.DC", "20261102", ["600519.SH", "300750.SZ"])
+    api.member_errors["BK1184.DC"] = Exception("boom")  # per-board fails; the all-boards query still answers
+    config.board_membership_full_day_fallback = True
+
+    result = evening.refresh_daily_membership(D1)
+
+    assert result["fallback"] is True and result["status"] == "ok" and result["per_board"]["status"] == "failed"
+    assert any("ts_code" not in kw for kw in _member_calls(api))
+    assert _folded(evening, "BK1184.DC", D1) == {"600519", "300750"}
+
+    # a healthy per-board refresh never touches the fallback, even when it is enabled
+    api.calls.clear()
+    api.member_errors.clear()
+    evening.ingest_trade_date(D2, allow_derived=True)
+    _board_members(api, "BK1184.DC", "20261103", ["600519.SH", "300750.SZ"])
+    healthy = evening.refresh_daily_membership(D2)
+    assert healthy["status"] == "ok" and not healthy.get("fallback")
+    assert all("ts_code" in kw for kw in _member_calls(api))
+
+
+def test_membership_calls_use_their_own_rate_limit_and_restore_the_default(evening, config, fetcher):
+    api = evening.api
+    evening.ingest_trade_date(D1)
+    _board_members(api, "BK1184.DC", "20261102", ["600519.SH"])
+    config.market_snapshot_members_requests_per_minute = 200
+    fetcher.rate_limit_per_minute = 60
+    seen: List[int] = []
+    real = fetcher.fetch_dc_member
+
+    def _spy(*args, **kwargs):
+        seen.append(fetcher.rate_limit_per_minute)
+        return real(*args, **kwargs)
+
+    fetcher.fetch_dc_member = _spy
+    evening.refresh_board_membership(D1, "concept")
+    assert seen == [200]  # per-board calls use the membership limit ...
+    assert fetcher.rate_limit_per_minute == 60  # ... and every other interface keeps the conservative one
+
+
+def test_missing_tushare_token_is_reported_as_error_without_requests(db, fetcher, config):
+    service = MarketSnapshotService(repo=MarketSnapshotRepository(db), config=config)  # no injected fetcher: no token
+    service.repo.upsert_catalog(D1, "concept", [{"code": "BK1184.DC", "name": "x", "level": None}])
+    result = service.refresh_board_membership(D1, "concept")
+    assert result["status"] == "error" and "TUSHARE_TOKEN" in result["error"]
+
+
+def test_offset_cap_error_is_not_retried(service, api, monkeypatch):
+    """Tushare's "offset不能大于100000" can never succeed on retry; it is raised at once for splitting."""
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda *_: (_ for _ in ()).throw(AssertionError("must not sleep")))
+    api.errors["dc_member"] = Exception("查询数据失败，请确认参数！offset不能大于100000, 请通过其他条件缩小查询范围。")
+    with pytest.raises(Exception) as info:
+        service.fetcher.fetch_dc_member("BK0707.DC", start_date=D1, end_date=D1)
+    assert "offset" in str(info.value)

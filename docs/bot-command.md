@@ -25,7 +25,9 @@ flowchart TB
         NS[NotificationService]
     end
 
-    FS -->|POST /bot/feishu| WH
+    FS -->|WebSocket 长连接（无回调地址）| Stream[bot/platforms/feishu_stream.py]
+    Stream --> Dispatcher
+    Stream --> Assistant[助手（非命令文本）]
     DT -->|POST /bot/dingtalk| WH
     WC -->|POST /bot/wecom| WH
     TG -->|POST /bot/telegram| WH
@@ -195,6 +197,12 @@ class CommandDispatcher:
 
 | /status | /s, 状态 | 系统状态 | `/status` |
 
+| /bind | 绑定 | （飞书）把当前会话设为通知推送目标，替换已有绑定 | `/bind` |
+
+| /unbind | 解绑 | （飞书）取消通知目标绑定 | `/unbind` |
+
+> 飞书里别名「分析」「大盘」等无前缀中文命令不再触发命令；不以 `/` 开头的文本交给助手。
+
 ### `/analyze` 支持边界
 
 - 股票：A 股 6 位数字（`600519`）、港股 `HK+5 位数字`（`hk00700`）、美股 1-5 个字母（`AAPL`、`usfd`→`USFD`）。股票名称（`贵州茅台`）由本次 Bot 入口新暴露：复用既有名称解析器（`resolve_name_to_code`）解析后提交 legacy code，不携带结构化 target。
@@ -247,17 +255,18 @@ class CommandDispatcher:
 - Gemini OpenAI 兼容说明：<https://ai.google.dev/gemini-api/docs/openai>
 - Ollama API 文档：<https://github.com/ollama/ollama/blob/main/docs/api.md>
 
-## 六、Webhook 路由
+## 六、接入方式与路由
 
-在 [api/v1/router.py](../api/v1/router.py) 中注册路由：
+飞书不使用回调地址：应用机器人通过 `lark-oapi` 长连接接收 `im.message.receive_v1` 事件
+（`FEISHU_STREAM_ENABLED=true`，serve 模式与 `--schedule` 模式都会启动，同一进程只运行一个客户端），
+配置步骤见 [飞书机器人配置](bot/feishu-bot-config.md)。飞书消息的处理规则：
 
-```python
-# Webhook 路由
-/bot/feishu      # POST - 飞书事件回调
-/bot/dingtalk    # POST - 钉钉事件回调
-/bot/wecom       # POST - 企业微信事件回调 （开发中）
-/bot/telegram    # POST - Telegram 更新回调 （开发中）
-```
+- 以 `/` 开头的消息进入本文的命令分发器（包括 `/bind`、`/unbind`）。
+- 其他文本进入助手（与 Web 助手同一条链路：会话、笔记注入、记忆召回、市场阶段、标的解析），
+  先回复「正在分析…」卡片，完成后原地更新为答案；群聊仅在 @机器人 时响应。
+
+钉钉同样走 Stream 长连接。当前 `api/v1/router.py` 没有注册 `/bot/<platform>` 回调路由；
+`bot/handler.py` 中的 Webhook 处理函数仅作为适配器代码保留，企业微信 / Telegram 回调仍在开发中。
 
 ## 配置
 

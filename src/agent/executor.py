@@ -966,6 +966,10 @@ class AgentExecutor:
             if daily_market_context_section:
                 parts.append(daily_market_context_section)
 
+            extra_context_section = context.get("extra_context_section")
+            if isinstance(extra_context_section, str) and extra_context_section.strip():
+                parts.append(extra_context_section.strip())
+
             market_structure_section = format_market_structure_prompt_section(
                 context.get("market_structure_context"),
                 report_language=report_language,

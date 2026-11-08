@@ -16,12 +16,12 @@
 
 使用方式：
 1. 配置环境变量（各平台的 Token 等）
-2. 启动 WebUI 服务
-3. 在各平台配置 Webhook URL：
-   - 飞书: http://your-server/bot/feishu
-   - 钉钉: http://your-server/bot/dingtalk
-   - 企业微信: http://your-server/bot/wecom
-   - Telegram: http://your-server/bot/telegram
+2. 启动服务（--serve / --schedule）
+3. 各平台接入方式：
+   - 飞书: 应用机器人 + 事件订阅「长连接」（FEISHU_STREAM_ENABLED=true），无需回调地址，
+     详见 docs/bot/feishu-bot-config.md
+   - 钉钉: Stream 模式（DINGTALK_STREAM_ENABLED=true）
+   - 企业微信 / Telegram: 见 docs/bot-command.md
 
 支持的命令：
 - /analyze <股票代码>  - 分析指定股票
@@ -29,6 +29,7 @@
 - /batch              - 批量分析自选股
 - /help               - 显示帮助
 - /status             - 系统状态
+- /bind, /unbind      - 把当前飞书会话设为 / 取消通知目标
 """
 
 from bot.models import BotMessage, BotResponse, ChatType, WebhookResponse

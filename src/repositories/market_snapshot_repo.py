@@ -118,6 +118,30 @@ class MarketSnapshotRepository:
 
         self.db._run_write_transaction(f"merge ingestion quality[{trade_date}]", _write)
 
+    def merge_ingestion_quality_entry(self, trade_date: date, block: str, key: str, value: Any) -> None:
+        """Set ``ingestion[block][key] = value`` for ``trade_date`` in one transaction.
+
+        Lets independent writers (concept / industry membership runs of the same date) share one
+        sub-block without overwriting each other. A non-dict ``block`` is replaced by a dict.
+        """
+
+        def _write(session) -> None:
+            row = session.get(MarketDaily, trade_date)
+            if row is None:
+                row = MarketDaily(trade_date=trade_date)
+                session.add(row)
+            quality = _loads(row.quality)
+            ingestion = quality.get(QUALITY_INGESTION_KEY)
+            ingestion = dict(ingestion) if isinstance(ingestion, dict) else {}
+            section = ingestion.get(block)
+            section = dict(section) if isinstance(section, dict) else {}
+            section[key] = value
+            ingestion[block] = section
+            quality[QUALITY_INGESTION_KEY] = ingestion
+            row.quality = json.dumps(quality, ensure_ascii=False, sort_keys=True)
+
+        self.db._run_write_transaction(f"merge ingestion quality[{trade_date}].{block}.{key}", _write)
+
     def get_previous_stock_day(self, trade_date: date) -> tuple:
         """``(date, {code: row})`` of the newest ingested day before ``trade_date`` (or ``(None, {})``).
 

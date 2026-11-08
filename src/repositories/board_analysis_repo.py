@@ -420,6 +420,27 @@ class BoardAnalysisRepository:
 
         return self.db._run_write_transaction(f"replace board_signal[run {run_id}]", _write)
 
+    def merge_signal_evidence(self, run_id: int, additions: Dict[int, Dict[str, Any]]) -> int:
+        """Add keys to ``board_signal.evidence`` of existing signals (``{board_id: {key: value}}``).
+
+        Signal type / flags / reason / driver are never touched; boards without a signal in the run
+        are skipped. Returns the number of signals updated.
+        """
+        if not additions:
+            return 0
+
+        def _write(session) -> int:
+            rows = session.execute(
+                select(BoardSignal).where(BoardSignal.run_id == run_id, BoardSignal.board_id.in_(list(additions)))
+            ).scalars().all()
+            for row in rows:
+                merged = loads_json(row.evidence)
+                merged.update(additions[row.board_id])
+                row.evidence = dumps_json(merged)
+            return len(rows)
+
+        return self.db._run_write_transaction(f"merge board_signal evidence[run {run_id}]", _write)
+
     def get_signals(self, run_id: int, board_id: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.db.get_session() as session:
             stmt = select(BoardSignal).where(BoardSignal.run_id == run_id)

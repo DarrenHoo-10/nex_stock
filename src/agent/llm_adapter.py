@@ -18,6 +18,7 @@ from litellm import Router
 
 from src.config import (
     extra_litellm_params,
+    get_agent_reasoning_effort,
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
@@ -42,7 +43,12 @@ from src.llm.backend_registry import (
     resolve_agent_generation_backend_id,
 )
 from src.llm.generation_backend import GenerationError, GenerationErrorCode
-from src.llm.generation_params import apply_litellm_generation_params, resolve_litellm_wire_model
+from src.llm.generation_params import (
+    apply_litellm_generation_params,
+    build_litellm_reasoning_params,
+    resolve_litellm_wire_model,
+    resolve_required_max_tokens,
+)
 from src.llm.usage import attach_message_hmacs, extract_usage_payload, normalize_litellm_usage
 from src.llm.provider_cache import (
     build_provider_cache_route_context,
@@ -719,6 +725,19 @@ class LLMToolAdapter:
         recovery_model_list = resolution.model_list or self._config.llm_model_list
         if self._router and model == agent_primary_model and not use_channel_router:
             recovery_model_list = self._legacy_router_model_list or self._config.llm_model_list
+        if max_tokens is None:
+            # No project-side output cap; only providers that require max_tokens (native Anthropic) get the
+            # model's own maximum from LiteLLM model info.
+            required_max_tokens = resolve_required_max_tokens(model, model_list=recovery_model_list)
+            if required_max_tokens:
+                call_kwargs["max_tokens"] = required_max_tokens
+        # AGENT_REASONING_EFFORT (empty follows LLM_REASONING_EFFORT); an unsupported-parameter error is repaired
+        # by ``call_litellm_with_param_recovery`` (one retry without it).
+        call_kwargs.update(
+            build_litellm_reasoning_params(
+                model, get_agent_reasoning_effort(self._config), model_list=recovery_model_list
+            )
+        )
         if not uses_router:
             keys = get_api_keys_for_model(model, self._config)
             if keys:

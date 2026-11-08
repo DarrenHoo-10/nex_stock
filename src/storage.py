@@ -271,6 +271,19 @@ class IntelligenceItem(Base):
     scope_value = Column(String(64), nullable=False, default=INTELLIGENCE_ITEM_NULL_SCOPE_VALUE, index=True)
     market = Column(String(32), nullable=False, default='cn', index=True)
     raw_payload = Column(Text)
+    # AKShare 资讯池追加列（均可空，旧库通过 _ensure_intelligence_item_news_columns 补列）：
+    # item_kind: flash / announcement / morning_brief；NULL 表示旧来源（rss / atom / newsnow）。
+    item_kind = Column(String(32))
+    # LLM 分类结果：news_scope market / board / stock；classified_at 为空表示尚未分类。
+    news_scope = Column(String(16))
+    importance = Column(Integer)
+    is_breaking = Column(Boolean)
+    board_names = Column(Text)  # JSON list：模型给出的板块名（含未能匹配到 board_catalog 的）
+    board_ids = Column(Text)  # JSON list：匹配到的 board_catalog.id
+    us_tickers = Column(Text)  # JSON list：美股代码（大写）
+    stock_codes = Column(Text)  # JSON list：A 股代码
+    classified_at = Column(DateTime)
+    classify_attempts = Column(Integer)  # 分类失败次数，NULL 视为 0
 
     __table_args__ = (
         UniqueConstraint(
@@ -284,6 +297,35 @@ class IntelligenceItem(Base):
         Index('ix_intel_item_scope_time', 'scope_type', 'scope_value', 'market', 'published_at'),
         Index('ix_intel_item_fetch_time', 'fetched_at'),
     )
+
+
+class NewsFetchState(Base):
+    """AKShare 资讯源的抓取检查点：每个来源一行，用于发现轮询间隔内漏掉的窗口。"""
+
+    __tablename__ = 'news_fetch_state'
+
+    source_key = Column(String(64), primary_key=True)  # 例如 cls / em / sina / futu / ths / notice / cjzc
+    checkpoint_at = Column(DateTime)  # 已入库的最新发布时间（中国时间，无时区）
+    last_fetch_at = Column(DateTime)
+    last_success_at = Column(DateTime)
+    last_status = Column(String(16))  # ok / empty / failed
+    last_error = Column(Text)
+    last_count = Column(Integer)
+    gap_check = Column(String(16))  # full 可检测缺口 / filtered 取数经过服务端过滤，不检测
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class NewsFetchGap(Base):
+    """一次轮询的新批次与检查点没有重叠：[gap_from, gap_to] 之间的快讯可能不完整。"""
+
+    __tablename__ = 'news_fetch_gap'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_key = Column(String(64), nullable=False, index=True)
+    gap_from = Column(DateTime, nullable=False, index=True)
+    gap_to = Column(DateTime, nullable=False)
+    covered = Column(Boolean, nullable=False, default=False)  # 同一轮中其他来源的批次已覆盖该窗口
+    detected_at = Column(DateTime, default=datetime.now, index=True)
 
 
 class FundamentalSnapshot(Base):
@@ -860,6 +902,37 @@ class AssistantNoteProposal(Base):
     resolved_at = Column(DateTime, nullable=True)
 
 
+class FeishuBinding(Base):
+    """The single chat that receives bot-app pushes (``/bind`` / ``/unbind``).
+
+    At most one row exists; binding another chat replaces it in one transaction.
+    """
+
+    __tablename__ = 'feishu_binding'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(String(64), nullable=False)
+    chat_type = Column(String(16), nullable=False, default='group')  # p2p / group
+    bound_by_open_id = Column(String(64), nullable=True)
+    bound_at = Column(DateTime, default=datetime.now, nullable=False)
+    session_id = Column(String(100), nullable=False)  # assistant session pushes are recorded into
+
+
+class FeishuMessageSession(Base):
+    """Maps a Feishu message id (bot push / bot answer) to the assistant session it belongs to.
+
+    A user message that replies to one of these continues that session.
+    """
+
+    __tablename__ = 'feishu_message_session'
+
+    message_id = Column(String(64), primary_key=True)
+    chat_id = Column(String(64), nullable=False, index=True)
+    session_id = Column(String(100), nullable=False)
+    kind = Column(String(16), nullable=False, default='answer')  # push / answer
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
+
 class AgentProviderTurn(Base):
     """Provider protocol trace required for thinking/tool-call roundtrip."""
 
@@ -957,6 +1030,19 @@ class LLMUsage(Base):
     known_dynamic_marker_positions = Column(Text, nullable=True)
     called_at = Column(DateTime, default=datetime.now, index=True)
 
+
+_INTELLIGENCE_ITEM_NEWS_COLUMN_SQL: Dict[str, str] = {
+    "item_kind": "VARCHAR(32)",
+    "news_scope": "VARCHAR(16)",
+    "importance": "INTEGER",
+    "is_breaking": "BOOLEAN",
+    "board_names": "TEXT",
+    "board_ids": "TEXT",
+    "us_tickers": "TEXT",
+    "stock_codes": "TEXT",
+    "classified_at": "DATETIME",
+    "classify_attempts": "INTEGER",
+}
 
 _LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
     "provider_usage_json": "TEXT",
@@ -1678,6 +1764,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_decision_signal_profile_schema()
             self._ensure_stock_daily_canonical_id()
             self._ensure_intelligence_item_scope_values()
+            self._ensure_intelligence_item_news_columns()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
             self._ensure_chat_session_schema()
@@ -2529,6 +2616,39 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                         )
                         if delay > 0:
                             time.sleep(delay)
+                        continue
+                    raise
+
+    def _ensure_intelligence_item_news_columns(self) -> None:
+        """Additive migration: nullable classification columns on ``intelligence_items``.
+
+        Must run before ``_ensure_intelligence_items_unique_index``: its table rebuild copies
+        every model column from the old table.
+        """
+        table = IntelligenceItem.__tablename__
+        try:
+            existing = {col["name"] for col in inspect(self._engine).get_columns(table)}
+        except Exception as exc:
+            logger.warning("资讯池分类列检查失败，已跳过: %s", exc)
+            return
+        max_retries = self._sqlite_write_retry_max if self._is_sqlite_engine else 0
+        for column, column_type in _INTELLIGENCE_ITEM_NEWS_COLUMN_SQL.items():
+            if column in existing:
+                continue
+            for attempt in range(max_retries + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_engine and self._is_sqlite_duplicate_column_error(exc, column):
+                        break
+                    if (
+                        self._is_sqlite_engine
+                        and self._is_sqlite_locked_error(exc)
+                        and attempt < max_retries
+                    ):
+                        time.sleep(self._sqlite_write_retry_base_delay * (2 ** attempt))
                         continue
                     raise
 
@@ -4293,6 +4413,28 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             return int(msg.id)
 
         return self._run_write_transaction("save_conversation_message", write)
+
+    def save_chat_notification_message(
+        self, session_id: str, content: str, context_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Record a pushed notification as an assistant message of a chat session.
+
+        A push is not a chat turn: it never changes the accepted-turn state
+        (active stock, user anchors), so unlike ``save_conversation_message`` it
+        is allowed on sessions that already use the versioned state contract.
+        """
+        def write(session: Session) -> int:
+            msg = ConversationMessage(
+                session_id=session_id,
+                role="assistant",
+                content=content,
+                context_snapshot=_dump_context_snapshot(context_snapshot),
+            )
+            session.add(msg)
+            session.flush()
+            return int(msg.id)
+
+        return self._run_write_transaction("save_chat_notification_message", write)
 
     def save_conversation_user_turn(
         self,

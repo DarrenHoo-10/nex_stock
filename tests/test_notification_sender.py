@@ -321,6 +321,12 @@ class TestWechatSender(unittest.TestCase):
 class TestFeishuSender(unittest.TestCase):
     """Unit tests for FeishuSender."""
 
+    def setUp(self):
+        # No /bind binding: keep these tests off the real database.
+        patcher = mock.patch("src.services.feishu_binding_service.get_binding", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_send_returns_false_when_no_webhook_url(self):
         cfg = _config()
         sender = FeishuSender(cfg)
@@ -510,15 +516,32 @@ class TestFeishuSender(unittest.TestCase):
         self.assertIn("**bold**", mock_raw.call_args_list[0][0][2])
 
     @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    @mock.patch.object(FeishuSender, "_ensure_app_client", return_value=object())
     @mock.patch.object(FeishuSender, "_app_send_raw", return_value=True)
-    def test_webhook_takes_precedence_over_app_bot(self, mock_app_raw, mock_webhook_post):
-        """When both webhook URL and App Bot credentials are configured, webhook is used."""
-        mock_webhook_post.return_value = _response(200, {"code": 0})
+    def test_app_bot_target_takes_precedence_over_webhook(self, mock_app_raw, _client, mock_webhook_post):
+        """App credentials + FEISHU_CHAT_ID resolve a bot target, which wins over the legacy webhook."""
         cfg = _config(
             feishu_webhook_url="https://feishu.example/hook",
             feishu_app_id="cli_app",
             feishu_app_secret="secret",
             feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        result = sender.send_to_feishu("hello", record_in_session=False)
+
+        self.assertTrue(result)
+        mock_app_raw.assert_called_once()
+        mock_webhook_post.assert_not_called()
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    @mock.patch.object(FeishuSender, "_app_send_raw", return_value=True)
+    def test_webhook_is_used_when_no_app_bot_target_resolves(self, mock_app_raw, mock_webhook_post):
+        """Webhook stays the fallback: app credentials without a binding / FEISHU_CHAT_ID."""
+        mock_webhook_post.return_value = _response(200, {"code": 0})
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
         )
         sender = FeishuSender(cfg)
         result = sender.send_to_feishu("hello")
@@ -528,14 +551,13 @@ class TestFeishuSender(unittest.TestCase):
         mock_app_raw.assert_not_called()
 
     @mock.patch("src.notification_sender.feishu_sender.requests.post")
-    def test_webhook_does_not_require_sdk_when_app_bot_is_also_configured(self, mock_webhook_post):
-        """Webhook precedence keeps SDK absence from breaking existing delivery."""
+    def test_webhook_does_not_require_sdk_when_no_app_bot_target(self, mock_webhook_post):
+        """Webhook fallback keeps SDK absence from breaking existing delivery."""
         mock_webhook_post.return_value = _response(200, {"code": 0})
         cfg = _config(
             feishu_webhook_url="https://feishu.example/hook",
             feishu_app_id="cli_app",
             feishu_app_secret="secret",
-            feishu_chat_id="oc_chat",
         )
         sender = FeishuSender(cfg)
 

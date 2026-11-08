@@ -103,6 +103,13 @@ def classify_litellm_generation_param_error(
                 reason="temperature_unsupported",
             )
 
+    if "reasoning_effort" in text or "reasoning effort" in text:
+        if any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
+            return GenerationParamRecovery(
+                omit_params=("reasoning_effort", "allowed_openai_params"),
+                reason="reasoning_effort_unsupported",
+            )
+
     for param in ("top_p", "presence_penalty", "frequency_penalty", "seed"):
         if param in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
             return GenerationParamRecovery(

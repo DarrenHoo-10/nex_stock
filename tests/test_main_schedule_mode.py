@@ -458,6 +458,61 @@ class MainScheduleModeTestCase(unittest.TestCase):
             "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新读取最新的 STOCK_LIST。"
         )
 
+    def test_schedule_only_mode_starts_the_feishu_long_connection_once(self) -> None:
+        args = self._make_args(schedule=True)
+        config = self._make_config(schedule_enabled=False, feishu_stream_enabled=True)
+        order = []
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main._reload_runtime_config", return_value=config), \
+             patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
+             patch("main.setup_logging"), \
+             patch("main.start_bot_stream_clients") as start_bots, \
+             patch("bot.platforms.start_feishu_stream_background",
+                   side_effect=lambda: order.append("feishu") or True) as start_feishu, \
+             patch("src.scheduler.run_with_schedule",
+                   side_effect=lambda **kwargs: order.append("scheduler")):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        # no API server in scheduler-only mode: the serve-mode starter is not used
+        start_bots.assert_not_called()
+        start_feishu.assert_called_once_with()
+        self.assertEqual(order, ["feishu", "scheduler"])
+
+    def test_schedule_mode_registers_news_pool_tasks_and_daily_job_only_when_enabled(self) -> None:
+        captured = {}
+
+        def fake_run_with_schedule(task, schedule_time, run_immediately, background_tasks=None,
+                                   schedule_time_provider=None, pass_scheduled_for=False, extra_daily_jobs=None):
+            captured["background"] = [(t["name"], t["interval_seconds"]) for t in background_tasks or []]
+            captured["daily"] = [(j["name"], j["schedule_time"]) for j in extra_daily_jobs or []]
+
+        def run(config):
+            captured.clear()
+            with patch("main.parse_arguments", return_value=self._make_args(schedule=True)), \
+                 patch("main.get_config", return_value=config), \
+                 patch("main._reload_runtime_config", return_value=config), \
+                 patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
+                 patch("main.setup_logging"), \
+                 patch("main.run_full_analysis"), \
+                 patch("main._refresh_stock_index_cache_for_analysis"), \
+                 patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
+                self.assertEqual(main.main(), 0)
+            return dict(captured)
+
+        off = run(self._make_config(schedule_enabled=False))
+        self.assertEqual(off, {"background": [], "daily": []})
+
+        on = run(self._make_config(
+            schedule_enabled=False, news_intel_auto_fetch_enabled=True, news_classify_enabled=True,
+            news_poll_interval_minutes=10, news_poll_offhours_interval_minutes=30, news_daily_fetch_time="08:05",
+            board_pipeline_enabled=True, board_pipeline_schedule_time="17:00", tushare_token="token",
+        ))
+        self.assertEqual(on["background"], [("news_poll", 600), ("news_classify", 600)])
+        self.assertEqual(on["daily"], [("board_pipeline", "17:00"), ("news_daily_fetch", "08:05")])
+
     def test_standalone_run_resolves_stocks_before_run_full_analysis(self) -> None:
         args = self._make_args(stocks="005930")
         config = self._make_config(run_immediately=True)
@@ -1190,6 +1245,78 @@ class MainScheduleModeTestCase(unittest.TestCase):
         [job] = scheduled_call["extra_daily_jobs"]
         self.assertEqual(job["name"], "board_pipeline")
         self.assertEqual(job["schedule_time"], "17:00")
+
+    def test_schedule_mode_registers_weekly_industry_membership_job_next_to_the_board_job(self) -> None:
+        args = self._make_args(schedule=True)
+        config = self._make_config(
+            schedule_enabled=False,
+            board_pipeline_enabled=True,
+            board_pipeline_schedule_time="17:00",
+            tushare_token="token-for-tests",
+            board_industry_membership_enabled=True,
+            board_industry_membership_weekday=6,
+            board_industry_membership_time="10:00",
+        )
+        scheduled_call = {}
+
+        def fake_run_with_schedule(
+            task,
+            schedule_time,
+            run_immediately,
+            background_tasks=None,
+            schedule_time_provider=None,
+            pass_scheduled_for=False,
+            extra_daily_jobs=None,
+        ):
+            scheduled_call["extra_daily_jobs"] = extra_daily_jobs or []
+
+        with patch("main.parse_arguments", return_value=args),              patch("main.get_config", return_value=config),              patch("main._reload_runtime_config", return_value=config),              patch("main._build_schedule_time_provider", return_value=lambda: "18:00"),              patch("main.setup_logging"),              patch("main.run_full_analysis"),              patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        jobs = {job["name"]: job for job in scheduled_call["extra_daily_jobs"]}
+        self.assertEqual(sorted(jobs), ["board_industry_membership", "board_pipeline"])
+        self.assertEqual(jobs["board_industry_membership"]["schedule_time"], "10:00")
+
+    def test_schedule_mode_registers_preopen_push_job_next_to_the_board_job(self) -> None:
+        args = self._make_args(schedule=True)
+        config = self._make_config(
+            schedule_enabled=False,
+            board_pipeline_enabled=True,
+            board_pipeline_schedule_time="17:00",
+            tushare_token="token-for-tests",
+            preopen_push_enabled=True,
+            preopen_push_time="08:15",
+        )
+        scheduled_call = {}
+
+        def fake_run_with_schedule(
+            task,
+            schedule_time,
+            run_immediately,
+            background_tasks=None,
+            schedule_time_provider=None,
+            pass_scheduled_for=False,
+            extra_daily_jobs=None,
+        ):
+            scheduled_call["schedule_time"] = schedule_time
+            scheduled_call["extra_daily_jobs"] = extra_daily_jobs or []
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main._reload_runtime_config", return_value=config), \
+             patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
+             patch("main.setup_logging"), \
+             patch("main.run_full_analysis"), \
+             patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(scheduled_call["schedule_time"], "18:00")  # the analysis time is untouched
+        jobs = {job["name"]: job for job in scheduled_call["extra_daily_jobs"]}
+        self.assertEqual(sorted(jobs), ["board_pipeline", "preopen_push"])
+        self.assertEqual(jobs["board_pipeline"]["schedule_time"], "17:00")
+        self.assertEqual(jobs["preopen_push"]["schedule_time"], "08:15")
 
     def test_schedule_mode_registers_event_monitor_worker_without_legacy_rules(self) -> None:
         args = self._make_args(schedule=True)

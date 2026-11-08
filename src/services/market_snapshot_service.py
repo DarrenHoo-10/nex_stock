@@ -8,9 +8,12 @@ For one trade date this service:
 2. fetches the benchmark index and records it in ``market_daily``;
 3. upserts ``board_catalog`` from ``dc_index`` and writes the vendor reference columns of
    ``board_daily`` from ``dc_daily``;
-4. folds one day of ``dc_member`` (all boards in one paged query) into ``board_membership``
-   (``refresh_membership_for_day``), or refreshes every board over a date range
-   (``refresh_all_membership``, cold start / manual repair).
+4. folds one day of ``dc_member`` into ``board_membership`` PER BOARD
+   (``refresh_board_membership``: one ``dc_member(ts_code, trade_date)`` call per board, <= 5000
+   rows each; concept boards daily in the 17:00 pipeline, industry boards weekly), or refreshes
+   every board over a date range (``refresh_all_membership``, cold start / manual repair). The
+   all-boards-in-one-query form (``refresh_membership_for_day``) is an opt-in fallback only: Tushare
+   caps the paging offset at 100000 and one day has more than 105k rows, so it cannot finish.
 
 Missing or late interfaces are recorded under ``market_daily.quality["ingestion"]`` and the
 affected columns stay NULL; they are never written as zero. With ``allow_derived=True`` (the
@@ -27,9 +30,10 @@ from __future__ import annotations
 
 import logging
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -61,6 +65,14 @@ DERIVE_MAX_GAP_DAYS = 10
 LIMIT_PRICE_TOLERANCE = 0.005
 # 全量成分条数低于上一次成分条数的这个比例，视为接口返回不完整，不折叠进拉链表。
 MEMBERSHIP_MIN_RATIO = 0.5
+# 单个板块当前成分至少这么多只时才做「骤减」校验（小板块波动大，不适用）。
+MEMBERSHIP_SHRINK_GUARD_MIN = 10
+# 逐板块刷新连续失败这么多个板块后中止（接口不可用 / 权限不足时不把几百次请求都耗光）。
+MEMBERSHIP_MAX_CONSECUTIVE_FAILURES = 10
+# 质量记录里最多列出多少个失败 / 空返回的板块代码。
+MEMBERSHIP_QUALITY_CODE_LIMIT = 20
+# market_daily.quality.ingestion.membership: one sub-record per scope ("concept" / "industry" / "full_day").
+MEMBERSHIP_FULL_DAY_KEY = "full_day"
 _EMPTY_RESPONSE = "empty response"
 # B 股代码段（上交所 900、深交所 200），不属于「全部 A 股」。
 _B_SHARE_PREFIXES = ("900", "200")
@@ -700,27 +712,227 @@ class MarketSnapshotService:
     # ------------------------------------------------------------------
     # 板块成分（拉链表）
     # ------------------------------------------------------------------
-    def refresh_membership_for_day(self, trade_date: Any, *, force: bool = False) -> Dict[str, Any]:
-        """Daily refresh: fold one day of ``dc_member`` for every board into the zipper table.
+    @contextmanager
+    def _members_rate_limit(self) -> Iterator[None]:
+        """Use ``MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE`` for the per-board ``dc_member`` calls.
 
-        One ``dc_member(trade_date=D)`` query without ``ts_code`` returns all boards' members
-        (~80k rows), paged by ``_market_query_paged``. Safety rails, in this order:
+        The fetcher's limiter (``MARKET_SNAPSHOT_REQUESTS_PER_MINUTE``, default 60) stays in force for
+        every other interface; only the per-board membership loop (~500 tiny calls) gets the higher cap,
+        and the previous cap is restored afterwards. Fetchers without a limiter attribute are untouched.
+        """
+        try:
+            fetcher = self.fetcher
+        except DataFetchError:  # no token: the caller reports it when it first uses the fetcher
+            yield
+            return
+        configured = getattr(self._config, "market_snapshot_members_requests_per_minute", None)
+        previous = getattr(fetcher, "rate_limit_per_minute", None)
+        applicable = isinstance(configured, int) and not isinstance(configured, bool) and configured >= 1
+        if previous is None or not applicable:
+            yield
+            return
+        fetcher.rate_limit_per_minute = configured
+        try:
+            yield
+        finally:
+            fetcher.rate_limit_per_minute = previous
+
+    def refresh_daily_membership(self, trade_date: Any, *, progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+        """The 17:00 pipeline's membership step: fold ``trade_date`` (D-1) for the active concept boards.
+
+        One ``dc_member(ts_code, trade_date)`` per board (see ``refresh_board_membership``). Only when
+        ``BOARD_MEMBERSHIP_FULL_DAY_FALLBACK`` is on and that refresh produced nothing (status
+        ``failed`` / ``error``) is the all-boards query tried; its result then carries
+        ``fallback=True`` and the per-board result under ``per_board``.
+        """
+        result = self.refresh_board_membership(trade_date, "concept", progress=progress)
+        if result.get("status") not in ("failed", "error"):
+            return result
+        if not getattr(self._config, "board_membership_full_day_fallback", False):
+            return result
+        logger.warning("[MarketSnapshot] 逐板块成分刷新失败，按 BOARD_MEMBERSHIP_FULL_DAY_FALLBACK 尝试全量成分查询")
+        fallback = self.refresh_membership_for_day(trade_date)
+        fallback["fallback"] = True
+        fallback["per_board"] = {
+            k: result.get(k) for k in ("status", "ok", "failed", "empty", "skipped", "error") if k in result
+        }
+        return fallback
+
+    def refresh_board_membership(
+        self,
+        trade_date: Any,
+        board_type: str = "concept",
+        *,
+        max_consecutive_failures: int = MEMBERSHIP_MAX_CONSECUTIVE_FAILURES,
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Fold one trade date of ``dc_member`` PER BOARD for the active boards of ``board_type``.
+
+        One ``dc_member(ts_code=<board>, trade_date=D)`` call per board (<= 5000 rows, so no paging
+        beyond Tushare's 100000 offset cap), through the membership rate limit
+        (``MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE``) with the fetcher's rate-limit / timeout
+        backoff. Rules, per board:
+
+        * ``membership_checked_date >= D``: already folded, no request (``skipped``) - re-running a day
+          is free and resumes where an interrupted run stopped;
+        * the call fails (``DataFetchError`` / ``IncompleteMarketDataError`` / network), or returns
+          fewer than ``MEMBERSHIP_MIN_RATIO`` of a board that has >= ``MEMBERSHIP_SHRINK_GUARD_MIN``
+          members: the board keeps its existing membership, nothing is closed (``failed``);
+        * the call returns no rows for D: existing membership is kept (``empty``);
+        * otherwise the members fold into the zipper table (``ok``).
+
+        ``max_consecutive_failures`` boards in a row failing aborts the run (Tushare down / no
+        permission); the untouched boards are reported as ``remaining``. The summary is stored under
+        ``market_daily.quality["ingestion"]["membership"][board_type]`` of D and returned:
+        ``{"status": ok / skipped / partial / failed / error / no_boards, "boards", "ok", "failed",
+        "empty", "skipped", "rows", "opened", "closed", ...}``. ``status`` is ``ok`` when boards folded
+        and none failed (boards with no rows are normal: retired / not published), ``partial`` when
+        some failed, ``failed`` when no board could be folded (all failed or all empty).
+        """
+        day = _as_date(trade_date)
+        base = {"board_type": board_type, "trade_date": day.isoformat()}
+        if day < DC_MEMBER_START_DATE:
+            return dict(base, status="skipped", reason=f"dc_member 只有 {DC_MEMBER_START_DATE} 以来的逐日成分")
+        boards = self.repo.list_boards(board_types=(board_type,), status="active")
+        if not boards:
+            return dict(base, status="no_boards", reason="板块目录为空")
+        pending = [b for b in boards if b["membership_checked_date"] is None or b["membership_checked_date"] < day]
+        counts = {"boards": len(boards), "ok": 0, "failed": 0, "empty": 0, "skipped": len(boards) - len(pending)}
+        if not pending:
+            return dict(base, status="skipped", reason="该日成分已折叠入拉链表", rows=0, opened=0, closed=0, **counts)
+        try:
+            with self._members_rate_limit():
+                result = self._fold_boards(day, pending, counts, max_consecutive_failures, progress)
+        except DataFetchError as exc:  # Tushare unavailable / not configured: nothing was requested
+            return dict(base, status="error", error=str(exc)[:200], **counts)
+        result = dict(base, **result)
+        result["at"] = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+        try:
+            self.repo.merge_ingestion_quality_entry(day, "membership", board_type, result)
+        except Exception as exc:  # noqa: BLE001 - the record is bookkeeping, not the data
+            logger.warning("[MarketSnapshot] %s %s 成分状态写入失败: %s", day, board_type, exc)
+        logger.info(
+            "[MarketSnapshot] %s %s 成分刷新: status=%s ok=%d failed=%d empty=%d skipped=%d opened=%d closed=%d",
+            day, board_type, result["status"], result["ok"], result["failed"], result["empty"],
+            result["skipped"], result["opened"], result["closed"],
+        )
+        return result
+
+    def _fold_boards(
+        self,
+        day: date,
+        pending: List[Dict[str, Any]],
+        counts: Dict[str, int],
+        max_consecutive_failures: int,
+        progress: Optional[Callable[[str], None]],
+    ) -> Dict[str, Any]:
+        fetcher = self.fetcher  # raises DataFetchError when TUSHARE_TOKEN is missing
+        rows = opened = closed = consecutive = 0
+        failed_codes: List[str] = []
+        empty_codes: List[str] = []
+        errors: Dict[str, str] = {}
+        aborted = False
+        attempted = 0
+        for board in pending:
+            attempted += 1
+            outcome = self._fold_one_board_day(fetcher, board, day)
+            status = outcome["status"]
+            if status == "ok":
+                counts["ok"] += 1
+                rows += outcome["rows"]
+                opened += outcome["opened"]
+                closed += outcome["closed"]
+                consecutive = 0
+            elif status == "empty":
+                counts["empty"] += 1
+                empty_codes.append(board["code"])
+                consecutive = 0
+            else:
+                counts["failed"] += 1
+                failed_codes.append(board["code"])
+                errors.setdefault(board["code"], outcome.get("error", ""))
+                consecutive += 1
+                if consecutive >= max_consecutive_failures:
+                    aborted = True
+                    logger.error("[MarketSnapshot] 成分刷新连续失败 %d 个板块，中止", consecutive)
+                    break
+            if progress:
+                progress(f"membership {attempted}/{len(pending)} {board['code']} {status}")
+        if counts["ok"] == 0:
+            overall = "failed"  # nothing could be folded: failures, or every board answered empty (not published yet)
+        elif counts["failed"] > 0:
+            overall = "partial"
+        else:
+            overall = "ok"
+        result: Dict[str, Any] = {
+            "status": overall,
+            **counts,
+            "rows": rows,
+            "opened": opened,
+            "closed": closed,
+            "aborted": aborted,
+            "remaining": len(pending) - attempted,
+        }
+        if failed_codes:
+            result["failed_boards"] = failed_codes[:MEMBERSHIP_QUALITY_CODE_LIMIT]
+            result["errors"] = {code: errors[code] for code in failed_codes[:3]}
+        if empty_codes:
+            result["empty_boards"] = empty_codes[:MEMBERSHIP_QUALITY_CODE_LIMIT]
+        return result
+
+    def _fold_one_board_day(self, fetcher: Any, board: Dict[str, Any], day: date) -> Dict[str, Any]:
+        """One board, one day: ``ok`` / ``empty`` / ``failed``; never raises, never closes rows on a bad answer."""
+        code = board["code"]
+        try:
+            df = fetcher.fetch_dc_member(code, trade_date=day)
+        except Exception as exc:  # noqa: BLE001 - one board must not take the batch down
+            logger.warning("[MarketSnapshot] %s %s 成分获取失败，保留现有成分: %s", day, code, exc)
+            return {"status": "failed", "error": str(exc)[:200]}
+        members: Set[str] = set()
+        if df is not None and not df.empty:
+            members = {rec["code"] for rec in df.to_dict("records") if rec["trade_date"] == day}
+        if not members:
+            return {"status": "empty"}
+        checked = board["membership_checked_date"]
+        if checked is not None:
+            current = self.repo.count_members_on(checked, [board["id"]])
+            if current >= MEMBERSHIP_SHRINK_GUARD_MIN and len(members) < current * MEMBERSHIP_MIN_RATIO:
+                reason = f"成分 {len(members)} 只，现有 {current} 只，判定不完整"
+                logger.warning("[MarketSnapshot] %s %s %s，保留现有成分", day, code, reason)
+                return {"status": "failed", "error": reason}
+        try:
+            stats = self.repo.apply_membership_snapshots(board["id"], {day: members})
+        except Exception as exc:  # noqa: BLE001 - e.g. SQLite lock: the board stays as it was
+            logger.warning("[MarketSnapshot] %s %s 成分写入失败: %s", day, code, exc)
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:200]}
+        return {"status": "ok", "rows": len(members), "opened": stats["opened"], "closed": stats["closed"]}
+
+    def refresh_membership_for_day(self, trade_date: Any, *, force: bool = False) -> Dict[str, Any]:
+        """Opt-in FALLBACK: fold one day of ``dc_member`` for every board from one all-boards query.
+
+        ``dc_member(trade_date=D)`` without ``ts_code`` returns all boards' members in one paged
+        query, but Tushare rejects paging offsets above 100000 ("offset不能大于100000") and one day
+        has more than 105k rows, so it normally ends ``incomplete`` / ``error``. The default path is
+        ``refresh_board_membership`` (one call per board); this method only runs when
+        ``BOARD_MEMBERSHIP_FULL_DAY_FALLBACK`` is on and the per-board concept refresh failed
+        outright. Safety rails, in this order:
 
         * an ``IncompleteMarketDataError`` (paging could not be confirmed) or an empty response
           changes nothing;
         * fewer (board, stock) pairs than ``MEMBERSHIP_MIN_RATIO`` of the pairs known at the last
           folded snapshot are treated as an incomplete answer: yesterday's membership is kept and
           no zipper row is closed;
-        * a date already folded (``quality["ingestion"]["membership"]["status"] == "ok"``) is
-          skipped without a request unless ``force``.
+        * a date already folded (``quality["ingestion"]["membership"]["full_day"]["status"] == "ok"``)
+          is skipped without a request unless ``force``.
 
-        The outcome is stored under ``market_daily.quality["ingestion"]["membership"]`` of that
-        date. Returns ``{"status": ok / skipped / incomplete / empty / error / no_boards, ...}``.
+        The outcome is stored under ``market_daily.quality["ingestion"]["membership"]["full_day"]``
+        of that date. Returns ``{"status": ok / skipped / incomplete / empty / error / no_boards, ...}``.
         """
         day = _as_date(trade_date)
         if day < DC_MEMBER_START_DATE:
             return {"status": "skipped", "reason": f"dc_member 只有 {DC_MEMBER_START_DATE} 以来的逐日成分"}
-        marker = (self.repo.get_ingestion_quality(day) or {}).get("membership")
+        membership_quality = (self.repo.get_ingestion_quality(day) or {}).get("membership")
+        marker = membership_quality.get(MEMBERSHIP_FULL_DAY_KEY) if isinstance(membership_quality, dict) else None
         if not force and isinstance(marker, dict) and marker.get("status") == "ok":
             return dict(marker, status="skipped", reason="该日成分已折叠入拉链表")
 
@@ -735,7 +947,7 @@ class MarketSnapshotService:
         result = self._fold_member_day(day, by_code, baseline_date, baseline)
         result["at"] = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
         try:
-            self.repo.merge_ingestion_quality(day, {"membership": result})
+            self.repo.merge_ingestion_quality_entry(day, "membership", MEMBERSHIP_FULL_DAY_KEY, result)
         except Exception as exc:  # noqa: BLE001 - the marker is bookkeeping, not the data
             logger.warning("[MarketSnapshot] %s 成分状态写入失败: %s", day, exc)
         return result
@@ -806,35 +1018,67 @@ class MarketSnapshotService:
         board_types: Sequence[str] = INGEST_BOARD_TYPES,
         max_consecutive_failures: int = 5,
         progress: Optional[Callable[[str], None]] = None,
+        since: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Cold-start / manual-repair refresh: each active board once, covering every date since
-        its last refresh (or 2024-12-20). Resumable: finished boards are not re-requested.
+        its last refresh (or ``since``, default 2024-12-20). Resumable: finished boards are not
+        re-requested.
 
-        The daily pipeline uses ``refresh_membership_for_day`` instead (one all-board query)."""
+        ``since`` bounds a never-refreshed board's history to the backfill window: fetching every
+        board back to 2024-12-20 is thousands of paged requests and tens of millions of rows, while
+        metrics only need membership for the dates being backfilled.
+
+        The daily pipeline uses ``refresh_daily_membership`` (concept boards, one day) and the weekly
+        job ``refresh_board_membership`` (industry boards, one day) instead. Calls go through the
+        membership rate limit (``MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE``)."""
         end = _as_date(end_date)
+        floor = DC_MEMBER_START_DATE if since is None else max(DC_MEMBER_START_DATE, _as_date(since))
         boards = self.repo.list_boards(board_types=board_types, status="active")
         summary: Dict[str, Any] = {"boards": len(boards), "refreshed": 0, "up_to_date": 0, "failed": {}, "aborted": False}
         consecutive_failures = 0
-        for index, board in enumerate(boards, start=1):
-            checked = board["membership_checked_date"]
-            start = DC_MEMBER_START_DATE if checked is None else checked + timedelta(days=1)
-            if start > end:
-                summary["up_to_date"] += 1
-                continue
-            result = self._refresh_one_board(board, start=start, end=end)
-            if result["status"] == "error":
-                summary["failed"][board["code"]] = result.get("error", "")
-                consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
-                    summary["aborted"] = True
-                    logger.error("[MarketSnapshot] 成分刷新连续失败 %d 次，中止", consecutive_failures)
-                    break
-            else:
-                consecutive_failures = 0
-                summary["refreshed"] += 1
-            if progress:
-                progress(f"membership {index}/{len(boards)} {board['code']} {result['status']}")
+        with self._members_rate_limit():
+            for index, board in enumerate(boards, start=1):
+                checked = board["membership_checked_date"]
+                start = floor if checked is None else checked + timedelta(days=1)
+                if start > end:
+                    summary["up_to_date"] += 1
+                    continue
+                result = self._refresh_one_board(board, start=start, end=end)
+                if result["status"] == "error":
+                    summary["failed"][board["code"]] = result.get("error", "")
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        summary["aborted"] = True
+                        logger.error("[MarketSnapshot] 成分刷新连续失败 %d 次，中止", consecutive_failures)
+                        break
+                else:
+                    consecutive_failures = 0
+                    summary["refreshed"] += 1
+                if progress:
+                    progress(f"membership {index}/{len(boards)} {board['code']} {result['status']}")
         return summary
+
+    def _fetch_member_range(self, code: str, start: date, end: date) -> Any:
+        """``dc_member`` for one board over a date range, halving the range on Tushare's offset cap.
+
+        Tushare rejects paging past offset 100000 ("offset不能大于100000"). Very large boards
+        (沪股通、深股通、融资融券… with thousands of members) exceed it over a 60-day range, so
+        the range is split until each piece fits. A single day that still exceeds it is re-raised.
+        """
+        try:
+            return self.fetcher.fetch_dc_member(code, start_date=start, end_date=end)
+        except Exception as exc:  # noqa: BLE001 - only the offset cap is handled here
+            if "offset" not in str(exc) or start >= end:
+                raise
+        middle = start + timedelta(days=(end - start).days // 2)
+        logger.info("[MarketSnapshot] %s 成分区间超出 Tushare 分页上限，拆分为 %s~%s 与 %s~%s",
+                    code, start, middle, middle + timedelta(days=1), end)
+        parts = [self._fetch_member_range(code, start, middle),
+                 self._fetch_member_range(code, middle + timedelta(days=1), end)]
+        frames = [p for p in parts if p is not None and not p.empty]
+        if not frames:
+            return parts[0]
+        return pd.concat(frames, ignore_index=True)
 
     def _refresh_one_board(
         self,
@@ -844,7 +1088,7 @@ class MarketSnapshotService:
         end: date,
     ) -> Dict[str, Any]:
         try:
-            df = self.fetcher.fetch_dc_member(board["code"], start_date=start, end_date=end)
+            df = self._fetch_member_range(board["code"], start, end)
         except Exception as exc:  # noqa: BLE001 - 单个板块失败不拖垮整批
             logger.warning("[MarketSnapshot] %s 成分获取失败: %s", board["code"], exc)
             return {"status": "error", "error": str(exc)[:200]}
@@ -874,7 +1118,7 @@ class MarketSnapshotService:
         max_consecutive_failures: int = 3,
         progress: Optional[Callable[[str], None]] = None,
     ) -> BackfillReport:
-        """Backfill the last ``days`` trading days, then board membership since 2024-12-20.
+        """Backfill the last ``days`` trading days, then board membership for the same window.
 
         Progress lives in the database itself: a date with a ``complete`` ingestion record is
         skipped without any request, and a board whose ``membership_checked_date`` has reached
@@ -924,5 +1168,6 @@ class MarketSnapshotService:
             unavailable = set(report.no_data) | set(report.failed)
             member_end = next((d for d in reversed(window) if d.isoformat() not in unavailable), None)
             if member_end is not None:
-                report.membership = self.refresh_all_membership(member_end, progress=progress)
+                # Membership history only for the backfilled window, not back to 2024-12-20.
+                report.membership = self.refresh_all_membership(member_end, progress=progress, since=window[0])
         return report

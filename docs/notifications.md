@@ -8,7 +8,7 @@
 | --- | --- | --- | --- | --- |
 | 钉钉 Webhook | 静态配置 | `DINGTALK_WEBHOOK_URL` | `DINGTALK_SECRET` | 支持加签安全方式，已接入 Web UI 设置页与单渠道测试。 |
 | 企业微信 | 静态配置 | `WECHAT_WEBHOOK_URL` | `WECHAT_MSG_TYPE` | 配置后参与批量通知发送 |
-| 飞书 Webhook / App Bot | 静态配置 | `FEISHU_WEBHOOK_URL` 或 `FEISHU_APP_ID` + `FEISHU_APP_SECRET` + `FEISHU_CHAT_ID` | `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD`, `FEISHU_RECEIVE_ID_TYPE`, `FEISHU_DOMAIN` | Webhook URL 优先；未配置 Webhook 时，App Bot 三元组可主动向指定群/用户推送。`FEISHU_STREAM_ENABLED` 仅代表事件订阅 / Stream Bot，不参与主动通知配置完成判断 |
+| 飞书 App Bot / Webhook | 静态配置 + 数据库绑定 | `FEISHU_APP_ID` + `FEISHU_APP_SECRET` + 推送目标（会话里 `/bind`，或 `FEISHU_CHAT_ID`）；兼容回退：`FEISHU_WEBHOOK_URL` | `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD`, `FEISHU_RECEIVE_ID_TYPE`, `FEISHU_DOMAIN` | 推送目标顺序见下文「飞书推送目标与助手会话」：`/bind` 绑定会话 > `FEISHU_CHAT_ID` > Webhook。`FEISHU_STREAM_ENABLED` 仅代表长连接事件订阅（接收消息），不参与推送目标判断 |
 | Telegram | 静态配置 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `TELEGRAM_MESSAGE_THREAD_ID` | token 与 chat id 必须同时存在 |
 | 邮件 | 静态配置 | `EMAIL_SENDER`, `EMAIL_PASSWORD` | `EMAIL_RECEIVERS`, `EMAIL_SENDER_NAME` | `EMAIL_RECEIVERS` 留空时发给自己 |
 | Pushover | 静态配置 | `PUSHOVER_USER_KEY`, `PUSHOVER_API_TOKEN` | - | 两个 key 必须同时存在 |
@@ -38,6 +38,20 @@ Discord 长报告发送复用现有分片链路：单条 `content` 运行时不�
 - WebPush、Apprise、更细粒度路由、跨进程降噪和真实每日摘要暂不进入运行时实现；相关配置如未来引入，应先更新本文档、`.env.example`、Web 元数据与回归测试。
 - Bark 保持 custom webhook 基线，不新增 `BARK_*` 一等配置。
 - 飞书 App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，不是新增依赖；标准源码安装、Docker、GitHub Actions daily workflow 和桌面构建链路均通过 `pip install -r requirements.txt` 安装。官方依据：[Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/)、[SDK repo](https://github.com/larksuite/oapi-sdk-python)。App Bot 文件上传依赖同一 SDK 的 `im.v1.file.create` API，官方文档：[Feishu file create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/file/create)。
+
+## 飞书推送目标与助手会话
+
+配置了 `FEISHU_APP_ID` + `FEISHU_APP_SECRET` 时，飞书推送目标按下面顺序解析：
+
+1. 数据库里的 `/bind` 绑定会话（表 `feishu_binding`，同时只有一个；在私聊或群聊里给机器人发送 `/bind` 设置，再次 `/bind` 替换，`/unbind` 取消）；
+2. `FEISHU_CHAT_ID`（+ `FEISHU_RECEIVE_ID_TYPE`）；
+3. `FEISHU_WEBHOOK_URL`（兼容回退，不推荐）。
+
+- 解析到 1 或 2 时，所有推送（`report` / `alert` / `system_error` 路由：个股报告、盘前版、板块 / 计划结果、告警、系统错误）都由机器人身份以卡片发出，沿用 `FEISHU_MAX_BYTES` 分片；不再走 Webhook。没有应用凭据时行为与以前一致（只有 Webhook 或 `FEISHU_CHAT_ID` 三元组可用时按原方式发送）。
+- 路由过滤不变：`NOTIFICATION_*_CHANNELS` 里没有 `feishu` 的路由不会发飞书；邮件等其他渠道不受影响。
+- 机器人推送成功后，推送正文会作为一条 assistant 消息写入该会话（`feishu:<chat_id>`），`context_snapshot` 为 `{"kind": "notification", "route_type": ..., "title": ..., "time": ...}`，推送消息的 message_id 同时登记到表 `feishu_message_session`；因此在该会话里提问、或回复这条推送追问时，助手上下文里已经有这条推送。写入失败只记日志，不影响推送结果。
+- `send_to_context()`（命令触发的分析回到来源会话）行为不变；Web 设置页的「测试通知」不会写入助手会话。
+- 无人值守的 `--schedule` 模式同样启动飞书长连接（`FEISHU_STREAM_ENABLED=true`），推送后的追问由同一进程回答。
 
 ## 报告渲染与分片
 

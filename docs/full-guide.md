@@ -259,11 +259,15 @@ daily_stock_analysis/
 | `AGENT_ACTION_TOOL_TIMEOUT_S` | Agent `action` 类工具默认超时秒数；`0` 表示关闭，回退到全局预算 | `0` | 否 |
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
 | `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
+| `LITELLM_LIGHT_MODEL` | 轻量模型（可选）：资讯分类、打标签、短摘要等轻量杂活共用，格式与 `LITELLM_MODEL` 相同（可填 `LLM_CHANNELS` 渠道里的模型名）；留空使用主模型，轻量模型调用失败时退回主模型再试一次；不改变任何现有功能使用的模型 | - | 否 |
 | `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_PROFILE` | 问股上下文压缩策略：`cost` / `balanced` / `long_context_raw_first` | `balanced` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 历史 token 估算超过该值时触发压缩；留空则跟随 profile preset | - | 否 |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
 | `LITELLM_FALLBACK_MODELS` | 备选模型，逗号分隔 | - | 否 |
+| `LLM_REASONING_EFFORT` | 主分析模型及其备选模型（单股分析、大盘复盘等）的标准 `reasoning_effort` 请求参数：留空 = 不发送（模型默认），可选 `low` / `medium` / `high` / `xhigh` / `max`，非法值记录警告并按留空处理。强度越高越慢、token 越多；项目不发送 `max_tokens`，思考不会被输出预算截断。这是推荐的设置方式，模型名带 `:high` 等后缀的写法仍保留（由网关解释，项目不改写模型名）。服务端明确拒绝该参数时，当次请求去掉它重试一次并记录日志 | 空 | 否 |
+| `AGENT_REASONING_EFFORT` | 问股助手（Agent）对话的 `reasoning_effort`；留空跟随 `LLM_REASONING_EFFORT`，取值同上 | 空 | 否 |
+| `LITELLM_LIGHT_REASONING_EFFORT` | 轻量模型杂活（资讯分类等）的 `reasoning_effort`；留空 = 不发送，取值同上。轻量调用退回主模型时，那一次使用 `LLM_REASONING_EFFORT` | 空 | 否 |
 | `LLM_CHANNELS` | 渠道名称列表（逗号分隔），配合 `LLM_{NAME}_*` 使用，详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) | - | 否 |
 | `MODELFLARE_KEY` | Modelflare 单 Key 接入，自动启用默认渠道；Actions 仅从 Secrets 读取 | - | 选用时 |
 | `LLM_MODELFLARE_API_KEY` | 高级渠道 Key，优先于 MODELFLARE_KEY；多 Key 可用 `LLM_MODELFLARE_API_KEYS` | - | 否 |
@@ -361,6 +365,9 @@ daily_stock_analysis/
 |--------|------|:----:|
 | `FEISHU_APP_ID` | 飞书应用 ID | 可选 |
 | `FEISHU_APP_SECRET` | 飞书应用 Secret | 可选 |
+| `FEISHU_STREAM_ENABLED` | 启用飞书应用机器人长连接（`false` 默认；serve 与 `--schedule` 模式均会启动，普通文本由助手回答，`/` 开头走命令） | 可选 |
+| `FEISHU_CHAT_ID` | 机器人推送的备用目标（`oc_` 群 chat_id 或 `ou_` open_id）；在会话里发送 `/bind` 绑定的目标优先于它 | 可选 |
+| `FEISHU_RECEIVE_ID_TYPE` | `FEISHU_CHAT_ID` 的类型：`chat_id`（默认）/ `open_id` | 可选 |
 | `FEISHU_FOLDER_TOKEN` | 飞书云盘文件夹 Token | 可选 |
 | `FEISHU_SEND_AS_FILE` | 飞书 App Bot 以文件形式发送报告（默认 `false`） | 可选 |
 
@@ -372,7 +379,7 @@ daily_stock_analysis/
 >
 > 说明：`FEISHU_APP_ID` / `FEISHU_APP_SECRET` 用于飞书应用、云文档或 Stream Bot 模式，不会直接启用群 Webhook 推送。只想简单收群通知时，请优先配置 `FEISHU_WEBHOOK_URL`。
 >
-> 补充：若同时配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 和 `FEISHU_CHAT_ID`，则可启用飞书 App Bot 主动通知渠道，无需 Webhook 即可主动向指定 chat 或用户推送；`FEISHU_RECEIVE_ID_TYPE` 默认 `chat_id`，私聊时改为 `open_id`。该方式走飞书 OpenAPI Bot 会话，与群 Webhook 是两条独立链路。
+> 补充：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 后，推送目标按「在会话里发送 `/bind` 绑定的会话 > `FEISHU_CHAT_ID` > `FEISHU_WEBHOOK_URL`（兼容回退，不推荐）」解析；解析到应用机器人目标时，所有推送（个股报告、盘前版、板块/计划结果、告警、系统错误）都由机器人身份发出，并写入该会话的助手上下文，回复推送即可追问。`FEISHU_RECEIVE_ID_TYPE` 默认 `chat_id`，私聊时改为 `open_id`。应用权限、长连接订阅与自检脚本见 [飞书机器人配置](bot/feishu-bot-config.md)。
 
 ### 搜索服务配置
 
@@ -1171,7 +1178,7 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
    - **开启了「关键词」**：把同一个关键词填到 `FEISHU_WEBHOOK_KEYWORD`；系统会自动在每条消息前补上，无需手动修改报告模板。
    - **开启了 IP 白名单**：确保当前运行环境的出口 IP 在白名单中（本地/Docker/GitHub Actions 出口 IP 各不相同）。
 4. `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 是飞书应用 / Stream Bot / 云文档模式专用，不会触发群 Webhook 推送，不要只用它们替代 `FEISHU_WEBHOOK_URL`。
-5. 若已配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，再配置 `FEISHU_CHAT_ID`，则可通过飞书 App Bot 直接向指定群聊或用户推送通知，无需依赖群 Webhook；`FEISHU_RECEIVE_ID_TYPE` 默认 `chat_id`，私聊时改为 `open_id`。该方式走飞书 OpenAPI Bot 会话，与群 Webhook 是两条独立链路。
+5. 推荐改用应用机器人：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 与 `FEISHU_STREAM_ENABLED=true`，把机器人加入目标会话后发送 `/bind`（或配置备用目标 `FEISHU_CHAT_ID`）。目标顺序为 `/bind` 绑定会话 > `FEISHU_CHAT_ID` > Webhook；一旦解析到应用机器人目标，Webhook 不再使用。`FEISHU_RECEIVE_ID_TYPE` 默认 `chat_id`，私聊时改为 `open_id`。
 6. App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准源码安装、Docker、GitHub Actions daily workflow 和桌面构建链路都会通过 `pip install -r requirements.txt` 安装，不需要单独安装新库。参考：[Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/)、[SDK repo](https://github.com/larksuite/oapi-sdk-python)。
 
 **常见失败原因：**
@@ -1528,9 +1535,35 @@ python main.py --debug
 | `MARKET_SNAPSHOT_BACKFILL_DAYS` | `60` | 冷启动回填 `scripts/backfill_market_snapshot.py` 的个股与板块行情交易日数 |
 | `MARKET_BENCHMARK_CODE` | `000985.CSI` | `market_daily` 使用的基准指数（Tushare 代码） |
 | `MARKET_SNAPSHOT_REQUESTS_PER_MINUTE` | `60` | 快照取数的 Tushare 每分钟请求上限 |
+| `MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE` | `200` | 逐板块 `dc_member` 成分请求的每分钟上限（最小 1）。成分接口每次只返回几十到几百行，约 530 个概念板块约 3 分钟取完；只在成分刷新循环里临时生效，其余快照接口仍用 `MARKET_SNAPSHOT_REQUESTS_PER_MINUTE`（保守的 60） |
 | `BOARD_ANOMALY_THRESHOLDS` | 空 | 板块异动阈值覆盖（JSON 对象，空表示全部使用默认值），一般通过 Web「设置 → 异动阈值」或 `PUT /api/v1/boards/thresholds` 修改，键和默认值见 [次日计划与板块异动](daily-plan-api.md) |
 | `BOARD_PIPELINE_ENABLED` | `true` | 定时模式（`SCHEDULE_ENABLED=true` 或 `--schedule`）下是否在每个交易日运行板块异动日度流程；还需要 `TUSHARE_TOKEN`，未配置时当次运行跳过并记录日志 |
 | `BOARD_PIPELINE_SCHEDULE_TIME` | `17:00` | 板块异动日度流程的运行时间（`HH:MM`，本机时区）；不影响每日分析的 `SCHEDULE_TIME`。`daily_basic`、`limit_list_d`、`dc_*` 此时尚未发布，流程先推算、次日补全，见 [核心流程后端设计](design/core-backend-design.md) 2.9 |
+| `BOARD_INDUSTRY_MEMBERSHIP_ENABLED` | `true` | 板块流程开启（`BOARD_PIPELINE_ENABLED=true`）时，是否每周刷新一次行业板块成分；概念板块成分不受它控制，在 17:00 流程里每个交易日逐板块刷新（`dc_member(ts_code, trade_date=D-1)`，失败 / 空返回的板块保留现有成分）。需要 `TUSHARE_TOKEN`，未配置时当次运行跳过并记录日志 |
+| `BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY` | `6` | 每周刷新行业板块成分的星期，ISO 编号：`1` 周一 … `6` 周六 … `7` 周日；不管当天是否交易日，取今天之前最近一个交易日的成分，非法值回退 `6` |
+| `BOARD_INDUSTRY_MEMBERSHIP_TIME` | `10:00` | 每周行业板块成分刷新的运行时间（`HH:MM`，本机时区，与 `SCHEDULE_TIME` 相同），非法值回退 `10:00`；按需运行：`python scripts/run_board_pipeline.py --industry-membership` |
+| `BOARD_MEMBERSHIP_FULL_DAY_FALLBACK` | `false` | 可选兜底：当天概念板块逐板块刷新一个都没成功时，再试一次不带 `ts_code` 的整日 `dc_member` 查询。Tushare 限制翻页偏移不能大于 100000（「offset不能大于100000」），而一天的成分超过 10.5 万行，所以整日查询通常取不全，不建议开启 |
+| `US_LEADERS` | 空 | 隔夜美股龙头名单（JSON 数组，每项 `{"symbol","name","kind":"stock\|etf\|index","boards":["A 股板块名"],"em":"东方财富代码（可选）"}`）；空表示使用内置 14 项默认名单（NVDA/AVGO/AMD/TSM/SOXX/TSLA/AAPL/MSFT/META/GOOGL/AMZN/PGJ/SPX/NDX），`[]` 表示不使用。`symbol` 同时是 `stock_daily` 的代码。`em` 决定是否从东方财富（AKShare）取数：个股 / ETF 写 `<市场>.<代码>`（`105.NVDA` NASDAQ、`106.TSM` NYSE，`stock_us_hist`），指数写 `index_global_spot_em` 的代码（`SPX` / `NDX` / `DJIA`）；不写 `em` 的项只走 Tushare / yfinance。取数顺序：08:15 盘前版 = 东方财富 → yfinance；17:00 板块流程 = 东方财富 → Tushare → yfinance（Tushare `us_daily` 本账号限 1 次/分钟，只作兜底、每次运行最多按交易日取 1 次，遇到频率超限即跳过），行情按 Tushare > 东方财富 > yfinance 的优先级写入 `stock_daily`（低优先级来源不覆盖高优先级的行）。东方财富没有费城半导体指数和纳斯达克中国金龙指数，内置名单用 `SOXX` / `PGJ` 两只 ETF 代替（`kind=etf`，按指数阈值判断）；Tushare `index_global` 只有 SPX/IXIC/DJI，NDX/SOX/HXC/RUT/VIX 只走东方财富（需 `em`）或 yfinance。板块名按「完全一致 → 归一化 → 包含」映射到 `board_catalog`，映射不到的只记录日志。17:00 板块流程会给被异动龙头映射到的板块追加「隔夜美股」依据 |
+| `US_MOVE_STOCK_PCT` | `4.0` | 美股个股单日涨跌幅绝对值（%）达到该值视为异动 |
+| `US_MOVE_INDEX_PCT` | `1.5` | 美股指数单日涨跌幅绝对值（%）达到该值视为异动 |
+| `PREOPEN_PUSH_ENABLED` | `false` | 定时模式下是否在每个交易日运行并推送「盘前版」：先用 yfinance 取隔夜美股日线写入 `stock_daily`，再对 `STOCK_LIST` 运行现有个股分析（附隔夜美股、映射板块、资讯摘要作为额外上下文），通过现有通知渠道推送，不改动 `SCHEDULE_TIME` 的每日分析 |
+| `PREOPEN_PUSH_TIME` | `08:15` | 盘前版开始运行时间（`HH:MM`，本机时区）；分析需要时间，8:15 开始约 8:45 送达。资讯摘要依赖资讯入库模块，不可用时显示「资讯暂不可用」，其余照常 |
+| `NEWS_INTEL_AUTO_FETCH_ENABLED` | `false` | 总开关：开启后（定时模式 `SCHEDULE_ENABLED=true` 或 `--schedule` 下）定时抓取 AKShare 资讯并分类，同时保留分析前的惰性刷新 rss / newsnow 资讯源；`NEWS_INTEL_RETENTION_DAYS` 仍只管理 rss / atom / newsnow 来源，AKShare 资讯按下面两项分级保留 |
+| `NEWS_POLL_INTERVAL_MINUTES` | `10` | 交易日 08:00–15:30（中国时间）同时取财联社电报和东方财富快讯的间隔（分钟），合并去重；新浪 / 富途 / 同花顺仅在其中一个失败时备用 |
+| `NEWS_POLL_OFFHOURS_INTERVAL_MINUTES` | `30` | 其他时段和非交易日的轮询间隔（分钟） |
+| `NEWS_DAILY_FETCH_TIME` | `08:05` | 每个交易日抓取自选股（`STOCK_LIST`）和当前持仓公告、东方财富财经早餐的时间（`HH:MM`，本机时区，建议在 08:15 前） |
+| `NEWS_AKSHARE_CLS_SYMBOL` | `全部` | 财联社电报取数范围：`全部`（默认，检测漏抓窗口）/ `重点`（只取最近 20 条中的 A/B 级，条数很少，不检测漏抓窗口） |
+| `NEWS_FLASH_RETENTION_DAYS` | `3` | 快讯和财经早餐保留天数（按发布时间） |
+| `NEWS_COMPANY_RETENTION_DAYS` | `30` | 公告等个股事件保留天数（按发布日期） |
+| `NEWS_DEDUP_WINDOW_MINUTES` | `30` | 跨来源按标题近似去重的时间窗（分钟） |
+| `NEWS_FETCH_TIMEOUT_SEC` | `30` | 单次 AKShare 调用超时（秒）；超时或上一次调用未结束的来源本轮跳过 |
+| `NEWS_ANNOUNCEMENT_MODE` | `auto` | 公告取数方式：`auto` 在自选股 + 持仓不超过 `NEWS_ANNOUNCEMENT_BY_CODE_MAX` 只时逐只取（每只约 2 次请求，一次覆盖整个日期区间），否则取全市场当日公告再过滤（每天约 20–60 次请求）；也可固定为 `by_code` / `market` |
+| `NEWS_ANNOUNCEMENT_BY_CODE_MAX` | `12` | `auto` 模式下逐只取公告的代码数上限 |
+| `NEWS_CLASSIFY_ENABLED` | `true` | 是否用轻量模型（`LITELLM_LIGHT_MODEL`，留空用主模型）给新资讯分类：范围、重要程度 1–5、关联板块（映射到板块目录）、美股龙头、是否突发 |
+| `NEWS_CLASSIFY_BATCH_SIZE` | `20` | 每次模型调用分类的条数 |
+| `NEWS_CLASSIFY_MAX_ITEMS_PER_RUN` | `60` | 每轮最多分类的条数 |
+| `NEWS_CLASSIFY_MAX_ATTEMPTS` | `5` | 单条资讯分类失败后的最大重试次数，超过后保持未分类 |
+| `NEWS_BOARD_DRIVER_MIN_IMPORTANCE` | `4` | 关联到板块的资讯重要程度达到该值，才会让该板块异动的驱动因素标为「消息」；标题会复制进判定依据，资讯过期删除后仍可查看 |
 
 ---
 

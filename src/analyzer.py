@@ -35,6 +35,7 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
+    get_primary_reasoning_effort,
     get_explicit_llm_channel_model_provider,
     resolve_news_window_days,
 )
@@ -50,7 +51,11 @@ from src.llm.hermes import (
     route_has_hermes,
     sanitize_hermes_error_text,
 )
-from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.generation_params import (
+    apply_litellm_generation_params,
+    build_litellm_reasoning_params,
+    resolve_required_max_tokens,
+)
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
@@ -118,6 +123,25 @@ def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
     if normalized == "ko":
         return ko
     return zh
+
+
+def _text_generation_config(max_tokens: Optional[int], temperature: float) -> Dict[str, Any]:
+    """generation_config for free-form text helpers: ``max_tokens`` is only sent when the caller sets one."""
+    config: Dict[str, Any] = {"temperature": temperature}
+    if max_tokens is not None:
+        config["max_tokens"] = max_tokens
+    return config
+
+
+def _describe_responding_model(configured_model: Any, model_used: Any) -> str:
+    """Name the model that actually answered; flag it when it is not the configured primary."""
+    configured = str(configured_model or "").strip()
+    used = str(model_used or "").strip()
+    if not used:
+        return configured or "unknown"
+    if configured and used != configured:
+        return f"{used}（备用模型，主模型 {configured} 未返回有效结果）"
+    return used
 
 
 def _normalize_risk_warning_values(value: Any) -> List[str]:
@@ -3621,7 +3645,9 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
         Args:
             prompt: User prompt text.
-            generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
+            generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens (the project
+                sets no output cap of its own: absent means nothing is sent), reasoning_effort (per-call override
+                of ``LLM_REASONING_EFFORT``; ``None`` / ``""`` sends none), timeout, models.
             response_validator: Optional callable that accepts the raw response text and raises
                 an exception if the response is unacceptable (e.g. not valid JSON).  When it
                 raises, the current model is treated as failed and the next fallback model is
@@ -3633,15 +3659,27 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             name and usage is a dict with prompt_tokens, completion_tokens, total_tokens.
         """
         config = self._get_runtime_config()
+        # No project-side output cap: ``None`` is not sent, so the provider / gateway default applies.
         max_tokens = (
             generation_config.get('max_output_tokens')
             or generation_config.get('max_tokens')
-            or 8192
+            or None
         )
+        # ``reasoning_effort`` in the call's generation_config (light-model chores) overrides the primary setting.
+        if 'reasoning_effort' in generation_config:
+            reasoning_effort = generation_config.get('reasoning_effort')
+        else:
+            reasoning_effort = get_primary_reasoning_effort(config)
         requested_temperature = generation_config.get('temperature', 0.7)
         requested_timeout = generation_config.get("timeout")
 
-        models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
+        # ``generation_config["models"]`` pins the try-order for one call (light-model chores such as
+        # news classification); the default is the primary model followed by the global fallbacks.
+        models_override = generation_config.get('models')
+        if models_override:
+            models_to_try = list(models_override)
+        else:
+            models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
 
         use_channel_router = self._has_channel_config(config)
@@ -3699,8 +3737,17 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         {"role": "system", "content": effective_system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    "max_tokens": max_tokens,
                 }
+                if max_tokens is not None:
+                    call_kwargs["max_tokens"] = max_tokens
+                else:
+                    # Providers that require max_tokens (native Anthropic): the model's own maximum, not a project cap.
+                    required_max_tokens = resolve_required_max_tokens(model, model_list=recovery_model_list)
+                    if required_max_tokens:
+                        call_kwargs["max_tokens"] = required_max_tokens
+                call_kwargs.update(
+                    build_litellm_reasoning_params(model, reasoning_effort, model_list=recovery_model_list)
+                )
                 if requested_timeout not in (None, ""):
                     call_kwargs["timeout"] = requested_timeout
                 if extra:
@@ -3881,7 +3928,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
     def generate_text(
         self,
         prompt: str,
-        max_tokens: int = 2048,
+        max_tokens: Optional[int] = None,
         temperature: float = 0.7,
     ) -> Optional[str]:
         """Public entry point for free-form text generation.
@@ -3892,7 +3939,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
         Args:
             prompt:      Text prompt to send to the LLM.
-            max_tokens:  Maximum tokens in the response (default 2048).
+            max_tokens:  Optional cap on the response tokens; ``None`` (default) sends no limit.
             temperature: Sampling temperature (default 0.7).
 
         Returns:
@@ -3901,7 +3948,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         try:
             result = self._call_litellm(
                 prompt,
-                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                generation_config=_text_generation_config(max_tokens, temperature),
             )
             if isinstance(result, tuple):
                 text, model_used, usage = result
@@ -3915,6 +3962,35 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             logger.error("[generate_text] LLM call failed: %s", exc)
             return None
 
+    def generate_text_with_models(
+        self,
+        prompt: str,
+        *,
+        models: Optional[List[str]] = None,
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: float = 0.1,
+        call_type: str = "light_task",
+        reasoning_effort: Optional[str] = None,
+    ) -> str:
+        """One-shot completion pinned to ``models`` (tried in order); ``None`` keeps the default order.
+
+        Used for light chores (``LITELLM_LIGHT_MODEL``: classification, tagging, short summaries) that
+        go through the same LiteLLM routing / Router / channel keys as every other call. Unlike
+        ``generate_text`` it raises on failure so callers can decide their own fallback.
+        ``reasoning_effort`` is sent as given for this call (``None`` = none; it does not inherit
+        ``LLM_REASONING_EFFORT``, the caller decides per model).
+        """
+        generation_config = _text_generation_config(max_tokens, temperature)
+        generation_config["reasoning_effort"] = reasoning_effort
+        if models:
+            generation_config["models"] = list(models)
+        result = self._call_litellm(prompt, generation_config, system_prompt=system_prompt)
+        text, model_used, usage = result
+        if should_persist_usage_telemetry(usage):
+            persist_llm_usage(usage, model_used, call_type=call_type)
+        return text
+
     def get_generation_backend_identity(self) -> Tuple[str, str]:
         """Return the configured primary backend identity for live diagnostics."""
         backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
@@ -3926,14 +4002,14 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
     def generate_text_with_metadata(
         self,
         prompt: str,
-        max_tokens: int = 2048,
+        max_tokens: Optional[int] = None,
         temperature: float = 0.7,
     ) -> Optional[GenerationResult]:
         """Generate text and return the actual backend/model used for diagnostics."""
         try:
             result = self._call_litellm(
                 prompt,
-                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                generation_config=_text_generation_config(max_tokens, temperature),
                 return_generation_result=True,
             )
             if not isinstance(result, GenerationResult):
@@ -4176,7 +4252,6 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             # 设置生成配置
             generation_config = {
                 "temperature": config.llm_temperature,
-                "max_output_tokens": 8192,
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
@@ -4215,7 +4290,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
                 # 记录响应信息
                 logger.info(
-                    f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
+                    f"[LLM返回] "
+                    f"{model_name if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS else _describe_responding_model(model_name, model_used)} "
+                    f"响应成功, "
+                    f"耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
                 )
                 if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     response_preview = redact_diagnostic_text(response_text, limit=300)
@@ -4416,6 +4494,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         )
         if daily_market_context_section:
             prompt += daily_market_context_section
+        extra_context_section = context.get("extra_context_section")
+        if isinstance(extra_context_section, str) and extra_context_section.strip():
+            # caller-provided background (e.g. the pre-open edition's overnight US moves and news)
+            prompt += f"\n{extra_context_section.strip()}\n"
         market_structure_section = format_market_structure_prompt_section(
             context.get("market_structure_context"),
             report_language=report_language,

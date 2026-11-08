@@ -219,6 +219,10 @@ class BaseAgent(ABC):
         if daily_market_context_section:
             messages.append({"role": "user", "content": daily_market_context_section})
 
+        extra_context_section = ctx.meta.get("extra_context_section")
+        if isinstance(extra_context_section, str) and extra_context_section:
+            messages.append({"role": "user", "content": extra_context_section})
+
         market_structure_section = format_market_structure_prompt_section(
             ctx.meta.get("market_structure_context"),
             report_language=report_language,

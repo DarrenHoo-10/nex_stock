@@ -17,7 +17,7 @@ import threading
 import time
 import uuid as uuid_mod
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -87,13 +87,14 @@ class FeishuSender:
         """
         Initialise Feishu sender.
 
-        Two mutually exclusive routing modes are supported:
-          1. **Webhook** – configured via ``feishu_webhook_url`` (legacy).
-          2. **App Bot** – configured via ``feishu_app_id`` + ``feishu_app_secret``
-             + ``feishu_chat_id``, sends through the ``lark-oapi`` SDK.
-
-        Webhook mode takes precedence when both are configured.
+        Two routing modes are supported:
+          1. **App Bot** – ``feishu_app_id`` + ``feishu_app_secret`` plus a target:
+             the chat bound with ``/bind`` (stored in the database) or else
+             ``feishu_chat_id``. Sends through the ``lark-oapi`` SDK.
+          2. **Webhook** – ``feishu_webhook_url`` (legacy fallback, used only
+             when no App Bot target resolves).
         """
+        self._feishu_config = config
         # -- Webhook mode --
         self._feishu_url = getattr(config, "feishu_webhook_url", None)
         self._feishu_secret = (getattr(config, "feishu_webhook_secret", None) or "").strip()
@@ -128,6 +129,11 @@ class FeishuSender:
 
         self._app_client: Any = _NO_CLIENT
         self._app_client_lock = threading.Lock()
+        # (message_id, chat_id) of messages the last App Bot send delivered.
+        self._app_sent: List[Tuple[str, Optional[str]]] = []
+        self._last_app_target: Any = None
+        # Set by NotificationService so a recorded push carries its route type.
+        self._push_route_type: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -219,13 +225,42 @@ class FeishuSender:
             return self._app_client
 
     # ------------------------------------------------------------------
-    # App Bot send helpers
+    # App Bot target + send helpers
     # ------------------------------------------------------------------
 
-    def _send_via_app_bot(self, content: str) -> bool:
+    def _resolve_app_target(self) -> Any:
+        """App Bot push target (``/bind`` binding, else ``FEISHU_CHAT_ID``), or ``None``."""
+        from src.services.feishu_binding_service import resolve_notification_target
+
+        return resolve_notification_target(self._feishu_config)
+
+    @property
+    def last_app_delivery(self) -> Tuple[Any, List[Tuple[str, Optional[str]]]]:
+        """``(target, [(message_id, chat_id), ...])`` of the last send; target is ``None`` for webhook."""
+        return self._last_app_target, list(self._app_sent)
+
+    def _begin_app_delivery(self, target: Any) -> None:
+        self._last_app_target = target
+        self._app_sent = []
+
+    def _record_app_push(self, content: str) -> None:
+        """Record a push delivered by the bot app into the target chat's assistant session."""
+        from src.services.feishu_binding_service import record_push
+
+        target, sent = self.last_app_delivery
+        if target is None:
+            return
+        # Direct callers outside ``send_with_results`` (the merged stock report) are reports.
+        record_push(target, content, route_type=self._push_route_type or "report", sent=sent)
+
+    def _send_via_app_bot(self, content: str, target: Any = None) -> bool:
         """Send message through the Feishu App Bot, chunking if necessary."""
-        if not self._feishu_chat_id:
-            logger.warning("FEISHU_CHAT_ID 未配置，跳过 App Bot 推送")
+        chat_id = target.chat_id if target is not None else self._feishu_chat_id
+        receive_id_type = (
+            target.receive_id_type if target is not None else self._feishu_receive_id_type
+        )
+        if not chat_id:
+            logger.warning("飞书推送目标未配置（/bind 绑定或 FEISHU_CHAT_ID），跳过 App Bot 推送")
             return False
 
         client = self._ensure_app_client()
@@ -239,11 +274,18 @@ class FeishuSender:
             logger.info(
                 "App Bot 消息超长 (%d 字节)，将分批发送", content_bytes
             )
-            return self._app_send_chunked(client, formatted)
+            return self._app_send_chunked(
+                client, formatted, chat_id=chat_id, receive_id_type=receive_id_type,
+            )
 
-        return self._app_send_once(client, formatted)
+        return self._app_send_once(
+            client, formatted, chat_id=chat_id, receive_id_type=receive_id_type,
+        )
 
-    def _app_send_chunked(self, client: Any, content: str) -> bool:
+    def _app_send_chunked(
+        self, client: Any, content: str, *, chat_id: Optional[str] = None,
+        receive_id_type: Optional[str] = None,
+    ) -> bool:
         """Chunk and send long content through App Bot."""
         try:
             chunks = chunk_content_by_max_bytes(
@@ -255,7 +297,9 @@ class FeishuSender:
 
         success = True
         for i, chunk in enumerate(chunks):
-            ok = self._app_send_once(client, chunk)
+            ok = self._app_send_once(
+                client, chunk, chat_id=chat_id, receive_id_type=receive_id_type,
+            )
             if not ok:
                 logger.error("App Bot 第 %d/%d 批发送失败", i + 1, len(chunks))
                 success = False
@@ -263,7 +307,10 @@ class FeishuSender:
                 time.sleep(1)
         return success
 
-    def _app_send_once(self, client: Any, content: str) -> bool:
+    def _app_send_once(
+        self, client: Any, content: str, *, chat_id: Optional[str] = None,
+        receive_id_type: Optional[str] = None,
+    ) -> bool:
         """Single-shot send via App Bot with card-first / text-fallback.
 
         Content received here has already been through ``format_feishu_markdown``
@@ -272,14 +319,18 @@ class FeishuSender:
         """
         card_payload = json.dumps(self._build_card_body(content), ensure_ascii=False)
 
-        if self._app_send_raw(client, "interactive", card_payload):
+        target_kwargs = {"chat_id": chat_id, "receive_id_type": receive_id_type}
+        if self._app_send_raw(client, "interactive", card_payload, **target_kwargs):
             return True
 
         # Fallback to plain text.
         text_payload = json.dumps({"text": content}, ensure_ascii=False)
-        return self._app_send_raw(client, "text", text_payload)
+        return self._app_send_raw(client, "text", text_payload, **target_kwargs)
 
-    def _app_send_raw(self, client: Any, msg_type: str, content_json: str) -> bool:
+    def _app_send_raw(
+        self, client: Any, msg_type: str, content_json: str, *,
+        chat_id: Optional[str] = None, receive_id_type: Optional[str] = None,
+    ) -> bool:
         """Low-level send via lark-oapi SDK with retry and idempotency UUID.
 
         Request construction is done once outside the retry loop; it is
@@ -293,10 +344,10 @@ class FeishuSender:
         try:
             req = (
                 CreateMessageRequest.builder()
-                .receive_id_type(self._feishu_receive_id_type)
+                .receive_id_type(receive_id_type or self._feishu_receive_id_type)
                 .request_body(
                     CreateMessageRequestBody.builder()
-                    .receive_id(self._feishu_chat_id)
+                    .receive_id(chat_id or self._feishu_chat_id)
                     .content(content_json)
                     .msg_type(msg_type)
                     .uuid(send_uuid)
@@ -328,6 +379,13 @@ class FeishuSender:
 
             if resp.success():
                 logger.info("App Bot 消息发送成功 (type=%s)", msg_type)
+                data = getattr(resp, "data", None)
+                message_id = getattr(data, "message_id", None)
+                if isinstance(message_id, str) and message_id:
+                    response_chat_id = getattr(data, "chat_id", None)
+                    self._app_sent.append(
+                        (message_id, response_chat_id if isinstance(response_chat_id, str) else None)
+                    )
                 return True
 
             try:
@@ -358,14 +416,21 @@ class FeishuSender:
     # Public API
     # ------------------------------------------------------------------
 
-    def send_to_feishu(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def send_to_feishu(
+        self,
+        content: str,
+        *,
+        timeout_seconds: Optional[float] = None,
+        record_in_session: bool = True,
+    ) -> bool:
         """
         Push a message to Feishu.
 
         Routing priority:
-          1. **Webhook** – when ``feishu_webhook_url`` is configured.
-          2. **App Bot** – when ``feishu_app_id`` + ``feishu_app_secret``
-             + ``feishu_chat_id`` are all configured and webhook is absent.
+          1. **App Bot** – app credentials plus the ``/bind`` chat, else
+             ``feishu_chat_id``.
+          2. **Webhook** – legacy fallback when ``feishu_webhook_url`` is set and
+             no App Bot target resolves.
 
         Returns:
             Whether the send succeeded.
@@ -374,9 +439,15 @@ class FeishuSender:
             logger.error("send_to_feishu: content 不能为 None")
             return False
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
-        if self._feishu_url:
+        target = self._resolve_app_target()
+        if target is None and self._feishu_url:
+            self._begin_app_delivery(None)
             return self._send_via_webhook(sanitized_content, timeout_seconds=timeout_seconds)
-        return self._send_via_app_bot(sanitized_content)
+        self._begin_app_delivery(target)
+        sent = self._send_via_app_bot(sanitized_content, target=target)
+        if sent and record_in_session:
+            self._record_app_push(sanitized_content)
+        return sent
 
     def send_feishu_file(self, file_path: str) -> bool:
         """
@@ -402,12 +473,21 @@ class FeishuSender:
 
         upload_path, display_name = self._prepare_sanitized_file(path)
         try:
-            if self._feishu_url:
+            target = self._resolve_app_target()
+            if target is None and self._feishu_url:
                 # Webhook mode: send file content as a message (best-effort).
+                self._begin_app_delivery(None)
                 return self._send_file_via_webhook(upload_path, display_name=display_name)
 
             # App Bot mode: upload file via SDK.
-            return self._send_file_via_app_bot(upload_path, display_name=display_name)
+            self._begin_app_delivery(target)
+            sent = self._send_file_via_app_bot(upload_path, display_name=display_name, target=target)
+            if sent:
+                try:
+                    self._record_app_push(path.read_text("utf-8"))
+                except (OSError, UnicodeDecodeError):
+                    logger.debug("飞书文件推送内容无法读取，未记录到助手会话")
+            return sent
         finally:
             if upload_path != path:
                 try:
@@ -443,14 +523,20 @@ class FeishuSender:
             temp_file.write(sanitized_text)
         return Path(temp_file.name), display_name
 
-    def _send_file_via_app_bot(self, path: Path, *, display_name: Optional[str] = None) -> bool:
+    def _send_file_via_app_bot(
+        self, path: Path, *, display_name: Optional[str] = None, target: Any = None,
+    ) -> bool:
         """Upload *path* to Feishu via App Bot SDK and send as file message."""
         if not FEISHU_FILE_SDK_AVAILABLE:
             logger.warning("lark-oapi SDK does not support file upload; upgrade lark-oapi")
             return False
 
-        if not self._feishu_chat_id:
-            logger.warning("FEISHU_CHAT_ID 未配置，跳过 App Bot 文件推送")
+        chat_id = target.chat_id if target is not None else self._feishu_chat_id
+        receive_id_type = (
+            target.receive_id_type if target is not None else self._feishu_receive_id_type
+        )
+        if not chat_id:
+            logger.warning("飞书推送目标未配置（/bind 绑定或 FEISHU_CHAT_ID），跳过 App Bot 文件推送")
             return False
 
         client = self._ensure_app_client()
@@ -509,7 +595,9 @@ class FeishuSender:
 
         # Send a file message with the uploaded file_key.
         content_json = json.dumps({"file_key": file_key})
-        return self._app_send_raw(client, "file", content_json)
+        return self._app_send_raw(
+            client, "file", content_json, chat_id=chat_id, receive_id_type=receive_id_type,
+        )
 
     @staticmethod
     def _guess_mime_for_webhook(path: Path) -> str:

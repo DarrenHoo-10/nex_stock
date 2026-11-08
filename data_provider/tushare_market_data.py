@@ -40,6 +40,7 @@ INDEX_DAILY_PAGE_CAP = 8000
 DC_INDEX_PAGE_CAP = 5000
 DC_DAILY_PAGE_CAP = 2000
 DC_MEMBER_PAGE_CAP = 5000
+US_DAILY_PAGE_CAP = 6000
 
 DC_IDX_TYPE_BY_BOARD_TYPE = {
     "industry": "行业板块",
@@ -58,6 +59,10 @@ _EXCHANGE_BOARD_BY_MARKET = {
 
 _PERMISSION_HINTS = ("权限", "积分", "permission")
 _RATE_LIMIT_HINTS = ("每分钟", "频率", "频次", "too many", "rate limit")
+
+
+class TushareRateLimitedError(DataFetchError):
+    """接口频率超限且不值得等待重试（例如 ``us_daily`` 每分钟 1 次）：调用方应直接放弃本次运行的 Tushare 兜底。"""
 
 
 class IncompleteMarketDataError(DataFetchError):
@@ -125,6 +130,9 @@ class TushareMarketDataMixin:
     _market_retry_base_delay = 2.0
     _market_rate_limit_wait = 30.0
     _market_max_pages = 100
+    # 频率配额极低的接口（us_daily：本账号 1 次/分钟）：遇到频率超限不 sleep 重试，立即抛
+    # TushareRateLimitedError，由调用方跳过 Tushare；其余接口仍按 _market_rate_limit_wait 退避重试。
+    _market_no_rate_retry_apis = frozenset({"us_daily", "index_global"})
 
     # ------------------------------------------------------------------
     # 底层：重试与翻页
@@ -142,9 +150,15 @@ class TushareMarketDataMixin:
                 message = str(exc)
                 if any(hint in message.lower() for hint in _PERMISSION_HINTS) and "每分钟" not in message:
                     raise DataFetchError(f"Tushare {api_name} 无权限或积分不足: {message}") from exc
+                if "offset" in message and "100000" in message:
+                    # 分页偏移超过 10 万行上限：重试不会成功，交给调用方缩小查询范围。
+                    raise DataFetchError(f"Tushare {api_name} 超出分页上限: {message}") from exc
+                rate_limited = any(hint in message.lower() for hint in _RATE_LIMIT_HINTS)
+                if rate_limited and api_name in self._market_no_rate_retry_apis:
+                    raise TushareRateLimitedError(f"Tushare {api_name} 频率超限，不再重试: {message}") from exc
                 if attempt + 1 >= self._market_retry_attempts:
                     break
-                if any(hint in message.lower() for hint in _RATE_LIMIT_HINTS):
+                if rate_limited:
                     delay = self._market_rate_limit_wait
                 else:
                     delay = self._market_retry_base_delay * (2 ** attempt)
@@ -180,7 +194,11 @@ class TushareMarketDataMixin:
         offset = len(first)
         incomplete_reason: Optional[str] = None
         for _ in range(self._market_max_pages):
-            page = self._market_query(api_name, limit=page_cap, offset=offset, **params)
+            try:
+                page = self._market_query(api_name, limit=page_cap, offset=offset, **params)
+            except TushareRateLimitedError as exc:  # 只有 _market_no_rate_retry_apis 会走到这里；首页已取到，保留
+                incomplete_reason = f"翻页被限流: {exc}"
+                break
             if page is None or page.empty:
                 break
             page_keys = self._key_set(page, key_cols)
@@ -404,6 +422,66 @@ class TushareMarketDataMixin:
         return df[columns].dropna(subset=["trade_date"]).sort_values("trade_date").reset_index(drop=True)
 
     # ------------------------------------------------------------------
+    # 美股 / 国际指数：us_daily / index_global（docs/design/core-backend-design.md 5.2）
+    # ------------------------------------------------------------------
+    _OVERSEAS_COLUMNS = ["trade_date", "open", "high", "low", "close", "pre_close", "pct_chg", "vol", "amount"]
+    _US_DAILY_FIELDS = "ts_code,trade_date,close,open,high,low,pre_close,pct_change,vol,amount"
+
+    def fetch_us_daily(self, ts_code: str, start_date: DateLike, end_date: DateLike) -> pd.DataFrame:
+        """``us_daily``：单只美股区间日线（北京时间 13:00 发布前一美股交易日）。
+
+        ``pct_change`` 统一为 ``pct_chg``（%）；一次一个代码，区间很短，不分页。本账号 ``us_daily``
+        每分钟只能调用 1 次，多只代码请用 :meth:`fetch_us_daily_market`（一次取当日全部代码）。
+        """
+        df = self._market_query(
+            "us_daily",
+            ts_code=ts_code,
+            start_date=to_ymd(start_date),
+            end_date=to_ymd(end_date),
+            fields=self._US_DAILY_FIELDS,
+        )
+        return self._normalize_overseas(df.rename(columns={"pct_change": "pct_chg"}))
+
+    def fetch_us_daily_market(self, trade_date: DateLike) -> pd.DataFrame:
+        """``us_daily`` 按 ``trade_date`` 取当日全部美股（含 ``ts_code`` 列），一次调用服务所有龙头。
+
+        按页取全；``us_daily`` 频率超限时不重试：首页之后被限流则抛 :class:`IncompleteMarketDataError`
+        （``partial`` 带已取到的行），首页就被限流则抛 :class:`TushareRateLimitedError`。
+        """
+
+        def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+            return self._normalize_overseas(df.rename(columns={"pct_change": "pct_chg"}), with_code=True)
+
+        return self._market_query_paged(
+            "us_daily",
+            page_cap=US_DAILY_PAGE_CAP,
+            key_cols=["ts_code"],
+            trade_date=to_ymd(trade_date),
+            fields=self._US_DAILY_FIELDS,
+            normalize=_normalize,
+        )
+
+    def fetch_index_global(self, ts_code: str, start_date: DateLike, end_date: DateLike) -> pd.DataFrame:
+        """``index_global``：国际指数区间日线（SPX / IXIC / DJI 等，北京时间 9:00 发布）。"""
+        df = self._market_query(
+            "index_global",
+            ts_code=ts_code,
+            start_date=to_ymd(start_date),
+            end_date=to_ymd(end_date),
+        )
+        return self._normalize_overseas(df)
+
+    def _normalize_overseas(self, df: pd.DataFrame, *, with_code: bool = False) -> pd.DataFrame:
+        columns = (["ts_code"] if with_code else []) + self._OVERSEAS_COLUMNS
+        if df is None or df.empty or "trade_date" not in df.columns or (with_code and "ts_code" not in df.columns):
+            return _empty(columns)
+        df = df.copy()
+        _numeric(df, ["open", "high", "low", "close", "pre_close", "pct_chg", "vol", "amount"])
+        df["trade_date"] = _parse_ymd_series(df["trade_date"])
+        df = df.dropna(subset=["trade_date", "close"])
+        return df[columns].sort_values("trade_date").reset_index(drop=True)
+
+    # ------------------------------------------------------------------
     # 东方财富板块：dc_index / dc_daily / dc_member
     # ------------------------------------------------------------------
     def fetch_dc_index(self, trade_date: DateLike, idx_type: str) -> pd.DataFrame:
@@ -464,7 +542,9 @@ class TushareMarketDataMixin:
     ) -> pd.DataFrame:
         """``dc_member``：板块成分，按单日或日期区间；2024-12-20 起有逐日数据。
 
-        ``ts_code=None`` 且给定 ``trade_date`` 时取当日全部板块的成分（约 8 万行，按页取全）。
+        常规用法是逐板块：``ts_code=<板块>`` + ``trade_date``，单板块单日不超过 5000 行，一次请求取全。
+        ``ts_code=None`` 且给定 ``trade_date`` 时取当日全部板块的成分，但 Tushare 限制翻页偏移不能大于
+        100000（"offset不能大于100000"），而一天超过 10.5 万行，所以这条路径通常无法取全，只作为可选兜底。
         """
         params: dict = {} if ts_code is None else {"ts_code": ts_code}
         if trade_date is not None:

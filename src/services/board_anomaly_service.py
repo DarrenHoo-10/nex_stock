@@ -214,16 +214,24 @@ class BoardAnomalyService:
         if not reason and base["state"] == "none":
             verdict = "未达到异动条件"
 
+        evidence_lines = list(evidence.get("lines") or ([reason] if reason else []))
+        drivers_text = driver.get("text") or "原因未明：未接入消息 / 业绩数据，仅按行情判断"
+        us_link = evidence.get("us_link")  # added by the 17:00 pipeline's US linkage step; never affects state
+        if isinstance(us_link, dict):
+            evidence_lines.extend(str(line) for line in us_link.get("lines") or [])
+            if us_link.get("text"):
+                drivers_text = f"{drivers_text}；{us_link['text']}"
+
         detail = dict(base)
         detail.update(
             {
                 "verdict_text": verdict,
-                "drivers": driver.get("text") or "原因未明：未接入消息 / 业绩数据，仅按行情判断",
+                "drivers": drivers_text,
                 "driver_kind": sig.get("driver") or "unknown",
                 "metrics": self._metrics(board, today),
                 "excess_series": self._excess_series(board["id"], day),
                 "representatives": self._representatives(board["id"], day, today),
-                "evidence": list(evidence.get("lines") or ([reason] if reason else [])),
+                "evidence": evidence_lines,
                 "can_pick": can_pick,
                 "data_gaps": list(dict.fromkeys(g for g in data_gaps if g)),
             }

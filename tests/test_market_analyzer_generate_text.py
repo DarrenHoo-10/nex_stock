@@ -223,7 +223,7 @@ class TestAnalyzerGenerateText:
         assert result is generation_result
         mock_call.assert_called_once_with(
             "写一份复盘",
-            generation_config={"max_tokens": 2048, "temperature": 0.7},
+            generation_config={"temperature": 0.7},  # no project-side output cap
             return_generation_result=True,
         )
 
@@ -252,6 +252,37 @@ class TestAnalyzerGenerateText:
         assert result.model == "analysis-route"
         assert result.provider == "anthropic"
         assert result.usage["provider"] == "anthropic"
+
+    def test_generate_text_with_models_pins_the_try_order_for_light_model_chores(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_fallback_backend = ""
+        analyzer._config_override.litellm_model = "openai/primary-model"
+        analyzer._config_override.litellm_fallback_models = ["openai/global-fallback"]
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='[{"i": 0}]'))],
+            usage=None,
+        )
+        tried = []
+
+        def dispatch(model, kwargs, **_kwargs):
+            tried.append(model)
+            if model == "openai/light-model":
+                raise RuntimeError("light model unavailable")
+            return response
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=dispatch):
+            # pinned to the light model only: no silent drift to the primary / global fallbacks
+            with pytest.raises(Exception):
+                analyzer.generate_text_with_models("classify", models=["openai/light-model"])
+            assert tried == ["openai/light-model"]
+
+            tried.clear()  # default order is untouched: primary first
+            assert analyzer.generate_text_with_models("classify") == '[{"i": 0}]'
+            assert tried == ["openai/primary-model"]
+
+            tried.clear()  # an explicit primary-only retry (what the classifier does after a light failure)
+            assert analyzer.generate_text_with_models("classify", models=["openai/primary-model"]) == '[{"i": 0}]'
+            assert tried == ["openai/primary-model"]
 
     def test_generate_text_with_metadata_prefers_actual_response_model(self):
         analyzer = self._make_analyzer()
@@ -924,7 +955,7 @@ class TestAnalyzerGenerateText:
             analyzer.generate_text("hello")
             _, kwargs = mock_call.call_args
             gen_cfg = kwargs["generation_config"]
-            assert gen_cfg["max_tokens"] == 2048
+            assert "max_tokens" not in gen_cfg  # no project-side output cap unless the caller sets one
             assert gen_cfg["temperature"] == 0.7
 
     def test_call_litellm_wrapper_uses_generation_backend_tuple_contract(self):
@@ -3370,8 +3401,8 @@ class TestMarketAnalyzerBypassFix:
         assert diagnostic["model"] == "invalid-shared-route"
         assert diagnostic["success"] is False
 
-    def test_market_review_uses_8192_max_tokens(self):
-        """generate_market_review() should request a larger output budget to avoid truncation."""
+    def test_market_review_sends_no_max_tokens(self):
+        """generate_market_review() sets no output cap: a reasoning model must not run out of budget mid-thought."""
         from src.market_analyzer import MarketOverview, MarketIndex
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
@@ -3393,7 +3424,7 @@ class TestMarketAnalyzerBypassFix:
         assert isinstance(result, str) and len(result) > 0
         ma.analyzer.generate_text_with_metadata.assert_called_once()
         _, kwargs = ma.analyzer.generate_text_with_metadata.call_args
-        assert kwargs["max_tokens"] == 8192
+        assert "max_tokens" not in kwargs
         assert kwargs["temperature"] == 0.7
 
     def test_market_review_supports_legacy_injected_analyzer_contract(self):
@@ -3406,7 +3437,7 @@ class TestMarketAnalyzerBypassFix:
             def is_available(self):
                 return True
 
-            def generate_text(self, prompt, max_tokens=2048, temperature=0.7):
+            def generate_text(self, prompt, max_tokens=None, temperature=0.7):
                 self.calls.append(
                     {
                         "prompt": prompt,
@@ -3429,7 +3460,7 @@ class TestMarketAnalyzerBypassFix:
         assert ma.analyzer.calls == [
             {
                 "prompt": "legacy prompt",
-                "max_tokens": 8192,
+                "max_tokens": None,  # not passed: the double's own default (None) applies
                 "temperature": 0.7,
             }
         ]
@@ -3448,7 +3479,7 @@ class TestMarketAnalyzerBypassFix:
             def is_available(self):
                 return True
 
-            def generate_text(self, prompt, max_tokens=2048, temperature=0.7):
+            def generate_text(self, prompt, max_tokens=None, temperature=0.7):
                 self.calls.append(
                     {
                         "prompt": prompt,
@@ -3472,7 +3503,7 @@ class TestMarketAnalyzerBypassFix:
         assert ma.analyzer.calls == [
             {
                 "prompt": "legacy prompt",
-                "max_tokens": 8192,
+                "max_tokens": None,  # not passed: the double's own default (None) applies
                 "temperature": 0.7,
             }
         ]

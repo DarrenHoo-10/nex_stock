@@ -81,7 +81,7 @@ class FakeIngest:
         report.to_dict = lambda: {"status": status, "stock_rows": 60, "missing": report.missing}
         return report
 
-    def refresh_membership_for_day(self, trade_date):
+    def refresh_daily_membership(self, trade_date):
         self.member_calls.append(trade_date)
         return self.membership
 
@@ -235,25 +235,53 @@ def test_derived_ingest_is_reported_but_is_not_a_warning(db):
     assert result["status"] == "succeeded"
 
 
-def test_membership_step_reports_incomplete_and_failed_folds(db):
+def test_membership_step_reports_partial_failed_skipped_and_folded_runs(db):
     world = seeded_world(db)
-    incomplete = run(world, ingest_service=FakeIngest(
-        membership={"status": "incomplete", "reason": "成分条数 3 低于上一份 8 的 50%", "rows": 3, "baseline": 8}))
-    step = next(s for s in incomplete["steps"] if s["key"] == "membership")
-    assert incomplete["status"] == "partial" and step["status"] == "partial"
-    assert "保留上一日成分" in step["detail"] and step["data"]["baseline"] == 8
-    assert next(s for s in incomplete["steps"] if s["key"] == "signals")["status"] == "succeeded"
+    counts = {"boards": 5, "ok": 3, "failed": 1, "empty": 1, "skipped": 0, "rows": 90, "opened": 4, "closed": 1}
+    partial = run(world, ingest_service=FakeIngest(membership=dict(
+        status="partial", failed_boards=["BKA.DC"], aborted=False, remaining=0, **counts)))
+    step = next(s for s in partial["steps"] if s["key"] == "membership")
+    assert partial["status"] == "partial" and step["status"] == "partial"
+    assert "保留现有成分" in step["detail"] and "BKA.DC" in step["detail"] and "失败 1" in step["detail"]
+    assert next(s for s in partial["steps"] if s["key"] == "signals")["status"] == "succeeded"
+    # boards that did fold changed D-1's inputs: its metrics are recomputed
+    assert next(s for s in partial["steps"] if s["key"] == "metrics")["data"]["previous_recomputed"] == world.days[-2].isoformat()
 
-    failed = run(world, ingest_service=FakeIngest(membership={"status": "error", "error": "timeout"}), force=True)
-    step = next(s for s in failed["steps"] if s["key"] == "membership")
-    assert failed["status"] == "partial" and step["status"] == "failed" and "timeout" in step["detail"]
+    aborted = run(world, ingest_service=FakeIngest(membership=dict(
+        counts, status="failed", ok=0, failed=2, aborted=True, remaining=3, failed_boards=["BKA.DC", "BKB.DC"])), force=True)
+    step = next(s for s in aborted["steps"] if s["key"] == "membership")
+    assert aborted["status"] == "partial" and step["status"] == "failed" and "已中止" in step["detail"] and "剩余 3" in step["detail"]
+    assert next(s for s in aborted["steps"] if s["key"] == "metrics")["data"]["previous_recomputed"] is None
 
-    folded = run(world, ingest_service=FakeIngest(
-        membership={"status": "ok", "rows": 80000, "boards": 700, "opened": 30, "closed": 20}), force=True)
+    errored = run(world, ingest_service=FakeIngest(membership={"status": "error", "error": "timeout"}), force=True)
+    step = next(s for s in errored["steps"] if s["key"] == "membership")
+    assert errored["status"] == "partial" and step["status"] == "failed" and "timeout" in step["detail"]
+
+    folded = run(world, ingest_service=FakeIngest(membership=dict(
+        counts, status="ok", ok=5, failed=0, empty=0, rows=2400, opened=30, closed=20)), force=True)
     step = next(s for s in folded["steps"] if s["key"] == "membership")
-    assert step["status"] == "succeeded" and "80000" in step["detail"]
-    # folded membership changes D-1's inputs: its metrics are recomputed
+    assert step["status"] == "succeeded" and "概念板块" in step["detail"] and "成功 5" in step["detail"]
     assert next(s for s in folded["steps"] if s["key"] == "metrics")["data"]["previous_recomputed"] == world.days[-2].isoformat()
+
+    done = run(world, ingest_service=FakeIngest(membership={
+        "status": "skipped", "reason": "该日成分已折叠入拉链表", "boards": 5, "skipped": 5}), force=True)
+    step = next(s for s in done["steps"] if s["key"] == "membership")
+    assert step["status"] == "skipped" and next(s for s in done["steps"] if s["key"] == "metrics")["data"]["previous_recomputed"] is None
+
+
+def test_membership_step_marks_the_opt_in_full_day_fallback(db):
+    world = seeded_world(db)
+    used = run(world, ingest_service=FakeIngest(membership={
+        "status": "ok", "fallback": True, "rows": 3000, "opened": 5, "closed": 0,
+        "per_board": {"status": "failed", "failed": 500}}))
+    step = next(s for s in used["steps"] if s["key"] == "membership")
+    assert step["status"] == "partial" and "BOARD_MEMBERSHIP_FULL_DAY_FALLBACK" in step["detail"]
+
+    useless = run(world, ingest_service=FakeIngest(membership={
+        "status": "incomplete", "fallback": True, "reason": "offset不能大于100000", "per_board": {"status": "failed"}}),
+        force=True)
+    step = next(s for s in useless["steps"] if s["key"] == "membership")
+    assert step["status"] == "failed" and "保留现有成分" in step["detail"]
 
 
 def test_second_run_is_skipped_unless_forced(db):
@@ -461,7 +489,9 @@ def test_two_evening_runs_derive_today_and_complete_yesterday(evening_env):
     steps = {s["key"]: s for s in first["steps"]}
     assert list(steps) == STEP_KEYS
     assert steps["previous"]["status"] == "succeeded"  # cold start: D1 ingested in full, with real data
-    assert steps["membership"]["status"] == "succeeded" and steps["membership"]["data"]["rows"] == 8
+    # the daily step folds the concept boards only (BK1184: 4 members); the industry board waits for the weekly job
+    assert steps["membership"]["status"] == "succeeded" and steps["membership"]["data"]["rows"] == 4
+    assert steps["membership"]["data"]["board_type"] == "concept" and steps["membership"]["data"]["boards"] == 1
     assert steps["ingest"]["status"] == "succeeded" and "推算" in steps["ingest"]["detail"]
     assert steps["ingest"]["data"]["derived"] == ["daily_basic", "limit_list_d"]
     assert steps["metrics"]["status"] == "succeeded" and steps["signals"]["status"] in ("succeeded", "partial")
@@ -491,7 +521,9 @@ def test_two_evening_runs_derive_today_and_complete_yesterday(evening_env):
     steps = {s["key"]: s for s in second["steps"]}
     assert steps["previous"]["status"] == "succeeded" and "已按实际数据重写" in steps["previous"]["detail"]
     assert steps["previous"]["data"]["status"] == "complete" and steps["previous"]["data"]["derived"] == []
-    assert steps["membership"]["status"] == "succeeded" and steps["membership"]["data"]["boards"] == 3
+    assert steps["membership"]["status"] == "succeeded" and steps["membership"]["data"]["boards"] == 2  # BK1184 + BK3000
+    assert {kw["ts_code"] for kw in api.calls_of("dc_member")} == {"BK1184.DC", "BK3000.DC"}
+    assert all("ts_code" in kw for kw in api.calls_of("dc_member"))  # never the all-boards query
     assert steps["ingest"]["data"]["derived"] == ["daily_basic", "limit_list_d"]
     assert steps["metrics"]["data"]["previous_recomputed"] == D2.isoformat()
 
@@ -502,7 +534,7 @@ def test_two_evening_runs_derive_today_and_complete_yesterday(evening_env):
     assert d2_after["000001"].open_times == 3
     q_after = env.repo.get_market_daily(D2)["quality"]
     assert q_after["ingestion"]["status"] == "complete" and q_after["ingestion"]["limit_source"] == "limit_list_d"
-    assert q_after["ingestion"]["boards"] == "done" and q_after["ingestion"]["membership"]["status"] == "ok"
+    assert q_after["ingestion"]["boards"] == "done" and q_after["ingestion"]["membership"]["concept"]["status"] == "ok"
     assert q_after["metrics"]["input_sources"] == {"basic": "daily_basic", "limit": "limit_list_d"}
 
     # ... and D2's metrics were recomputed from them (the real cap re-weights the concept board)
@@ -534,3 +566,98 @@ def test_two_evening_runs_derive_today_and_complete_yesterday(evening_env):
     assert api.calls_of("dc_member") == [] and api.calls_of("dc_index") == []
     assert {kw["trade_date"] for kw in api.calls_of("daily")} == {"20261104"}
     assert calls_before > 0
+
+# ----------------------------------------------------------------------
+# Weekly industry-board membership (run_industry_membership)
+# ----------------------------------------------------------------------
+class FakeMembership:
+    """Recording stand-in for ``MarketSnapshotService.refresh_board_membership``."""
+
+    def __init__(self, result=None, error=None):
+        self.calls: List[tuple] = []
+        self.result = result if result is not None else {
+            "status": "ok", "board_type": "industry", "boards": 496, "ok": 490, "failed": 0, "empty": 6,
+            "skipped": 0, "rows": 20000, "opened": 12, "closed": 3,
+        }
+        self.error = error
+
+    def refresh_board_membership(self, trade_date, board_type="concept", **kwargs):
+        self.calls.append((trade_date, board_type))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def test_latest_completed_session_is_the_last_trading_day_before_today():
+    from src.services.board_pipeline import latest_completed_session
+
+    friday, saturday = date(2026, 11, 6), date(2026, 11, 7)
+    sessions = lambda start, end: [d for d in (date(2026, 11, 4), date(2026, 11, 5), friday) if start <= d <= end]  # noqa: E731
+    assert latest_completed_session(saturday, sessions) == friday
+    assert latest_completed_session(friday, sessions) == date(2026, 11, 5)  # today's dc_member is not published yet
+    # no calendar: the previous Monday-Friday day
+    assert latest_completed_session(saturday, None) == friday
+    assert latest_completed_session(date(2026, 11, 9), None) == friday  # Monday -> previous Friday
+    assert latest_completed_session(saturday, lambda s, e: None) == friday
+    assert latest_completed_session(saturday, lambda s, e: (_ for _ in ()).throw(RuntimeError("calendar down"))) == friday
+
+
+def test_industry_membership_run_folds_the_latest_trading_day_for_industry_boards():
+    from src.services.board_pipeline import run_industry_membership
+
+    service = FakeMembership()
+    friday = date(2026, 11, 6)
+    result = run_industry_membership(
+        today=date(2026, 11, 7), ingest_service=service,
+        calendar_fn=lambda s, e: [d for d in (date(2026, 11, 5), friday) if s <= d <= e])
+    assert service.calls == [(friday, "industry")]
+    assert result["status"] == "succeeded" and result["trade_date"] == "2026-11-06"
+    assert "行业板块" in result["detail"] and "成功 490" in result["detail"]
+
+
+def test_industry_membership_run_accepts_an_explicit_trade_date_and_reports_partial_runs():
+    from src.services.board_pipeline import run_industry_membership
+
+    service = FakeMembership(result={
+        "status": "partial", "board_type": "industry", "boards": 496, "ok": 480, "failed": 10, "empty": 6,
+        "skipped": 0, "rows": 19000, "opened": 5, "closed": 1, "failed_boards": ["BK1.DC", "BK2.DC"],
+        "aborted": False, "remaining": 0})
+    result = run_industry_membership("2026-10-30", ingest_service=service)
+    assert service.calls == [(date(2026, 10, 30), "industry")]
+    assert result["status"] == "partial" and "保留现有成分" in result["detail"]
+
+
+def test_industry_membership_run_reports_done_days_as_skipped_and_never_raises():
+    from src.services.board_pipeline import run_industry_membership
+
+    done = FakeMembership(result={"status": "skipped", "reason": "该日成分已折叠入拉链表", "boards": 496, "skipped": 496})
+    assert run_industry_membership("2026-11-06", ingest_service=done)["status"] == "skipped"
+    broken = FakeMembership(error=RuntimeError("db locked"))
+    result = run_industry_membership("2026-11-06", ingest_service=broken)
+    assert result["status"] == "failed" and "db locked" in result["detail"]
+
+
+def test_industry_membership_end_to_end_against_the_fake_sdk(evening_env):
+    env = evening_env
+    api = env.api
+    _board_members(api, "BK0477.DC", "20261102", ["600519.SH", "000333.SZ", "002001.SZ", "002002.SZ"])
+    _board_members(api, "BK1184.DC", "20261102", ["600519.SH", "300750.SZ"])
+    env.go(D2)  # the 17:00 run folds D1 for the concept board only
+    assert {kw["ts_code"] for kw in api.calls_of("dc_member")} == {"BK1184.DC"}
+
+    from src.services.board_pipeline import run_industry_membership
+
+    api.calls.clear()
+    service = MarketSnapshotService(
+        fetcher=env.service.fetcher, repo=MarketSnapshotRepository(env.db), config=env.service._config,
+        calendar_fn=env.service._calendar_fn)
+    result = run_industry_membership(D2, ingest_service=service)  # a weekend job would pass its latest trading day
+    assert result["status"] == "failed"  # D2 membership is not published yet: every board answers empty
+    _board_members(api, "BK0477.DC", "20261103", ["600519.SH", "000333.SZ", "002001.SZ"])
+    api.calls.clear()
+    result = run_industry_membership(D2, ingest_service=service)
+    assert result["status"] == "succeeded", result
+    assert [kw["ts_code"] for kw in api.calls_of("dc_member")] == ["BK0477.DC"]  # industry boards only, one call each
+    api.calls.clear()
+    assert run_industry_membership(D2, ingest_service=service)["status"] == "skipped"  # already done: no request
+    assert api.calls_of("dc_member") == []
