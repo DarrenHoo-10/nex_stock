@@ -122,9 +122,9 @@ def _warn_if_public_webui_without_auth(host: str) -> None:
     if not _is_public_bind_host(host):
         return
 
-    from src.auth import is_auth_enabled
+    from src.auth import is_auth_enabled, is_user_center_mode
 
-    if is_auth_enabled():
+    if is_auth_enabled() or is_user_center_mode():
         return
     logger.warning(
         "WEBUI_HOST=%s binds the Web UI to a public interface while "

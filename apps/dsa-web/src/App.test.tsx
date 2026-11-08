@@ -94,6 +94,8 @@ vi.mock('./pages/LoginPage', () => ({
 
 function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
   return {
+    authMode: 'local',
+    userCenter: null,
     authEnabled: false,
     loggedIn: false,
     passwordSet: false,
@@ -327,5 +329,87 @@ describe('App routing behavior', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+});
+
+describe('App user_center mode', () => {
+  const LOGIN_URL = 'https://user.example.test/login?return=https%3A%2F%2Fstock.example.test%2F';
+  const LOGOUT_URL = 'https://user.example.test/logout?return=https%3A%2F%2Fstock.example.test%2F';
+
+  beforeEach(() => {
+    window.sessionStorage.clear();
+  });
+
+  it('shows the no-permission page with a logout link for a signed-in non-admin', async () => {
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authMode: 'user_center',
+      authEnabled: true,
+      loggedIn: false,
+      setupState: 'enabled',
+      userCenter: {
+        authenticated: true,
+        authorized: false,
+        username: 'Alice',
+        role: 'user',
+        loginUrl: LOGIN_URL,
+        logoutUrl: LOGOUT_URL,
+      },
+    }));
+    window.history.pushState({}, '', '/mine');
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: '无权限' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '退出登录' })).toHaveAttribute('href', LOGOUT_URL);
+    expect(screen.queryByTestId('mine-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+  });
+
+  it('never renders the local login page for an unauthenticated user_center visitor', async () => {
+    // A recent redirect stamp keeps the loop guard from navigating the test window.
+    window.sessionStorage.setItem('dsa.userCenter.loginRedirectAt', String(Date.now()));
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authMode: 'user_center',
+      authEnabled: true,
+      loggedIn: false,
+      setupState: 'enabled',
+      userCenter: {
+        authenticated: false,
+        authorized: false,
+        username: null,
+        role: null,
+        loginUrl: LOGIN_URL,
+        logoutUrl: LOGOUT_URL,
+      },
+    }));
+    window.history.pushState({}, '', '/portfolio');
+
+    render(<App />);
+
+    expect(await screen.findByRole('link', { name: '前往用户中心登录' })).toHaveAttribute('href', LOGIN_URL);
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('portfolio-page')).not.toBeInTheDocument();
+  });
+
+  it('renders the app for an authorized admin session', async () => {
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authMode: 'user_center',
+      authEnabled: true,
+      loggedIn: true,
+      setupState: 'enabled',
+      userCenter: {
+        authenticated: true,
+        authorized: true,
+        username: 'Darren',
+        role: 'admin',
+        loginUrl: LOGIN_URL,
+        logoutUrl: LOGOUT_URL,
+      },
+    }));
+    window.history.pushState({}, '', '/mine');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('mine-page')).toBeInTheDocument();
   });
 });

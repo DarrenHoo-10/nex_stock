@@ -2,8 +2,13 @@
 """
 Web admin authentication module.
 
-Single toggle (ADMIN_AUTH_ENABLED) + file-based credentials.
-First login sets initial password; supports web change-password and CLI reset.
+Two modes, selected by ``AUTH_MODE``:
+
+* ``local`` (default): single toggle (ADMIN_AUTH_ENABLED) + file-based credentials.
+  First login sets initial password; supports web change-password and CLI reset.
+* ``user_center``: the NexorAI user center owns login; this process only verifies
+  the ``user_session`` cookie against it (see ``src/user_center_auth.py``).
+  The local password endpoints are disabled in this mode.
 """
 
 from __future__ import annotations
@@ -31,8 +36,12 @@ RATE_LIMIT_MAX_FAILURES = 5
 SESSION_MAX_AGE_HOURS_DEFAULT = 24
 MIN_PASSWORD_LEN = 6
 
+AUTH_MODE_LOCAL = "local"
+AUTH_MODE_USER_CENTER = "user_center"
+
 # Lazy-loaded state
 _auth_enabled: Optional[bool] = None
+_auth_mode: Optional[str] = None
 _session_secret: Optional[bytes] = None
 _password_hash_salt: Optional[bytes] = None
 _password_hash_stored: Optional[bytes] = None
@@ -76,6 +85,63 @@ def _is_auth_enabled_from_env() -> bool:
     values = dotenv_values(env_path)
     val = (values.get("ADMIN_AUTH_ENABLED") or "").strip().lower()
     return val in ("true", "1", "yes")
+
+
+def _read_setting(key: str) -> str:
+    """Read one setting: active .env file value first, then the process environment."""
+    _ensure_env_loaded()
+    env_file = os.getenv("ENV_FILE")
+    env_path = Path(env_file) if env_file else Path(__file__).resolve().parent.parent / ".env"
+    if env_path.exists():
+        try:
+            value = dotenv_values(env_path).get(key)
+        except Exception as exc:  # pragma: no cover - defensive branch
+            logger.warning("Failed to read %s from %s: %s", key, env_path, exc)
+            value = None
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return (os.getenv(key) or "").strip()
+
+
+def read_auth_setting(key: str) -> str:
+    """Public accessor for auth-related settings (file first, then process env)."""
+    return _read_setting(key)
+
+
+def _resolve_auth_mode() -> str:
+    raw = _read_setting("AUTH_MODE").lower().replace("-", "_")
+    if not raw or raw == AUTH_MODE_LOCAL:
+        return AUTH_MODE_LOCAL
+    if raw == AUTH_MODE_USER_CENTER:
+        return AUTH_MODE_USER_CENTER
+    # Fail closed: a typo in AUTH_MODE must never silently downgrade a public
+    # deployment to "no authentication".
+    logger.error(
+        "Unknown AUTH_MODE=%r; treating it as %s (fail closed). Valid values: %s, %s",
+        raw,
+        AUTH_MODE_USER_CENTER,
+        AUTH_MODE_LOCAL,
+        AUTH_MODE_USER_CENTER,
+    )
+    return AUTH_MODE_USER_CENTER
+
+
+def get_auth_mode() -> str:
+    """Return the configured auth mode: ``local`` (default) or ``user_center``."""
+    global _auth_mode
+    if _auth_mode is None:
+        _auth_mode = _resolve_auth_mode()
+    return _auth_mode
+
+
+def is_user_center_mode() -> bool:
+    """Return whether login is delegated to the NexorAI user center."""
+    return get_auth_mode() == AUTH_MODE_USER_CENTER
+
+
+def is_access_control_enabled() -> bool:
+    """Return whether API access is restricted by either auth mode."""
+    return is_user_center_mode() or is_auth_enabled()
 
 
 def rotate_session_secret() -> bool:
@@ -188,8 +254,9 @@ def _load_credential_from_file() -> bool:
 
 def refresh_auth_state() -> None:
     """Reload auth-related state from disk and env."""
-    global _auth_enabled, _session_secret
+    global _auth_enabled, _auth_mode, _session_secret
     _auth_enabled = None
+    _auth_mode = None
     _session_secret = None
     _load_credential_from_file()
 

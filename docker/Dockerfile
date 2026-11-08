@@ -57,6 +57,10 @@ COPY data_provider/ ./data_provider/
 COPY bot/ ./bot/
 COPY src/ ./src/
 COPY strategies/ ./strategies/
+# 报告模板（REPORT_TEMPLATES_DIR 默认 templates；缺失时渲染器会静默回退）与运维脚本
+# （冷启动回填 scripts/backfill_market_snapshot.py、手动补跑 scripts/run_board_pipeline.py）
+COPY templates/ ./templates/
+COPY scripts/ ./scripts/
 COPY --from=web-builder /app/static ./static/
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 

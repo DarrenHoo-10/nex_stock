@@ -7,12 +7,14 @@ import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { PlanPageHeader } from '../PlanPageHeader';
 import { PlanShell } from '../PlanShell';
 
-const { getLatestRun, isPlanServiceUnavailable } = vi.hoisted(() => ({
+const { getLatestRun, isPlanServiceUnavailable, authState } = vi.hoisted(() => ({
   getLatestRun: vi.fn(),
   isPlanServiceUnavailable: vi.fn(),
+  authState: { value: { authMode: 'local', userCenter: null } as Record<string, unknown> },
 }));
 
 vi.mock('../../../api/dailyPlan', () => ({ getLatestRun, isPlanServiceUnavailable }));
+vi.mock('../../../contexts/AuthContext', () => ({ useAuth: () => authState.value }));
 
 function renderShell(path = '/mine') {
   return render(
@@ -36,6 +38,7 @@ beforeEach(() => {
   isPlanServiceUnavailable.mockReturnValue(false);
   usePlanUiStore.setState({ assistantOpen: false, runDialogOpen: false, runRefreshToken: 0 });
   localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+  authState.value = { authMode: 'local', userCenter: null };
 });
 
 describe('PlanShell', () => {
@@ -80,6 +83,22 @@ describe('PlanShell', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('navigation', { name: '更多页面' })).not.toBeInTheDocument());
     expect(more).toHaveFocus();
+  });
+
+  it('offers a user-center logout link in the more popover only in user_center mode', async () => {
+    getLatestRun.mockResolvedValue(null);
+    authState.value = {
+      authMode: 'user_center',
+      userCenter: { logoutUrl: 'https://user.example.test/logout?return=https%3A%2F%2Fstock.example.test%2F' },
+    };
+    renderShell('/mine');
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    const popover = await screen.findByRole('navigation', { name: '更多页面' });
+    expect(screen.getByRole('link', { name: '退出' })).toHaveAttribute(
+      'href',
+      'https://user.example.test/logout?return=https%3A%2F%2Fstock.example.test%2F',
+    );
+    expect(popover.querySelectorAll('a')).toHaveLength(11);
   });
 
   it('closes the popover after navigating to an old page', async () => {

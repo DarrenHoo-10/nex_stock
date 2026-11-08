@@ -2,6 +2,7 @@ import apiClient from './index';
 import { API_BASE_URL } from '../utils/constants';
 import { createApiError, createParsedApiError, isApiRequestError, parseApiError } from './error';
 import { toCamelCase } from './utils';
+import { csrfHeadersFor } from '../utils/userCenterSession';
 import type { AgentBackendStatusResponse } from '../types/systemConfig';
 
 export interface ChatStreamOptions {
@@ -192,7 +193,7 @@ export const agentApi = {
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...csrfHeadersFor('POST') },
         body: JSON.stringify(payload),
         credentials: 'include',
         signal: options?.signal,

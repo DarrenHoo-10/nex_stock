@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 支持 NexorAI 用户中心登录：`AUTH_MODE=user_center` 时 Web 与 API 改用 nex_user 的共享会话（`user_session`）校验身份，默认只允许管理员（`USER_CENTER_REQUIRED_ROLE`），写操作校验来源与 CSRF 令牌；新增 `/api/session`、`/api/login`、`/api/logout`，前端未登录时跳转用户中心、非管理员显示无权限页；默认 `AUTH_MODE=local` 行为不变。新增配置 `AUTH_MODE`、`USER_CENTER_URL`、`PUBLIC_ORIGIN`、`USER_CENTER_REQUIRED_ROLE`。
+
+- [新功能] 新增部署模板：`deploy/tokyo/`（单容器同时运行 Web API 与定时任务，`.env` 所在目录挂载可写）与 `deploy/seoul/`（nginx 站点：静态前端 + `/api` 反向代理，含证书签发用的 HTTP 引导配置）；Docker 镜像补齐 `scripts/` 与 `templates/`。
+
 - [新功能] 板块与全市场日度快照入库：新增 `board_catalog`、`board_membership`（成分拉链表）、`market_stock_daily`、`market_daily`、`board_daily`、`daily_runs`、`board_signal` 表，按交易日从 Tushare 取全市场行情、每日指标、涨跌停、停牌与东方财富板块（含分页、单位换算、数据缺失标记），新增可断点续跑的回填脚本 `scripts/backfill_market_snapshot.py`；新增配置 `MARKET_SNAPSHOT_RETENTION_DAYS`、`MARKET_SNAPSHOT_BACKFILL_DAYS`、`MARKET_BENCHMARK_CODE`、`MARKET_SNAPSHOT_REQUESTS_PER_MINUTE`。
 
 - [新功能] 板块异动计算与判定：由本地快照计算全市场与板块日度指标（市值加权 / 等权收益、超额、排名、量比、宽度、涨跌停、炸板率、贡献股等），按核心功能说明的规则与默认阈值判定首次启动、持续走强、分歧、退潮、异常下跌，含普涨保护、历史不足、单股驱动、新概念冷却与概念合并，数据缺失记为「数据不足」而不当作不满足；`/api/v1/boards/*` 接入真实数据，阈值可经 `BOARD_ANOMALY_THRESHOLDS` 覆盖；新增每日板块流程脚本 `scripts/run_board_pipeline.py` 与助手工具 `get_board_signal`（盘中附实时强弱）；阈值尚未经历史回测校准。

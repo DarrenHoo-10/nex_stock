@@ -8,6 +8,7 @@ import {
   RouterProvider,
 } from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
+import { UserCenterForbidden, UserCenterLoginRedirect } from './components/auth/UserCenterGate';
 import { PlanShell } from './components/plan/PlanShell';
 import {
   PageLoadingFallback,
@@ -39,7 +40,7 @@ const PreferencesPage = lazy(() => import('./pages/plan/PreferencesPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
-  const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
+  const { authMode, userCenter, authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
   const { t } = useUiLanguage();
 
   useEffect(() => {
@@ -65,6 +66,13 @@ const AppContent: React.FC = () => {
         </button>
       </div>
     );
+  }
+
+  if (authMode === 'user_center' && userCenter && !loggedIn) {
+    // Login belongs to the user center: there is no local /login page in this mode.
+    return userCenter.authenticated
+      ? <UserCenterForbidden session={userCenter} />
+      : <UserCenterLoginRedirect loginUrl={userCenter.loginUrl} />;
   }
 
   if (authEnabled && !loggedIn) {

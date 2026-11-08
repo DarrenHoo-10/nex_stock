@@ -427,6 +427,10 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | Variable | Description | Default |
 |--------|------|--------|
 | `STOCK_LIST` | Watchlist codes (comma-separated) | - |
+| `AUTH_MODE` | Authentication mode: `local` (default, built-in admin password controlled by `ADMIN_AUTH_ENABLED`) or `user_center` (sign in with the NexorAI user center, administrator accounts only). In `user_center` mode the local password login, change-password and auth-toggle endpoints answer `409 auth_mode_user_center`; every `/api/*` route except the health checks and `/api/session`, `/api/login`, `/api/logout` needs a valid `user_session` cookie (verified on each request against `{USER_CENTER_URL}/v1/session`, never cached), and non-GET requests also need `Origin` equal to `PUBLIC_ORIGIN` plus an `X-CSRF-Token` header. An unrecognised value is treated as `user_center` (fail closed). Change it only in `.env`/the deployment environment and restart. See [deploy/tokyo/README.md](../deploy/tokyo/README.md) | `local` |
+| `USER_CENTER_URL` | User-center base URL (`AUTH_MODE=user_center`): the browser is sent to `{URL}/login` and `{URL}/logout`, sessions are verified with `{URL}/v1/session` (3 s timeout, concurrency 2, retry on 429) | `https://user.nexorai.com.cn` |
+| `PUBLIC_ORIGIN` | Public origin of the site (required when `AUTH_MODE=user_center`; scheme, host and optional port, no path): the return URL after login/logout and the only `Origin` accepted for non-GET requests; it must be on the user center return-URL allowlist. When unset, protected endpoints answer `503 AUTH_MISCONFIGURED` | empty |
+| `USER_CENTER_REQUIRED_ROLE` | Minimum user-center role allowed to use the app: `admin` (administrators only) or `user` (regular users and administrators). Without it the API answers `403 ADMIN_REQUIRED` and the Web shows the no-permission page | `admin` |
 | `MAX_WORKERS` | Concurrent threads | `3` |
 | `MARKET_REVIEW_ENABLED` | Enable market review | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
@@ -607,6 +611,16 @@ If you override the runtime user with `--user` or Compose `user:`, or use read-o
 Optional static asset override:
 
 - `./static:/app/static:ro`
+
+### Public deployment (user-center login + single container)
+
+The split deployment (static frontend behind nginx in Seoul, backend in Tokyo) with `AUTH_MODE=user_center` (NexorAI user center, administrators only) is documented step by step in:
+
+- Backend (Tokyo): [deploy/tokyo/README.md](../deploy/tokyo/README.md) - one container runs the Web/API and every scheduled job (`python main.py --serve --schedule --no-run-immediately`), and the Feishu long connection starts once; do not start the `analyzer` and `server` services of `docker/docker-compose.yml` together.
+- Frontend and nginx (Seoul): [deploy/seoul/README.md](../deploy/seoul/README.md)
+- Production `.env` key template: `deploy/tokyo/env.production.example`
+
+Runtime behaviour in `user_center` mode: every `/api/*` route (including `/docs` and `/openapi.json`) needs a valid user-center administrator session, except the health checks (`/health`, `/api/health`, `/api/v1/health`) and `/api/session`, `/api/login`, `/api/logout`, `/api/v1/auth/status`. The in-process scheduler and the Feishu long connection do not go through HTTP and are unaffected; external clients that call `/api/v1/*` over HTTP (for example the MCP service) have no service-token channel and receive 401.
 
 ### Common Commands
 

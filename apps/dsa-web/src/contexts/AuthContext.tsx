@@ -1,10 +1,26 @@
 import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
-import { authApi } from '../api/auth';
+import { authApi, type AuthMode } from '../api/auth';
 import { useStockPoolStore } from '../stores';
+import { setUserCenterSession } from '../utils/userCenterSession';
+
+/** Session facts from `GET /api/session` (AUTH_MODE=user_center). */
+export type UserCenterSession = {
+  /** The user center knows this browser session. */
+  authenticated: boolean;
+  /** The session also holds the required role (admin); only then is the app usable. */
+  authorized: boolean;
+  username: string | null;
+  role: string | null;
+  loginUrl: string;
+  logoutUrl: string;
+};
 
 type AuthContextValue = {
+  authMode: AuthMode;
+  /** Null outside user_center mode. */
+  userCenter: UserCenterSession | null;
   authEnabled: boolean;
   loggedIn: boolean;
   passwordSet: boolean;
@@ -39,6 +55,8 @@ function extractLoginError(err: unknown): ParsedApiError {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [authMode, setAuthMode] = useState<AuthMode>('local');
+  const [userCenter, setUserCenter] = useState<UserCenterSession | null>(null);
   const [authEnabled, setAuthEnabled] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
   const [passwordSet, setPasswordSet] = useState(false);
@@ -52,6 +70,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLoadError(null);
     try {
       const status = await authApi.getStatus();
+      if (status.authMode === 'user_center') {
+        // Login is owned by the user center: the session endpoint decides, not the status flags.
+        const session = await authApi.getUserCenterSession();
+        setUserCenterSession(session);
+        setAuthMode('user_center');
+        setUserCenter({
+          authenticated: session.authenticated,
+          authorized: session.authorized,
+          username: session.username,
+          role: session.role,
+          loginUrl: session.loginUrl,
+          logoutUrl: session.logoutUrl,
+        });
+        setAuthEnabled(true);
+        setLoggedIn(session.authorized);
+        setPasswordSet(false);
+        setPasswordChangeable(false);
+        setSetupState('enabled');
+        if (!session.authorized) {
+          useStockPoolStore.getState().resetDashboardState();
+        }
+        return;
+      }
+      setUserCenterSession(null);
+      setAuthMode('local');
+      setUserCenter(null);
       setAuthEnabled(status.authEnabled);
       setLoggedIn(status.loggedIn);
       setPasswordSet(status.passwordSet ?? false);
@@ -62,6 +106,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err) {
       setLoadError(getParsedApiError(err));
+      setUserCenterSession(null);
+      setAuthMode('local');
+      setUserCenter(null);
       setAuthEnabled(false);
       setLoggedIn(false);
       setPasswordSet(false);
@@ -82,6 +129,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password: string,
       passwordConfirm?: string
     ): Promise<{ success: boolean; error?: ParsedApiError }> => {
+      if (authMode === 'user_center') {
+        // The local password endpoints are disabled in this mode.
+        return {
+          success: false,
+          error: createParsedApiError({
+            title: '登录方式不可用',
+            message: '当前使用 NexorAI 用户中心登录，请通过用户中心登录。',
+            rawMessage: 'auth_mode_user_center',
+          }),
+        };
+      }
       try {
         await authApi.login(password, passwordConfirm);
         await fetchStatus();
@@ -90,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { success: false, error: extractLoginError(err) };
       }
     },
-    [fetchStatus]
+    [authMode, fetchStatus]
   );
 
   const changePassword = useCallback(
@@ -110,6 +168,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
+    if (authMode === 'user_center') {
+      // The user center clears its own session, then returns the browser to PUBLIC_ORIGIN.
+      if (userCenter?.logoutUrl) {
+        window.location.assign(userCenter.logoutUrl);
+      }
+      return;
+    }
     let logoutError: unknown = null;
     try {
       await authApi.logout();
@@ -122,11 +187,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (logoutError && getParsedApiError(logoutError).status !== 401) {
       throw logoutError;
     }
-  }, [fetchStatus]);
+  }, [authMode, userCenter, fetchStatus]);
 
   return (
     <AuthContext.Provider
       value={{
+        authMode,
+        userCenter,
         authEnabled,
         loggedIn,
         passwordSet,

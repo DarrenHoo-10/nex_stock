@@ -508,6 +508,10 @@ daily_stock_analysis/
 | `STOCK_LIST` | 自选股代码（逗号分隔） | - |
 | `ADMIN_AUTH_ENABLED` | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password`。Web 的 `.env` 备份导入导出仅在开启该开关后可用（桌面端不受此限制）。 | `false` |
 | `TRUST_X_FORWARDED_FOR` | 单层可信反向代理部署时设为 `true`，取 `X-Forwarded-For` 最右值作为真实客户端 IP（用于登录限流等）；直连公网时保持 `false` 防伪造。多级代理/CDN 场景下限流 key 可能退化为边缘代理 IP，需额外评估 | `false` |
+| `AUTH_MODE` | 认证方式：`local`（默认，本地管理员密码，由 `ADMIN_AUTH_ENABLED` 控制）/ `user_center`（NexorAI 用户中心登录，仅管理员账号）。`user_center` 下本地密码登录、修改密码与认证开关接口返回 `409 auth_mode_user_center`；除健康检查与 `/api/session`、`/api/login`、`/api/logout` 外，所有 `/api/*` 都要求有效的 `user_session` Cookie（逐请求向 `{USER_CENTER_URL}/v1/session` 校验，不缓存），非 GET 请求另需 `Origin` 等于 `PUBLIC_ORIGIN` 且携带 `X-CSRF-Token`。取值写错时按 `user_center` 处理（失败即关闭）。仅能在 `.env`/部署环境修改，改后重启。详见 [deploy/tokyo/README.md](../deploy/tokyo/README.md) | `local` |
+| `USER_CENTER_URL` | 用户中心地址（`AUTH_MODE=user_center`）：浏览器跳转 `{地址}/login`、`{地址}/logout`，后端校验 `{地址}/v1/session`（3 秒超时、并发 2、429 重试） | `https://user.nexorai.com.cn` |
+| `PUBLIC_ORIGIN` | 站点公开地址（`AUTH_MODE=user_center` 必填；协议+域名+可选端口，不带路径）：登录/退出后的返回地址，也是非 GET 请求唯一允许的 `Origin`；需先加入用户中心的返回地址白名单。未配置时受保护接口返回 `503 AUTH_MISCONFIGURED` | 空 |
+| `USER_CENTER_REQUIRED_ROLE` | 允许使用本系统的最低用户中心角色：`admin`（仅管理员）/ `user`（普通用户和管理员）；不满足时 API 返回 `403 ADMIN_REQUIRED`，Web 显示「无权限」页 | `admin` |
 | `MAX_WORKERS` | 并发线程数 | `3` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
@@ -666,6 +670,16 @@ WebUI 中保存的运行时配置默认写入容器内部配置文件，不等�
 如果你需要覆盖内置静态资源，还可以额外挂载：
 
 - `./static:/app/static:ro`
+
+### 公网部署（用户中心登录 + 单容器）
+
+前端静态文件放在首尔 nginx、后端放在东京的拆分部署，以及 `AUTH_MODE=user_center`（NexorAI 用户中心、仅管理员）的完整步骤见：
+
+- 后端（东京）：[deploy/tokyo/README.md](../deploy/tokyo/README.md) —— 单容器同时运行 Web/API 与全部调度任务（`python main.py --serve --schedule --no-run-immediately`），飞书长连接只启动一次；不要同时启动 `docker/docker-compose.yml` 里的 `analyzer` 与 `server`。
+- 前端与 nginx（首尔）：[deploy/seoul/README.md](../deploy/seoul/README.md)
+- 生产 `.env` 键名模板：`deploy/tokyo/env.production.example`
+
+`user_center` 模式的运行时行为：除健康检查（`/health`、`/api/health`、`/api/v1/health`）与 `/api/session`、`/api/login`、`/api/logout`、`/api/v1/auth/status` 外，所有 `/api/*`（含 `/docs`、`/openapi.json`）都要求有效的用户中心管理员会话；进程内的调度器、飞书长连接不经过 HTTP，不受影响；MCP 管家等通过 HTTP 调用 `/api/v1/*` 的外部客户端没有服务令牌通道，会收到 401。
 
 ### 常用命令
 

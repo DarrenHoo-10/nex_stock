@@ -1,6 +1,10 @@
 import apiClient from './index';
 
+export type AuthMode = 'local' | 'user_center';
+
 export type AuthStatusResponse = {
+  /** Absent on older backends, which only know the local password mode. */
+  authMode?: AuthMode;
   authEnabled: boolean;
   loggedIn: boolean;
   passwordSet?: boolean;
@@ -8,9 +12,27 @@ export type AuthStatusResponse = {
   setupState: 'enabled' | 'password_retained' | 'no_password';
 };
 
+/** `GET /api/session` (AUTH_MODE=user_center only). */
+export type UserCenterSessionResponse = {
+  authenticated: boolean;
+  /** Authenticated and holding the required role (admin by default). */
+  authorized: boolean;
+  username: string | null;
+  role: string | null;
+  requiredRole?: string;
+  csrfToken: string | null;
+  loginUrl: string;
+  logoutUrl: string;
+};
+
 export const authApi = {
   async getStatus(): Promise<AuthStatusResponse> {
     const { data } = await apiClient.get<AuthStatusResponse>('/api/v1/auth/status');
+    return data;
+  },
+
+  async getUserCenterSession(): Promise<UserCenterSessionResponse> {
+    const { data } = await apiClient.get<UserCenterSessionResponse>('/api/session');
     return data;
   },
 

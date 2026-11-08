@@ -1,0 +1,76 @@
+# ===================================
+# nex-stock 后端（东京）- 生产 Compose
+# ===================================
+#
+# 单容器、单进程：同一个 `python main.py --serve --schedule` 进程同时提供
+#   - Web/API（FastAPI，容器内 8000 端口）
+#   - runtime scheduler：每日分析、17:00 板块流程、08:15 盘前版、资讯轮询、行业成分周刷新
+#   - 飞书长连接（FEISHU_STREAM_ENABLED=true 时启动一次）
+# 不要再叠加 docker/docker-compose.yml 里的 analyzer 服务：它是另一个调度进程，
+# 会让飞书长连接和各定时任务重复运行。
+#
+# 用法（在本目录执行，详见 README.md）：
+#   cp compose.env.example .env        # 仅用于 Compose 变量替换（宿主机绑定地址、数据根目录）
+#   sudo docker compose up -d --build
+#
+# 应用配置（密钥、LLM 渠道、调度开关……）不写在这里，而是放在
+# ${STOCK_DEPLOY_ROOT}/config/.env（容器内 /app/config/.env，通过 ENV_FILE 指向）。
+# 该目录以读写方式整体挂载，Web 设置页保存配置时可以原子替换文件；
+# 不要把 .env 作为单文件 bind mount，也不要把配置项写进下面的 environment
+# （启动环境中的同名变量会覆盖 Web 保存的值）。
+
+name: nex-stock
+
+services:
+  stock:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    image: nex-stock:${STOCK_IMAGE_TAG:-local}
+    container_name: nex-stock
+    # python 在容器内是 PID 1；init 负责转发 SIGTERM，保证 docker stop / 重启能快速干净退出。
+    init: true
+    restart: unless-stopped
+    # --schedule 强制开启 runtime scheduler；--no-run-immediately 避免每次重启都立即跑一轮全量分析。
+    command:
+      - python
+      - main.py
+      - --serve
+      - --schedule
+      - --no-run-immediately
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      # 只发布到宿主机指定地址：默认仅本机回环；把 STOCK_BIND_ADDR 设为宿主机的 ZeroTier 内网 IP，
+      # 首尔 nginx 才能通过内网访问。切勿绑定 0.0.0.0（后端端口不应暴露在公网）。
+      - "${STOCK_BIND_ADDR:-127.0.0.1}:8000:8000"
+    environment:
+      TZ: Asia/Shanghai
+      # 运行时配置文件（数据卷之外的独立配置目录，需可被 uid 1000 写入）。
+      ENV_FILE: /app/config/.env
+      # 容器内固定路径（与下面的挂载一致）。
+      DATABASE_PATH: /app/data/stock_analysis.db
+      LOG_DIR: /app/logs
+      WEBUI_HOST: 0.0.0.0
+      # 前端已在镜像构建阶段打包进 static/，运行时不要再尝试 npm install/build。
+      WEBUI_AUTO_BUILD: "false"
+    volumes:
+      - ${STOCK_DEPLOY_ROOT:-/data/nex-stock}/config:/app/config
+      - ${STOCK_DEPLOY_ROOT:-/data/nex-stock}/data:/app/data
+      - ${STOCK_DEPLOY_ROOT:-/data/nex-stock}/logs:/app/logs
+      - ${STOCK_DEPLOY_ROOT:-/data/nex-stock}/reports:/app/reports
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # litellm 与整个应用树的首次导入较慢，给足启动窗口。
+      start_period: 90s
+    mem_limit: ${STOCK_MEM_LIMIT:-2g}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

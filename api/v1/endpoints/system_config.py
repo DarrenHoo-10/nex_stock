@@ -34,7 +34,7 @@ from api.v1.schemas.system_config import (
     ValidateSystemConfigRequest,
     ValidateSystemConfigResponse,
 )
-from src.auth import COOKIE_NAME, is_auth_enabled, refresh_auth_state, verify_session
+from src.auth import COOKIE_NAME, is_auth_enabled, is_user_center_mode, refresh_auth_state, verify_session
 from src.services.system_config_service import (
     ConfigConflictError,
     ConfigImportError,
@@ -101,6 +101,16 @@ def _allow_env_backup_access(request: Request) -> None:
         return
 
     refresh_auth_state()
+    if is_user_center_mode():
+        # AuthMiddleware already verified the user-center admin session (and
+        # Origin/CSRF for writes) and stored it on request.state; fail closed
+        # if the request somehow bypassed it.
+        if getattr(request.state, "user_center_session", None) is not None:
+            return
+        raise EnvBackupAccessDenied(
+            status_code=401,
+            message="System config backup requires a valid admin session",
+        )
     if not is_auth_enabled():
         raise EnvBackupAccessDenied(
             status_code=403,

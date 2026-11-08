@@ -2,6 +2,7 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, MotionConfig, motion } from 'motion/react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey } from '../../i18n/uiText';
 import { RouteOutletBoundary } from '../layout/RouteBoundary';
@@ -82,6 +83,7 @@ const OrnamentLink: React.FC<{ item: OrnamentItem; reduced: boolean }> = ({ item
  */
 export const PlanShell: React.FC = () => {
   const { t } = useUiLanguage();
+  const { authMode, userCenter } = useAuth();
   const location = useLocation();
   const reduced = usePlanReducedMotion();
   const mainRef = useRef<HTMLElement>(null);
@@ -248,6 +250,11 @@ export const PlanShell: React.FC = () => {
                       <NavLink to={item.to}>{t(item.labelKey)}</NavLink>
                     </li>
                   ))}
+                  {authMode === 'user_center' && userCenter?.logoutUrl ? (
+                    <li>
+                      <a href={userCenter.logoutUrl}>{t('layout.logout')}</a>
+                    </li>
+                  ) : null}
                 </ul>
               </motion.nav>
             ) : null}

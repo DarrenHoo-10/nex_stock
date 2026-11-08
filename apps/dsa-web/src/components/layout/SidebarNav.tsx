@@ -43,7 +43,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate, variant = 'default' }) => {
-  const { authEnabled, logout } = useAuth();
+  const { authMode, authEnabled, logout } = useAuth();
   const location = useLocation();
   const { t } = useUiLanguage();
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
@@ -167,7 +167,13 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
       <ConfirmDialog
         isOpen={showLogoutConfirm}
         title={t('layout.logoutTitle')}
-        message={t(/^\/settings\/?$/.test(location.pathname) ? 'layout.logoutSettingsMessage' : 'layout.logoutMessage')}
+        message={t(
+          /^\/settings\/?$/.test(location.pathname)
+            ? 'layout.logoutSettingsMessage'
+            : authMode === 'user_center'
+              ? 'layout.logoutMessageUserCenter'
+              : 'layout.logoutMessage',
+        )}
         confirmText={t('layout.logoutConfirm')}
         cancelText={t('common.cancel')}
         isDanger
