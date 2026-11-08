@@ -96,7 +96,7 @@
 | `/` | 跳转到 `/mine` | — |
 | `/boards` | 板块异动：市场概况；「今日建议」（模型推荐的板块和理由，可重新生成）与「我关注的」（关注板块的当日状态，点击打开详情）；行业 / 概念切换、状态筛选（关注的板块带 ★）、板块详情（可关注 / 取消关注）与超额收益走势；可跳到该板块选股 | `/boards/*` |
 | `/picks` | 机会选股：新建选股（策略 + 可选 1–5 个板块，`?board=` 预选该板块）、选股任务列表、点进任务（`?task=`）看进度或结果、加入自选 | `/screening/screen/tasks`（发起、列表、单个任务）、`/boards/anomalies`、`/boards/recommendations`、`/boards/follows`（板块选择：模型推荐、我关注的、今日异动，可搜索全部板块）与 `/stocks/watchlist/add`；选股结果中的 `horizons`、`entry_condition`、`invalid_condition`、`risks`、`note` 为可选字段，缺失时回退到已有字段 |
-| `/mine` | 我的股票：页头搜索股票加入自选（代码 / 名称 / 拼音，`stocks.index.json`）；次日计划服务未就绪时显示自选列表；账户、持仓与自选列表、计划详情（价格梯子、「怎么算的」、换股判断）、持仓与资金录入、记录买入；支持 `?code=` 深链 | `/plan/*`、`/stocks/watchlist/*` |
+| `/mine` | 我的股票：次日计划服务未就绪时显示自选列表；账户、持仓与自选列表、计划详情（价格梯子、「怎么算的」、换股判断）、持仓与资金录入、记录买入；支持 `?code=` 深链 | `/plan/*`、`/stocks/watchlist/*` |
 | `/preferences` | 设置：仓位规则、模型、异动阈值、运行和推送、数据状态；支持 `?tab=` 深链 | `/system/config`、`/boards/thresholds`、`/plan/*`、`/system/scheduler/status`、`/data/overview` |
 | `/home` | 原首页（从 `/` 移到这里） | 不变 |
 

@@ -56,53 +56,23 @@ beforeEach(() => {
   api.loadStockIndex.mockResolvedValue({ data: INDEX, fallback: false });
 });
 
-describe('MinePage stock search', () => {
-  it('searches by name or pinyin and adds a stock to the watchlist', async () => {
-    api.addToWatchlist.mockResolvedValue(['600519', '000988']);
-    renderPage();
-    // While the plan service is not ready, the watchlist itself is listed.
-    const list = await screen.findByRole('list', { name: '自选列表' });
-    expect(await within(list).findByText('贵州茅台')).toBeInTheDocument();
-
-    const input = screen.getByRole('combobox', { name: '搜索股票加入自选' });
-    fireEvent.focus(input);
-    fireEvent.change(input, { target: { value: 'hgkj' } });
-    const option = await screen.findByRole('option', { name: /华工科技/ });
-    expect(option).toHaveTextContent('+ 自选');
-
-    api.getWatchlist.mockResolvedValue(['600519', '000988']);
-    fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(api.addToWatchlist).toHaveBeenCalledWith('000988.SZ'));
-    expect(await within(list).findByText('华工科技')).toBeInTheDocument();
-    expect(input).toHaveValue('');
-  });
-
-  it('marks stocks already in the watchlist and does not add them again', async () => {
-    renderPage();
-    const input = await screen.findByRole('combobox', { name: '搜索股票加入自选' });
-    fireEvent.focus(input);
-    fireEvent.change(input, { target: { value: '茅台' } });
-    const option = await screen.findByRole('option', { name: /贵州茅台/ });
-    await waitFor(() => expect(option).toHaveTextContent('已在自选'));
-    fireEvent.click(option);
-    expect(api.addToWatchlist).not.toHaveBeenCalled();
-  });
-
-  it('shows the backend error when adding fails and removes a stock from the fallback list', async () => {
-    api.addToWatchlist.mockRejectedValue(new Error('自选已满'));
+describe('MinePage while the plan service is not ready', () => {
+  it('lists the watchlist with names and removes a stock', async () => {
     api.removeFromWatchlist.mockResolvedValue([]);
     renderPage();
-    const input = await screen.findByRole('combobox', { name: '搜索股票加入自选' });
-    fireEvent.focus(input);
-    fireEvent.change(input, { target: { value: '腾讯' } });
-    fireEvent.click(await screen.findByRole('option', { name: /腾讯控股/ }));
-    await waitFor(() => expect(api.addToWatchlist).toHaveBeenCalledWith('00700.HK'));
-    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    const list = await screen.findByRole('list', { name: '自选列表' });
+    expect(await within(list).findByText('贵州茅台')).toBeInTheDocument();
+    expect(within(list).getByText('600519')).toBeInTheDocument();
 
-    const list = screen.getByRole('list', { name: '自选列表' });
     api.getWatchlist.mockResolvedValue([]);
     fireEvent.click(within(list).getByRole('button', { name: '移出' }));
     await waitFor(() => expect(api.removeFromWatchlist).toHaveBeenCalledWith('600519'));
-    expect(await screen.findByText('还没有自选股。用右上角的搜索框加几只。')).toBeInTheDocument();
+    expect(await screen.findByText(/还没有自选股/)).toBeInTheDocument();
+  });
+
+  it('keeps the header quote search available', async () => {
+    renderPage();
+    await screen.findByRole('list', { name: '自选列表' });
+    expect(screen.getAllByRole('combobox').length).toBeGreaterThan(0);
   });
 });

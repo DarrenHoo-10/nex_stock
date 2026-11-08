@@ -11,7 +11,7 @@ import { StockDetail } from '../../components/plan/mine/StockDetail';
 import { StockList } from '../../components/plan/mine/StockList';
 import { useMineOverview, useStockPlanDetail } from '../../components/plan/mine/useMineData';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
-import { PlanStockSearch } from '../../components/plan/PlanStockSearch';
+import { QuoteSearch } from '../../components/plan/quote/QuoteSearch';
 import { watchlistCodeOf } from '../../utils/watchlistCode';
 import { useStockIndex } from '../../hooks/useStockIndex';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -94,7 +94,7 @@ const WatchlistFallback: React.FC<{
       {codes === null ? (
         <p className="note">正在读取自选…</p>
       ) : codes.length === 0 ? (
-        <p className="note">还没有自选股。用右上角的搜索框加几只。</p>
+        <p className="note">还没有自选股。用右上角的搜索框找到股票，在走势图里点「加入自选」。</p>
       ) : (
         <ul className="wf-list" aria-label="自选列表">
           {codes.map((code) => (
@@ -135,7 +135,6 @@ const MinePage: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [watchCodes, setWatchCodes] = useState<string[] | null>(null);
   const [watchKey, setWatchKey] = useState(0);
-  const watchSet = useMemo(() => new Set((watchCodes ?? []).map((code) => code.toUpperCase())), [watchCodes]);
 
   useEffect(() => {
     document.title = `${title} - DSA`;
@@ -229,21 +228,6 @@ const MinePage: React.FC = () => {
     [reload, reloadWatch],
   );
 
-  const addFromSearch = useCallback(
-    async (code: string, name: string): Promise<string | null> => {
-      try {
-        await systemConfigApi.addToWatchlist(code);
-        showPlanToast(`已把 ${name} 加入自选`);
-        reload(true);
-        reloadWatch();
-        return null;
-      } catch (error: unknown) {
-        return getParsedApiError(error).message || '加入自选失败，请稍后重试。';
-      }
-    },
-    [reload, reloadWatch],
-  );
-
   const addWatchFromDetail = useCallback(
     async (code: string) => {
       setBusy(true);
@@ -299,7 +283,7 @@ const MinePage: React.FC = () => {
       title={title}
       subtitle={subtitle}
       onOpenAssistant={() => openAssistant()}
-      actions={<PlanStockSearch watchlist={watchSet} onAdd={addFromSearch} />}
+      actions={<QuoteSearch onAddWatch={(code) => void addWatchFromDetail(code)} />}
     />
   );
 

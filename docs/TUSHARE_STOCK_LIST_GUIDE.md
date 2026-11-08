@@ -129,6 +129,18 @@ python3 scripts/generate_index_from_csv.py --test  # 先测试
 python3 scripts/generate_index_from_csv.py         # 确认后生成
 ```
 
+### 刷新 ETF 搜索数据
+
+沪深在市 ETF 来自 `scripts/stock_index_seeds/etf_list.csv`（随仓库提交，列：`ts_code,name,full_name,index_name`），合并进索引后为 `market=CN`、`assetType=etf` 行，并把「跟踪指数名 + ETF」（如 `沪深300ETF`）作为别名。全量重建索引时会自动带上这份 seed。
+
+```bash
+python3 scripts/fetch_tushare_stock_list.py --etf-seed   # 单次 etf_basic 请求，刷新 seed
+python3 scripts/generate_index_from_csv.py --etf-only --test  # 只验证
+python3 scripts/generate_index_from_csv.py --etf-only         # 只合并 ETF，不重建股票行
+```
+
+`--etf-only` 保留现有股票行和指数行的顺序，按 `股票 → ETF → 指数` 写回。刷新后记得同步 `static/stocks.index.json`（`refresh_stock_index.py` 会自动复制，单独运行时需要重新构建 Web 或手动复制）。
+
 ### 本地客户端自动获取最新索引
 
 新版客户端默认会从项目 GitHub `main` 分支读取最新的 `apps/dsa-web/public/stocks.index.json`，并缓存到本地 `data/cache/stocks.index.json`。前端仍访问本地 `/stocks.index.json`，不需要直接跨域请求 GitHub。
