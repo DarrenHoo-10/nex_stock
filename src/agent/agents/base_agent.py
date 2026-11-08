@@ -185,7 +185,15 @@ class BaseAgent(ABC):
         ]
         scope = ctx.meta.get("stock_scope")
         strict_chat = scope is not None and scope.strict
-        if strict_chat:
+        if strict_chat and getattr(scope, "is_open", False):
+            messages[0]["content"] += (
+                "\n\n[Server-confirmed Chat scope]\n"
+                + json.dumps(scope.as_log_payload(), ensure_ascii=False)
+                + "\nThis turn has no main stock. Stock tools may look up any stock or index the "
+                "answer needs (e.g. candidates for a theme); do not treat one of them as the user's "
+                "selected object."
+            )
+        elif strict_chat:
             messages[0]["content"] += (
                 "\n\n[Server-confirmed Chat scope]\n"
                 + json.dumps(scope.as_log_payload(), ensure_ascii=False)
