@@ -313,7 +313,7 @@ class DataCapabilityService:
                 status = "unavailable"
                 warnings.append("provider_not_initialized")
             else:
-                status = self._provider_runtime_status(fetcher)
+                status = self._provider_runtime_status(fetcher, definition)
                 if status == "unavailable":
                     warnings.append("provider_marked_unavailable")
                 elif status == "unknown":
@@ -343,8 +343,12 @@ class DataCapabilityService:
         return providers
 
     @staticmethod
-    def _provider_runtime_status(fetcher: Any) -> str:
+    def _provider_runtime_status(fetcher: Any, definition: Optional[_ProviderDefinition] = None) -> str:
         probe_result = DataCapabilityService._probe_fetcher_available(fetcher)
+        if probe_result is False and definition is not None and "quote.realtime" in definition.datasets:
+            # Realtime-only sources (e.g. Biying) refuse capability-less requests by design; ask with
+            # the capability they actually serve instead of reporting them unavailable.
+            probe_result = DataCapabilityService._probe_fetcher_available(fetcher, "realtime_quote")
         if probe_result is True:
             return "ok"
         if probe_result is False:
