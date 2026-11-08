@@ -1946,6 +1946,8 @@ A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是
 - 当 Agent 请求的天数多于本地缓存记录数时，工具会返回实际可用记录，并通过 `partial_cache=true`、`requested_days`、`actual_records` 标明这是部分缓存命中。
 - 缓存缺失或过期时，工具仍会按原逻辑从数据源获取日线数据；获取成功后会 best-effort 写回 `stock_daily`，保存失败不会阻断 Agent 回复。
 - `search_stock_news` 与 `search_comprehensive_intel` 成功返回后会 best-effort 写入 `news_intel`，复用现有 URL / fallback key 去重逻辑。
+- `search_market_news(keyword, days=3)` 按题材 / 关键词查新闻，不绑定单只股票：先查资讯库里最近 `days` 天（1–7）的快讯和公告（标题、摘要、关联板块命中任一关键词），命中少于 3 条时再用已配置的搜索引擎做题材搜索；不写入 `news_intel`。
+- Chat 股票作用域：没有讨论对象的问题（如「寒潮有哪些股票值得关注」）使用 `open` 作用域，个股工具可以查询任何能校验通过的 A 股 / 指数代码；一旦会话里确认了股票、助手抽屉选中了股票、在做对比或对象待澄清，仍只允许查询这些对象，越界调用返回 `stock_scope_violation`。
 - `get_realtime_quote` 不复用 `stock_daily` 作为实时行情缓存，也不会把盘中实时行情写入日线表；如需实时行情缓存，应单独设计实时行情存储。
 
 ## Agent 事件告警监控

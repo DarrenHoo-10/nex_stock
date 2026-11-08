@@ -566,6 +566,28 @@ def build_chat_market_phase_section(stock_code: str, report_language: str) -> st
     return section + rule
 
 
+_DAILY_PLAN_HORIZON_ZH = {"short": "短线 1–5 天", "swing": "波段 2–4 周"}
+
+
+def format_daily_plan_context_line(daily_plan: Any) -> str:
+    """One line for the object the assistant drawer is opened on (``context.daily_plan``)."""
+    if not isinstance(daily_plan, dict):
+        return ""
+    trade_date = str(daily_plan.get("trade_date") or "").strip()
+    basis = f"{trade_date} 收盘数据" if trade_date else "最近一次收盘数据"
+    kind = daily_plan.get("kind")
+    if kind == "stock" and daily_plan.get("stock_code"):
+        horizon = _DAILY_PLAN_HORIZON_ZH.get(str(daily_plan.get("horizon") or ""))
+        scope = f"{basis}，{horizon}" if horizon else basis
+        return f"用户正在看次日计划里的这只股票（{scope}）；问题没说明对象时，都指这只股票。"
+    if kind == "board" and daily_plan.get("board_id"):
+        return (
+            f"用户正在看板块 {daily_plan['board_id']}（{basis}）；问题没说明对象时，都指这个板块，"
+            "可用 get_board_signal 查询它的判定。"
+        )
+    return ""
+
+
 def prepare_agent_chat(
     *,
     message: str,
@@ -646,6 +668,9 @@ def prepare_agent_chat(
             context_parts.append(f"股票代码: {effective_context['stock_code']}")
         if effective_context.get("stock_name"):
             context_parts.append(f"股票名称: {effective_context['stock_name']}")
+        daily_plan_line = format_daily_plan_context_line(effective_context.get("daily_plan"))
+        if daily_plan_line:
+            context_parts.append(daily_plan_line)
         if effective_context.get("previous_price"):
             context_parts.append(f"上次分析价格: {effective_context['previous_price']}")
         if effective_context.get("previous_change_pct"):

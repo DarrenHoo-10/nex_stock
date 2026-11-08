@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from src.agent.factory import normalize_requested_skill_ids
 from src.agent.stock_scope import (
-    SWITCH_CLEANUP_KEYS, StockIdentity, StockScope, StockScopeResolution, resolve_stock_scope,
+    OPEN_SCOPE_MODE, SWITCH_CLEANUP_KEYS, StockIdentity, StockScope, StockScopeResolution, resolve_stock_scope,
 )
 from src.agent.chat_object_decision import decide_chat_object, validate_chat_identity as _code_identity
 from src.data.stock_index_loader import get_chat_stock_lookup
@@ -45,6 +45,22 @@ def _hint_identity(context: Dict[str, Any], registry: IndexRegistry, lookup: dic
 
 def _identity(stock: Dict[str, Any]) -> StockIdentity:
     return StockIdentity(stock["stock_code"], stock["canonical_id"], stock["asset_type"], stock.get("stock_name"))
+
+
+def _daily_plan_stock(context: Optional[Dict[str, Any]], registry: IndexRegistry, lookup: dict) -> Optional[StockIdentity]:
+    """Stock the assistant drawer is opened on (``context.daily_plan``, kind ``stock``).
+
+    Unlike a bare ``context.stock_code`` hint, this is an object the user selected and can see
+    (and remove) on the drawer chip, so it serves as the turn's default object. It is never
+    written to the session state: an object named in the conversation text still wins.
+    """
+    plan = (context or {}).get("daily_plan")
+    if not isinstance(plan, dict) or plan.get("kind") != "stock":
+        return None
+    try:
+        return _code_identity(plan.get("stock_code"), registry, lookup)
+    except (TypeError, ValueError):
+        return None
 
 
 def _active_from_snapshot(snapshot: Dict[str, Any], registry: IndexRegistry, lookup: dict) -> Optional[Dict[str, Any]]:
@@ -201,7 +217,9 @@ class AgentChatSessionService:
         registry, lookup = _stock_lookup()
         active = _active_from_snapshot(snapshot, registry, lookup)
         baseline = dict(active) if active else None
-        decision = decide_chat_object(message, _identity(active) if active else None, registry, lookup)
+        plan_stock = _daily_plan_stock(context, registry, lookup)
+        default = _identity(active) if active else plan_stock
+        decision = decide_chat_object(message, default, registry, lookup)
         compare = decision.kind == "compare"
         confirm = False
         clarification = None
@@ -224,29 +242,40 @@ class AgentChatSessionService:
 
             if normalize_report_language((context or {}).get("report_language") or getattr(config, "report_language", "zh")) == "en":
                 clarification = "The discussion target is not confirmed. Please provide the complete stock or index code."
+        # The turn's object: the session object, else the drawer's stock (this turn only, not persisted).
+        subject = active
+        if subject is None and plan_stock is not None and clarification is None:
+            subject = _stock_record(plan_stock, lookup, registry)
         allowed = []
-        if active is not None:
-            allowed.append(_identity(active))
+        if subject is not None:
+            allowed.append(_identity(subject))
         if compare and clarification is None:
             allowed.extend(item for item in decision.participants if item not in allowed)
-        scope = StockScope(expected_stock_code=active["stock_code"] if active else "",
-                           allowed_stock_codes={item.stock_code for item in allowed},
-                           mode="compare" if compare else "switch" if confirm else "maintain",
-                           strict=True, identities=tuple(allowed))
+        if subject is None and not compare and clarification is None and decision.kind == "maintain":
+            # No object at all (e.g. "寒潮有哪些股票值得关注"): let stock tools look up candidates.
+            scope = StockScope(mode=OPEN_SCOPE_MODE, strict=True)
+        else:
+            scope = StockScope(expected_stock_code=subject["stock_code"] if subject else "",
+                               allowed_stock_codes={item.stock_code for item in allowed},
+                               mode="compare" if compare else "switch" if confirm else "maintain",
+                               strict=True, identities=tuple(allowed))
         effective_context = dict(context or {})
         effective_context.pop("allowed_stock_codes", None)
         effective_context.pop("skills", None)
         effective_context.pop("strategies", None)
+        if plan_stock is not None and (subject is None or _identity(subject) != plan_stock):
+            # The drawer's plan block describes another object than this turn's.
+            effective_context.pop("daily_plan", None)
         hint_matches = False
-        if active and effective_context.get("stock_code"):
-            hint_matches = _hint_identity(effective_context, registry, lookup) == _identity(active)
+        if subject and effective_context.get("stock_code"):
+            hint_matches = _hint_identity(effective_context, registry, lookup) == _identity(subject)
         if not hint_matches:
             for key in SWITCH_CLEANUP_KEYS:
                 effective_context.pop(key, None)
         for key in ["stock_code", "stock_name", "canonical_id", "asset_type"]:
             effective_context.pop(key, None)
-        if active:
-            effective_context.update({key: active[key] for key in ["stock_code", "stock_name", "canonical_id", "asset_type"]})
+        if subject:
+            effective_context.update({key: subject[key] for key in ["stock_code", "stock_name", "canonical_id", "asset_type"]})
         if skills.effective_skill_ids is not None:
             effective_context["skills"] = list(skills.effective_skill_ids)
         preserves = (clarification is None and baseline is not None and active is not None

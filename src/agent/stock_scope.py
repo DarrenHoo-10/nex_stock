@@ -8,6 +8,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
+# Strict scope mode for a turn without a discussion object (e.g. "寒潮有哪些股票值得关注"): stock tools
+# accept any identity that validates against the index registry. A confirmed or selected object, a
+# comparison, or an unconfirmed switch always uses the closed modes instead.
+OPEN_SCOPE_MODE = "open"
+
 SWITCH_CLEANUP_KEYS = {
     "stock_name",
     "previous_analysis_summary",
@@ -123,12 +128,21 @@ class StockScope:
         object.__setattr__(self, "identities", tuple(self.identities))
         if self.identities and not self.strict:
             raise ValueError("Typed Chat identities cannot use the legacy scope path")
+        if self.mode == OPEN_SCOPE_MODE and (
+            not self.strict or self.identities or self.allowed_stock_codes or self.expected_stock_code
+        ):
+            raise ValueError("Open Chat scope is strict and carries no identities")
         if self.strict:
             identity_codes = {identity.stock_code for identity in self.identities}
             if (identity_codes != self.allowed_stock_codes
                     or len(identity_codes) != len(self.identities)
                     or (self.expected_stock_code and self.expected_stock_code not in identity_codes)):
                 raise ValueError("Strict Chat scope must carry every allowed identity")
+
+    @property
+    def is_open(self) -> bool:
+        """No discussion object this turn: stock tools may look up any validated identity."""
+        return self.strict and self.mode == OPEN_SCOPE_MODE
 
     def as_log_payload(self) -> Dict[str, Any]:
         return {

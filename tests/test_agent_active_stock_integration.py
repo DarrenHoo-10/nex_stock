@@ -831,6 +831,116 @@ def test_service_compare_does_not_select_or_switch_main_object(db, chat_stock_in
     assert service.get_session_detail("service-compare", 100).active_stock_context["stock_code"] == "600519"
 
 
+def _drawer_context(stock_code="300750", stock_name="宁德时代", horizon="short"):
+    """Context the plan assistant drawer sends (apps/dsa-web assistantContext.buildStreamContext)."""
+    return {
+        "daily_plan": {"trade_date": "2026-11-06", "kind": "stock", "board_id": None,
+                       "stock_code": stock_code, "horizon": horizon},
+        "stock_code": stock_code, "stock_name": stock_name,
+    }
+
+
+def test_service_drawer_stock_is_the_default_object_without_being_persisted(db, chat_stock_index):
+    from src.services.agent_chat_session_service import AgentChatSessionService
+
+    service = AgentChatSessionService(db)
+    # Objectless questions (incl. the dependent "风险呢" that otherwise clarifies) use the drawer stock.
+    for session_id, message in (("drawer-open", "你对明天的走势怎么看呢？"), ("drawer-risk", "风险呢")):
+        turn = _resolve(service, session_id, message, context=_drawer_context())
+        assert turn.clarification is None
+        assert turn.stock_scope.expected_stock_code == "300750"
+        assert turn.stock_scope.allowed_stock_codes == {"300750"}
+        assert turn.effective_context["stock_code"] == "300750"
+        assert turn.effective_context["stock_name"] == "宁德时代"
+        assert turn.effective_context["daily_plan"]["horizon"] == "short"
+        # Per turn only: the session object stays text-driven, so removing the chip drops it.
+        assert turn.active_stock_context is None
+        assert service.commit_user_turn(turn)["active_stock_context"] is None
+    without_chip = _resolve(service, "drawer-risk", "风险呢", context={
+        "daily_plan": {"trade_date": "2026-11-06", "kind": "none", "board_id": None,
+                       "stock_code": None, "horizon": None},
+    })
+    assert without_chip.clarification and not without_chip.effective_context.get("stock_code")
+
+
+def test_service_named_object_wins_over_drawer_stock(db, chat_stock_index):
+    from src.services.agent_chat_session_service import AgentChatSessionService
+
+    service = AgentChatSessionService(db)
+    named = _resolve(service, "drawer-named", "分析600519", context=_drawer_context())
+    assert named.active_stock_context["stock_code"] == "600519"
+    assert named.effective_context["stock_code"] == "600519"
+    assert "daily_plan" not in named.effective_context
+    service.commit_user_turn(named)
+    followup = _resolve(service, "drawer-named", "风险呢", context=_drawer_context())
+    assert followup.stock_scope.allowed_stock_codes == {"600519"}
+    assert "daily_plan" not in followup.effective_context
+    compare = _resolve(service, "drawer-compare", "和贵州茅台比较", context=_drawer_context())
+    assert compare.stock_scope.allowed_stock_codes == {"300750", "600519"}
+    invalid = _resolve(service, "drawer-invalid", "风险呢", context=_drawer_context(stock_code=None))
+    assert invalid.clarification and invalid.stock_scope.allowed_stock_codes == set()
+
+
+def test_service_objectless_question_opens_stock_tools_but_objects_keep_closed_scope(db, chat_stock_index):
+    from src.services.agent_chat_session_service import AgentChatSessionService
+
+    service = AgentChatSessionService(db)
+    theme = _resolve(service, "open-theme", "最近有寒潮，有哪些股票值得关注呢")
+    assert theme.clarification is None and theme.active_stock_context is None
+    assert theme.stock_scope.is_open and theme.stock_scope.identities == ()
+    assert not theme.effective_context.get("stock_code")
+    # A selected, named or compared object, or an unconfirmed dependent question, stays closed.
+    closed = [
+        _resolve(service, "closed-drawer", "明天怎么看", context=_drawer_context()),
+        _resolve(service, "closed-named", "分析600519"),
+        _resolve(service, "closed-compare", "比较600519和300750"),
+        _resolve(service, "closed-risk", "风险呢"),
+    ]
+    for turn in closed:
+        assert not turn.stock_scope.is_open, turn.message
+    service.commit_user_turn(_resolve(service, "closed-session", "分析600519"))
+    followup = _resolve(service, "closed-session", "有哪些股票值得关注")
+    assert not followup.stock_scope.is_open and followup.stock_scope.allowed_stock_codes == {"600519"}
+
+
+@pytest.mark.parametrize("entry", ["runner", "surface"])
+def test_open_scope_executes_validated_identity_and_closed_scope_still_blocks(chat_stock_index, entry):
+    from src.agent.stock_scope import OPEN_SCOPE_MODE, StockScope
+    from src.agent.tool_surface import ToolSurface
+    from src.agent.tools import execution
+    from src.agent.tools.registry import ToolDefinition, ToolParameter, ToolPolicy, ToolRegistry
+
+    seen = []
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(
+        name="probe", description="Probe",
+        parameters=[ToolParameter("stock_code", "string", "Stock")],
+        handler=lambda stock_code: seen.append(execution.get_tool_stock_identity(stock_code)) or {"ok": True},
+        policy=ToolPolicy.declared(read_only=True, scope_dimensions=["stock"],
+                                   supported_asset_types=("stock", "index")),
+    ))
+
+    def run(scope, code):
+        if entry == "surface":
+            result = ToolSurface(registry).execute_tool(
+                "probe", {"stock_code": code}, execution.ToolAccessContext(stock_scope=scope))
+            return None if result["ok"] else result["error"]["code"]
+        result = execution.execute_runner_tool_call(
+            tool_call=SimpleNamespace(name="probe", arguments={"stock_code": code}),
+            tool_registry=registry, stock_scope=scope,
+        )
+        return None if result[5] is None else result[5]["error"]
+
+    open_scope = StockScope(mode=OPEN_SCOPE_MODE, strict=True)
+    assert run(open_scope, "300750") is None
+    assert run(open_scope, "sh000001") is None
+    assert [(item.stock_code, item.asset_type) for item in seen] == [("300750", "stock"), ("sh000001", "index")]
+    assert run(StockScope(strict=True), "300750") == "stock_scope_violation"
+    assert len(seen) == 2
+    with pytest.raises(ValueError):
+        StockScope(mode=OPEN_SCOPE_MODE, strict=False)
+
+
 def test_service_detail_invalidates_bypass_without_writing_then_accepts_null_or_reconfirmation(db, chat_stock_index):
     from src.services.agent_chat_session_service import AgentChatSessionService
 
@@ -1234,12 +1344,18 @@ def test_actual_chat_api_clarification_preserves_codex_unsupported_boundary(actu
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_actual_multi_api_general_question_keeps_null_and_real_guard_denies_guessed_stock(
+def test_actual_multi_api_general_question_keeps_null_and_open_guard_runs_lookup_without_selecting_it(
     actual_chat_api, db, monkeypatch, stream,
 ):
+    """No object: the open scope lets a looked-up stock reach its tool, but never selects it."""
+    from src.agent.factory import get_tool_registry
     from src.agent.llm_adapter import LLMResponse, LLMToolAdapter, ToolCall
 
     client, requests, config = actual_chat_api
+    tool = get_tool_registry(config).resolve("get_daily_history")
+    looked_up = []
+    original_handler = tool.handler
+    object.__setattr__(tool, "handler", lambda stock_code, days=30: looked_up.append(stock_code) or {"bars": []})
     config.agent_arch = "multi"
     config.agent_orchestrator_mode = "quick"
     config.agent_memory_enabled = False
@@ -1252,14 +1368,18 @@ def test_actual_multi_api_general_question_keeps_null_and_real_guard_denies_gues
         return LLMResponse(content='{"signal":"hold","confidence":0.5,"reasoning":"general answer"}',
                            model="fixture", provider="fixture")
     monkeypatch.setattr(LLMToolAdapter, "call_with_tools", model_endpoint)
-    response = client.post("/api/v1/agent/chat" + ("/stream" if stream else ""), json={
-        "session_id": "multi-api-general", "message": "什么是止损策略", "skills": [],
-    })
+    try:
+        response = client.post("/api/v1/agent/chat" + ("/stream" if stream else ""), json={
+            "session_id": "multi-api-general", "message": "什么是止损策略", "skills": [],
+        })
+    finally:
+        object.__setattr__(tool, "handler", original_handler)
     assert response.status_code == 200 and messages_seen and requests == []
     payload = response.json() if not stream else json.loads(response.text.splitlines()[0][6:])
     assert payload["active_stock_context"] is None and payload["session_state_version"] == 1
-    assert any("stock_scope_violation" in row.get("content", "")
-               for rows in messages_seen for row in rows if row["role"] == "tool")
+    assert looked_up == ["600519"]
+    assert not any("stock_scope_violation" in row.get("content", "")
+                   for rows in messages_seen for row in rows if row["role"] == "tool")
     current = db.read_chat_session_snapshot("multi-api-general")
     assert current["active_stock_context"] is None
     assert [row["role"] for row in current["messages"]] == ["user", "assistant"]
