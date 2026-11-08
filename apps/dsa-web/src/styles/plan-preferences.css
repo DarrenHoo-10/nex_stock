@@ -1,0 +1,116 @@
+/* Settings page additions (scoped under .plan-shell). The .settings / .set-nav / .roles / .fb / .chs rules live in plan-glass.css. */
+.plan-shell .pref-settings { overflow: hidden; }
+.plan-shell .set-nav button[aria-selected=true] { color: #fff; font-weight: 600; }
+.plan-shell .set-nav button[role=tab]:focus-visible { outline-offset: -2px; }
+.plan-shell .pref-panel[hidden] { display: none; }
+.plan-shell .pref-panel:focus { outline: none; }
+.plan-shell .pref-panel:focus-visible { outline: 2px solid #fff; outline-offset: -4px; border-radius: var(--r-in); }
+.plan-shell .pref-panel:not([hidden]) { animation: plan-pref-in .45s var(--spring) both; }
+.plan-shell .pref-form { margin-top: 20px; }
+.plan-shell .pref-section { margin-top: 30px; min-width: 0; }
+.plan-shell .pref-section.inset { padding: 18px 20px; }
+.plan-shell .pref-section > h3, .plan-shell .pref-section .sec-head h3 { font-size: 15px; font-weight: 650; }
+.plan-shell .pref-flush { margin-top: 0; }
+.plan-shell .pref-actions { margin-top: 16px; align-items: center; }
+.plan-shell .pref-notice { flex-wrap: wrap; align-items: center; margin-top: 14px; }
+.plan-shell .pref-notice p { margin: 0; flex: 1 1 200px; min-width: 0; }
+.plan-shell .pref-notice ul { margin: 4px 0 0; padding-left: 18px; width: 100%; }
+.plan-shell .pref-notice .btn { flex: none; }
+.plan-shell .field-err { color: var(--up); font-size: 12px; line-height: 1.4; }
+.plan-shell label.f select, .plan-shell label.f input[type=text], .plan-shell .pref-form label.f input {
+  border: 0; border-radius: 12px; padding: 8px 12px; background: rgba(10,14,40,.22);
+  box-shadow: inset 0 0 0 1px var(--line); color: #fff; min-width: 0; width: 100%;
+}
+.plan-shell label.f input[aria-invalid=true] { box-shadow: inset 0 0 0 1.5px var(--up-mark); }
+.plan-shell label.f input::placeholder { color: var(--t4); }
+.plan-shell .f-cell { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.plan-shell .f-label { font-size: 12px; color: var(--t3); }
+.plan-shell .f-cell select {
+  border: 0; border-radius: 12px; padding: 8px 12px; background: rgba(10,14,40,.22);
+  box-shadow: inset 0 0 0 1px var(--line); color: #fff; min-width: 0; width: 100%;
+}
+.plan-shell .form-grid .f-wide { grid-column: 1 / -1; max-width: 420px; }
+.plan-shell .pref-try { margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--line); }
+.plan-shell .pref-try h3 { font-size: 15px; font-weight: 650; }
+.plan-shell .pref-try-form { margin-top: 12px; align-items: end; }
+.plan-shell .pref-try-form .btn { justify-self: start; }
+.plan-shell .pref-try-result { margin-top: 12px; }
+.plan-shell .pref-try-result .inset p { margin: 0; }
+.plan-shell .role-key { display: inline-block; margin-left: 4px; font-size: 11px; color: var(--t4); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.plan-shell .fb-box { min-width: 0; }
+.plan-shell .pref-chs { margin-top: 12px; }
+.plan-shell .roles .fb-box label.f select { width: 100%; }
+
+/* thresholds */
+.plan-shell .evidence-legend { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 16px 0 0; padding: 12px 16px; border-radius: var(--r-in); background: var(--fill); }
+.plan-shell .evidence-legend > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.plan-shell .evidence-legend dt, .plan-shell .evidence-legend dd { margin: 0; }
+.plan-shell .evidence-legend dd { font-size: 12.5px; color: var(--t3); }
+.plan-shell .ev-tag { display: inline-block; font-size: 12px; line-height: 20px; padding: 0 9px; border-radius: 999px; white-space: nowrap; font-weight: 500; }
+.plan-shell .ev-tag.ev-medium { background: rgba(255,255,255,.2); color: #fff; }
+.plan-shell .ev-tag.ev-low { background: rgba(255,207,110,.2); color: #FFEBC0; }
+.plan-shell .ev-tag.ev-inferred { background: var(--fill); color: var(--t3); box-shadow: inset 0 0 0 1px var(--line); }
+.plan-shell .thr-group { margin-top: 24px; }
+.plan-shell .thr-group h3 { font-size: 15px; font-weight: 650; margin-bottom: 6px; }
+.plan-shell .thr-list { list-style: none; margin: 0; padding: 0; border-radius: var(--r-in); background: var(--fill); }
+.plan-shell .thr-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 24px; align-items: center; padding: 13px 18px; }
+.plan-shell .thr-row + .thr-row { border-top: 1px solid var(--line); }
+.plan-shell .thr-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.plan-shell .thr-name b { font-weight: 600; }
+.plan-shell .thr-desc { font-size: 12.5px; color: var(--t3); margin-top: 2px; text-wrap: pretty; }
+.plan-shell .thr-side { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; justify-content: flex-end; }
+.plan-shell .thr-input { width: auto; }
+.plan-shell .thr-input input { width: 88px; border: 0; border-radius: 12px; padding: 8px 12px; background: rgba(10,14,40,.22); box-shadow: inset 0 0 0 1px var(--line); color: #fff; min-width: 0; }
+.plan-shell .thr-input input[aria-invalid=true] { box-shadow: inset 0 0 0 1.5px var(--up-mark); }
+.plan-shell .thr-field { display: flex; align-items: center; gap: 6px; }
+.plan-shell .thr-field input { text-align: right; }
+.plan-shell .thr-unit { font-size: 12.5px; color: var(--t3); flex: none; width: 2em; }
+.plan-shell .thr-default { font-size: 12.5px; color: var(--t3); white-space: nowrap; margin: 0; }
+.plan-shell .thr-readonly { font-size: 12.5px; color: var(--t4); }
+.plan-shell .pref-errlist { margin-top: 14px; font-size: 13px; min-height: 0; }
+.plan-shell .pref-errlist ul { margin: 4px 0 0; padding-left: 18px; }
+.plan-shell .pref-errlist p { margin: 0; }
+
+/* run and push */
+.plan-shell .pref-run-form { max-width: 560px; align-items: center; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.plan-shell .switch { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; color: var(--t1); padding-top: 18px; }
+.plan-shell .switch input { position: absolute; opacity: 0; width: 44px; height: 26px; margin: 0; cursor: pointer; }
+.plan-shell .switch-track { position: relative; pointer-events: none; width: 44px; height: 26px; border-radius: 999px; background: var(--fill3); flex: none; transition: background .25s; }
+.plan-shell .switch-track::after { content: ""; position: absolute; left: 3px; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(10,14,40,.35); transition: transform .35s var(--spring); }
+.plan-shell .switch input:checked + .switch-track { background: #7BE3B0; }
+.plan-shell .switch input:checked + .switch-track::after { transform: translateX(18px); }
+.plan-shell .switch input:focus-visible + .switch-track { outline: 2px solid #fff; outline-offset: 2px; }
+.plan-shell .pref-scheduler { margin-top: 6px; }
+.plan-shell .pref-run-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
+.plan-shell .pref-run-head .big { font-family: var(--display); font-size: 28px; font-weight: 700; line-height: 1.15; }
+.plan-shell .pref-steps { margin-top: 10px; }
+.plan-shell .pref-steps li > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
+.plan-shell .pref-step-detail { margin-left: 8px; color: var(--t3); font-size: 12.5px; }
+.plan-shell .pref-push-line { margin: 12px 0 0; font-size: 13px; color: var(--t2); }
+.plan-shell .push-preview { margin-top: 10px; padding: 16px 20px; border-radius: var(--r-in); background: rgba(10,14,40,.28); box-shadow: inset 0 0 0 1px var(--line); font-size: 13.5px; color: var(--t2); overflow-wrap: anywhere; max-width: 560px; }
+.plan-shell .push-preview p { margin: 0 0 10px; white-space: pre-line; }
+.plan-shell .push-preview p:last-child { margin-bottom: 0; }
+.plan-shell .push-preview strong { color: #fff; font-weight: 650; }
+
+/* data status */
+.plan-shell .data-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 12px 0 0; }
+.plan-shell .data-card { padding: 12px 16px; border-radius: var(--r-in); background: var(--fill); min-width: 0; }
+.plan-shell .data-card dt { font-size: 12px; color: var(--t3); }
+.plan-shell .data-card dd { margin: 2px 0 0; font-size: 20px; font-weight: 650; font-family: var(--display); }
+.plan-shell .data-list { list-style: none; margin: 10px 0 0; padding: 0; border-radius: var(--r-in); background: var(--fill); }
+.plan-shell .data-list li { display: grid; grid-template-columns: minmax(120px, 200px) auto minmax(0, 1fr); gap: 4px 14px; align-items: center; padding: 11px 18px; font-size: 13.5px; }
+.plan-shell .data-list li + li { border-top: 1px solid var(--line); }
+.plan-shell .data-detail { color: var(--t3); font-size: 12.5px; overflow-wrap: anywhere; }
+
+@container (max-width: 560px) {
+  .plan-shell .thr-row { grid-template-columns: minmax(0, 1fr); padding: 13px 16px; }
+  .plan-shell .thr-side { justify-content: flex-start; }
+  .plan-shell .data-list li { grid-template-columns: minmax(0, 1fr) auto; padding: 11px 16px; }
+  .plan-shell .data-list .data-detail { grid-column: 1 / -1; }
+  .plan-shell .evidence-legend { padding: 12px; }
+}
+@media (max-width: 860px) {
+  .plan-shell .set-nav { padding: 10px 12px; gap: 4px; }
+  .plan-shell .set-nav button { padding: 8px 12px; }
+}
+@keyframes plan-pref-in { from { opacity: 0; transform: translateY(10px); } }

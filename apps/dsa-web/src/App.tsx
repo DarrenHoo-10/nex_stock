@@ -2,11 +2,13 @@ import type React from 'react';
 import { lazy, useEffect, useMemo } from 'react';
 import {
   Navigate,
+  Outlet,
   createBrowserRouter,
   useLocation,
   RouterProvider,
 } from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
+import { PlanShell } from './components/plan/PlanShell';
 import {
   PageLoadingFallback,
   RouteOutletBoundary,
@@ -30,6 +32,10 @@ const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const DataCenterPage = lazy(() => import('./pages/DataCenterPage'));
+const BoardsPage = lazy(() => import('./pages/plan/BoardsPage'));
+const PicksPage = lazy(() => import('./pages/plan/PicksPage'));
+const MinePage = lazy(() => import('./pages/plan/MinePage'));
+const PreferencesPage = lazy(() => import('./pages/plan/PreferencesPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -80,15 +86,25 @@ const AppContent: React.FC = () => {
     return <Navigate to={redirect} replace />;
   }
 
-  return (
-    <Shell>
-      <RouteOutletBoundary />
-    </Shell>
-  );
+  // Auth gating wraps both layouts: the plan shell and the legacy shell render below this boundary.
+  return <Outlet />;
 };
 
-const routeChildren = [
-  { path: '/', element: <HomePage /> },
+const LegacyShellLayout: React.FC = () => (
+  <Shell>
+    <RouteOutletBoundary />
+  </Shell>
+);
+
+const planRouteChildren = [
+  { path: '/boards', element: <BoardsPage /> },
+  { path: '/picks', element: <PicksPage /> },
+  { path: '/mine', element: <MinePage /> },
+  { path: '/preferences', element: <PreferencesPage /> },
+];
+
+const legacyRouteChildren = [
+  { path: '/home', element: <HomePage /> },
   { path: '/chat', element: <ChatPage /> },
   { path: '/portfolio', element: <PortfolioPage /> },
   { path: '/decision-signals', element: <DecisionSignalsPage /> },
@@ -99,6 +115,12 @@ const routeChildren = [
   { path: '/usage', element: <TokenUsagePage /> },
   { path: '/settings', element: <SettingsPage /> },
   { path: '*', element: <NotFoundPage /> },
+];
+
+const routeChildren = [
+  { path: '/', element: <Navigate to="/mine" replace /> },
+  { element: <PlanShell />, children: planRouteChildren },
+  { element: <LegacyShellLayout />, children: legacyRouteChildren },
 ];
 
 const App: React.FC = () => {

@@ -1,0 +1,157 @@
+{
+  "config_version": "cfg-v1",
+  "mask_token": "******",
+  "items": [
+    {
+      "key": "POSITION_STOP_LOSS_PCT",
+      "value": "10",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "POSITION_MAX_TOTAL_PCT",
+      "value": "100",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "POSITION_MAX_HOLDINGS",
+      "value": "1",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "POSITION_MAX_SINGLE_PCT",
+      "value": "",
+      "raw_value_exists": false,
+      "is_masked": false
+    },
+    {
+      "key": "POSITION_STOP_MODE",
+      "value": "fixed",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "SCHEDULE_TIME",
+      "value": "16:00",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "DAILY_PLAN_ENABLED",
+      "value": "true",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "FEISHU_WEBHOOK_URL",
+      "value": "******",
+      "raw_value_exists": true,
+      "is_masked": true
+    },
+    {
+      "key": "LLM_CHANNELS",
+      "value": "deepseek,gemini,ollama",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_DEEPSEEK_PROTOCOL",
+      "value": "deepseek",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_DEEPSEEK_BASE_URL",
+      "value": "https://llm-one.example.test/v1",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_DEEPSEEK_API_KEY",
+      "value": "******",
+      "raw_value_exists": true,
+      "is_masked": true
+    },
+    {
+      "key": "LLM_DEEPSEEK_MODELS",
+      "value": "deepseek-v4-flash,deepseek-v4-pro",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_GEMINI_PROTOCOL",
+      "value": "gemini",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_GEMINI_API_KEY",
+      "value": "******",
+      "raw_value_exists": true,
+      "is_masked": true
+    },
+    {
+      "key": "LLM_GEMINI_MODELS",
+      "value": "gemini-3-flash-preview",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_OLLAMA_PROTOCOL",
+      "value": "openai",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_OLLAMA_BASE_URL",
+      "value": "http://localhost.example.test:11434/v1",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_OLLAMA_MODELS",
+      "value": "qwen3:8b",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LITELLM_MODEL",
+      "value": "deepseek/deepseek-v4-flash",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LITELLM_FALLBACK_MODELS",
+      "value": "gemini/gemini-3-flash-preview",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "AGENT_LITELLM_MODEL",
+      "value": "",
+      "raw_value_exists": false,
+      "is_masked": false
+    },
+    {
+      "key": "VISION_MODEL",
+      "value": "gemini/gemini-3-flash-preview",
+      "raw_value_exists": true,
+      "is_masked": false
+    },
+    {
+      "key": "LLM_TEMPERATURE",
+      "value": "0.7",
+      "raw_value_exists": true,
+      "is_masked": false
+    }
+  ],
+  "llm_model_providers": [
+    "deepseek",
+    "gemini",
+    "openai",
+    "anthropic"
+  ],
+  "updated_at": "2026-11-06T16:00:00+08:00"
+}

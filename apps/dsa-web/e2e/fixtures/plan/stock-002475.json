@@ -1,0 +1,184 @@
+{
+  "code": "002475",
+  "name": "立讯精密",
+  "board_market": "main",
+  "is_st": false,
+  "held": true,
+  "close": 41.25,
+  "change_pct": 1.73,
+  "verdict": "hold",
+  "headline": "仓位已满，明天只做卖出判断。冲高到 43.10 量能不足先卖 1/3；收盘跌破 36.18，下一交易日清仓。",
+  "status": "ready",
+  "failure_reason": null,
+  "trade_date": "2026-11-06",
+  "next_trade_date": "2026-11-09",
+  "situation": "收盘 41.25，涨 1.73%，成交额 31.6 亿，约为 5 日均值的 1.2 倍。重新站上 20 日线 40.10；消费电子板块跟涨，没有进入异动名单。",
+  "horizons": {
+    "short": {
+      "verdict": "hold",
+      "headline": "冲高到 43.10 量能不足先卖 1/3；收盘跌破 39.60，短线减半。",
+      "reason": null,
+      "entry_price": null,
+      "entry_zone": null,
+      "breakout_price": 43.1,
+      "invalid_price": 39.6,
+      "take_profit_price": null,
+      "conditions": [
+        {
+          "if_text": "冲高到 43.10 附近，量能不到 5 日均值",
+          "then_text": "卖出 1/3（800 股）",
+          "action": "sell",
+          "shares": 800,
+          "price": 43.1,
+          "outside_limit": false
+        },
+        {
+          "if_text": "平开或小幅低开，守住 39.60",
+          "then_text": "持有，不加仓（仓位已满）",
+          "action": "hold",
+          "shares": null,
+          "price": null,
+          "outside_limit": false
+        },
+        {
+          "if_text": "收盘跌破 39.60",
+          "then_text": "短线减半（1,200 股），波段不动",
+          "action": "reduce",
+          "shares": 1200,
+          "price": 39.6,
+          "outside_limit": false
+        }
+      ],
+      "sizing": null,
+      "stop": {
+        "price": 36.18,
+        "mode": "fixed",
+        "formula": "40.20 × 0.90",
+        "tech_support": 39.6,
+        "warning": null
+      }
+    },
+    "swing": {
+      "verdict": "hold",
+      "headline": "收盘在 36.18 上方持有，涨到 46.23 卖出一半。",
+      "reason": null,
+      "entry_price": null,
+      "entry_zone": null,
+      "breakout_price": 43.1,
+      "invalid_price": 36.18,
+      "take_profit_price": 46.23,
+      "conditions": [
+        {
+          "if_text": "收盘在止损价 36.18 上方",
+          "then_text": "持有，涨到 46.23（成本 +15%）卖出一半",
+          "action": "hold",
+          "shares": null,
+          "price": null,
+          "outside_limit": false
+        },
+        {
+          "if_text": "放量站上 43.10",
+          "then_text": "继续持有",
+          "action": "hold",
+          "shares": null,
+          "price": null,
+          "outside_limit": false
+        },
+        {
+          "if_text": "收盘跌破 36.18",
+          "then_text": "下一交易日全部卖出",
+          "action": "clear",
+          "shares": 2400,
+          "price": 36.18,
+          "outside_limit": false
+        }
+      ],
+      "sizing": null,
+      "stop": {
+        "price": 36.18,
+        "mode": "fixed",
+        "formula": "40.20 × 0.90",
+        "tech_support": 39.6,
+        "warning": null
+      }
+    }
+  },
+  "default_horizon": "swing",
+  "limit_pct": 10.0,
+  "next_limit_up": 45.38,
+  "next_limit_down": 37.13,
+  "levels": [
+    {
+      "kind": "take_profit",
+      "price": 46.23,
+      "label": "成本 +15% 卖出一半"
+    },
+    {
+      "kind": "pressure",
+      "price": 43.1,
+      "label": "前高压力"
+    },
+    {
+      "kind": "close",
+      "price": 41.25,
+      "label": "11-06 收盘"
+    },
+    {
+      "kind": "support",
+      "price": 39.6,
+      "label": "技术支撑（仅提示）"
+    },
+    {
+      "kind": "cost",
+      "price": 40.2,
+      "label": "持仓成本"
+    },
+    {
+      "kind": "limit_down",
+      "price": 37.13,
+      "label": "明天跌停价"
+    },
+    {
+      "kind": "stop",
+      "price": 36.18,
+      "label": "止损，跌破次日清仓"
+    }
+  ],
+  "switch": {
+    "decision": "keep",
+    "summary": "不换",
+    "candidate": {
+      "code": "000988",
+      "name": "华工科技",
+      "reason": "回踩 46.80–47.20 企稳就买；所在的通信设备板块今天首次启动",
+      "verdict": "buy"
+    },
+    "conditions": [
+      {
+        "text": "华工科技 回踩 46.80–47.20 并企稳",
+        "met": false
+      },
+      {
+        "text": "立讯精密 收盘跌破 39.60，走势转弱",
+        "met": false
+      }
+    ],
+    "costs": [
+      "T+1：卖出立讯精密当天就能用这笔钱买华工科技，但新买的当天不能卖",
+      "换后止损价变为 42.30（原来是 36.18）",
+      "换股后按 47.00 买入、止损 42.30，最大亏损约为总资金的 9.9%"
+    ]
+  },
+  "risks": [
+    "消费电子没有异动，上涨主要靠个股自身",
+    "前高 43.10 附近成交密集"
+  ],
+  "data_gaps": [
+    "主力资金流 16:00 时尚未发布，未参与判断"
+  ],
+  "model": {
+    "model": "deepseek/deepseek-v4-flash",
+    "fallback_from": null,
+    "fallback_reason": null
+  }
+}

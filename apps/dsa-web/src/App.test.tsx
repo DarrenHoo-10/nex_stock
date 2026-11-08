@@ -31,6 +31,22 @@ vi.mock('./pages/HomePage', () => ({
   default: () => <div data-testid="home-page">Home</div>,
 }));
 
+vi.mock('./pages/plan/BoardsPage', () => ({
+  default: () => <div data-testid="boards-page">Boards</div>,
+}));
+
+vi.mock('./pages/plan/PicksPage', () => ({
+  default: () => <div data-testid="picks-page">Picks</div>,
+}));
+
+vi.mock('./pages/plan/MinePage', () => ({
+  default: () => <div data-testid="mine-page">Mine</div>,
+}));
+
+vi.mock('./pages/plan/PreferencesPage', () => ({
+  default: () => <div data-testid="preferences-page">Preferences</div>,
+}));
+
 vi.mock('./pages/ChatPage', () => ({
   default: () => {
     if (chatPageShouldThrow.value) {
@@ -179,7 +195,7 @@ describe('App routing behavior', () => {
     '/\t/external.example/settings',
     '/login?redirect=%2Fsettings',
     '/LOGIN/',
-  ])('falls back to home for unsafe or looping login redirect %s', async (destination) => {
+  ])('falls back to the default landing page for unsafe or looping login redirect %s', async (destination) => {
     vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
       authEnabled: true,
       loggedIn: true,
@@ -190,9 +206,9 @@ describe('App routing behavior', () => {
 
     render(<App />);
 
-    expect(await screen.findByTestId('home-page')).toBeInTheDocument();
+    expect(await screen.findByTestId('mine-page')).toBeInTheDocument();
     expect(window.location.origin).toBe(origin);
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/');
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/mine');
   });
 
   it('routes /usage to the token usage page after auth is ready', async () => {
@@ -224,7 +240,7 @@ describe('App routing behavior', () => {
     expect(setCurrentRoute).toHaveBeenCalledWith('/data');
   });
 
-  it('redirects authenticated login visits back to the home page', async () => {
+  it('redirects authenticated login visits to the default landing page', async () => {
     vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
       authEnabled: true,
       loggedIn: true,
@@ -234,8 +250,60 @@ describe('App routing behavior', () => {
 
     render(<App />);
 
-    expect(await screen.findByTestId('home-page')).toBeInTheDocument();
+    expect(await screen.findByTestId('mine-page')).toBeInTheDocument();
     expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+  });
+
+  it('redirects / to /mine inside the plan shell', async () => {
+    window.history.pushState({}, '', '/');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('mine-page')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/mine');
+    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+    expect(screen.getByRole('main')).toHaveAttribute('id', 'main');
+    expect(screen.getByRole('link', { name: '我的股票' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('link', { name: '首页' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['/boards', 'boards-page'],
+    ['/picks', 'picks-page'],
+    ['/preferences', 'preferences-page'],
+  ])('renders %s inside the plan shell', async (path, testId) => {
+    window.history.pushState({}, '', path);
+
+    render(<App />);
+
+    expect(await screen.findByTestId(testId)).toBeInTheDocument();
+    expect(setCurrentRoute).toHaveBeenCalledWith(path);
+    expect(screen.getByRole('navigation', { name: '主导航' })).toBeInTheDocument();
+  });
+
+  it('keeps the old home page reachable at /home inside the legacy shell', async () => {
+    window.history.pushState({}, '', '/home');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('home-page')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '首页' })).toHaveAttribute('href', '/home');
+    expect(screen.queryByTestId('mine-page')).not.toBeInTheDocument();
+  });
+
+  it('requires login for the plan routes when auth is enabled', async () => {
+    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
+      authEnabled: true,
+      loggedIn: false,
+      setupState: 'enabled',
+    }));
+    window.history.pushState({}, '', '/mine');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
+    expect(window.location.search).toBe('?redirect=%2Fmine');
+    expect(screen.queryByTestId('mine-page')).not.toBeInTheDocument();
   });
 
   it('keeps the shell mounted and resets the route boundary after page render errors', async () => {

@@ -1,0 +1,145 @@
+{
+  "trade_date": "2026-11-06",
+  "market": {
+    "index_name": "中证全指",
+    "index_change_pct": 0.38,
+    "up_count": 3126,
+    "down_count": 1790,
+    "limit_up_count": 61,
+    "limit_down_count": 9,
+    "turnover_yi": 12860.5,
+    "broad_rally": false,
+    "note": null
+  },
+  "boards": [
+    {
+      "id": "industry:BK0448",
+      "name": "通信设备",
+      "board_type": "industry",
+      "state": "first_launch",
+      "tags": [],
+      "change_pct": 3.86,
+      "change_5d_pct": 5.1,
+      "excess_pct": 3.48,
+      "amount_ratio": 2.7,
+      "breadth_pct": 82.0,
+      "limit_up_count": null,
+      "broken_rate_pct": null,
+      "reason": "光模块订单消息带动，龙头放量，不是单只股票拉动"
+    },
+    {
+      "id": "concept:BK1168",
+      "name": "商业航天",
+      "board_type": "concept",
+      "state": "strengthening",
+      "tags": [
+        "mainline"
+      ],
+      "change_pct": 4.58,
+      "change_5d_pct": 14.2,
+      "excess_pct": 4.2,
+      "amount_ratio": 2.6,
+      "breadth_pct": 76.0,
+      "limit_up_count": 7,
+      "broken_rate_pct": 22.0,
+      "reason": "连续 6 天强于大盘，涨停 7 家，最高 3 连板"
+    },
+    {
+      "id": "industry:BK1036",
+      "name": "半导体设备",
+      "board_type": "industry",
+      "state": "strengthening",
+      "tags": [],
+      "change_pct": 2.41,
+      "change_5d_pct": 9.8,
+      "excess_pct": 2.03,
+      "amount_ratio": 1.8,
+      "breadth_pct": 71.0,
+      "limit_up_count": null,
+      "broken_rate_pct": null,
+      "reason": "第 4 天强于大盘，后排开始补涨"
+    },
+    {
+      "id": "concept:BK1099",
+      "name": "固态电池",
+      "board_type": "concept",
+      "state": "divergence",
+      "tags": [
+        "supported"
+      ],
+      "change_pct": 0.84,
+      "change_5d_pct": 7.3,
+      "excess_pct": 0.46,
+      "amount_ratio": 2.1,
+      "breadth_pct": 48.0,
+      "limit_up_count": 5,
+      "broken_rate_pct": 55.0,
+      "reason": "炸板率 55%，资金分歧，但跌停只有 1 家"
+    },
+    {
+      "id": "industry:BK0896",
+      "name": "白酒",
+      "board_type": "industry",
+      "state": "ebbing",
+      "tags": [],
+      "change_pct": -1.35,
+      "change_5d_pct": -4.2,
+      "excess_pct": -1.73,
+      "amount_ratio": 0.46,
+      "breadth_pct": 18.0,
+      "limit_up_count": null,
+      "broken_rate_pct": null,
+      "reason": "成交额回落到高峰的 46%"
+    },
+    {
+      "id": "industry:BK0474",
+      "name": "保险",
+      "board_type": "industry",
+      "state": "abnormal_drop",
+      "tags": [],
+      "change_pct": -3.12,
+      "change_5d_pct": -3.6,
+      "excess_pct": -3.5,
+      "amount_ratio": 1.9,
+      "breadth_pct": 8.0,
+      "limit_up_count": null,
+      "broken_rate_pct": null,
+      "reason": "放量下跌，原因未明"
+    },
+    {
+      "id": "concept:BK1201",
+      "name": "机器人执行器",
+      "board_type": "concept",
+      "state": "first_launch",
+      "tags": [
+        "single_stock"
+      ],
+      "change_pct": 2.9,
+      "change_5d_pct": 3.4,
+      "excess_pct": 2.52,
+      "amount_ratio": 1.6,
+      "breadth_pct": 41.0,
+      "limit_up_count": 1,
+      "broken_rate_pct": 0.0,
+      "reason": "一只股票贡献 63% 涨幅，板块本身偏弱"
+    },
+    {
+      "id": "concept:BK1230",
+      "name": "可控核聚变",
+      "board_type": "concept",
+      "state": "insufficient_history",
+      "tags": [
+        "cooling"
+      ],
+      "change_pct": 5.12,
+      "change_5d_pct": null,
+      "excess_pct": 4.74,
+      "amount_ratio": null,
+      "breadth_pct": 88.0,
+      "limit_up_count": 4,
+      "broken_rate_pct": 20.0,
+      "reason": "新概念上线第 3 天，冷却期 10 天内不判定"
+    }
+  ],
+  "history_note": "板块历史积累 3 天，部分判定不可用"
+}

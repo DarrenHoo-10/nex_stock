@@ -15,6 +15,7 @@ from typing import Generator
 from fastapi import Request
 from sqlalchemy.orm import Session
 
+from api.v1.errors import api_error
 from src.storage import DatabaseManager
 from src.config import get_config, Config
 from src.services.system_config_service import SystemConfigService
@@ -85,3 +86,25 @@ def get_runtime_scheduler_service(request: Request) -> RuntimeSchedulerService:
         service = RuntimeSchedulerService()
         request.app.state.runtime_scheduler_service = service
     return service
+
+
+def _daily_plan_unavailable():
+    return api_error(503, "daily_plan_unavailable", "次日计划服务未就绪")
+
+
+def get_board_anomaly_service():
+    """Lazily build the board anomaly service; 503 while the module is unavailable."""
+    try:
+        from src.services.board_anomaly_service import BoardAnomalyService
+    except ImportError as exc:
+        raise _daily_plan_unavailable() from exc
+    return BoardAnomalyService()
+
+
+def get_daily_plan_service():
+    """Lazily build the daily plan service; 503 while the module is unavailable."""
+    try:
+        from src.services.daily_plan_service import DailyPlanService
+    except ImportError as exc:
+        raise _daily_plan_unavailable() from exc
+    return DailyPlanService()

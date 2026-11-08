@@ -1,0 +1,156 @@
+[
+  {
+    "key": "amount_ratio_mild",
+    "label": "温和放量",
+    "value": 1.5,
+    "default": 1.5,
+    "display": "成交额 ≥ 5 日均值 1.5 倍",
+    "unit": "倍",
+    "evidence": "medium",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "amount_ratio_strong",
+    "label": "明显放量",
+    "value": 2.5,
+    "default": 2.5,
+    "display": "成交额 ≥ 5 日均值 2.5 倍",
+    "unit": "倍",
+    "evidence": "medium",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "strong_rank_pct",
+    "label": "强势排名",
+    "value": 10,
+    "default": 10,
+    "display": "超额收益前 10%",
+    "unit": "%",
+    "evidence": "medium",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "weak_rank_pct",
+    "label": "弱势排名",
+    "value": 10,
+    "default": 10,
+    "display": "超额收益后 10%",
+    "unit": "%",
+    "evidence": "inferred",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "excess_floor_industry",
+    "label": "超额收益下限（行业）",
+    "value": 1.5,
+    "default": 1.5,
+    "display": "行业 +1.5%",
+    "unit": "%",
+    "evidence": "inferred",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "excess_floor_concept",
+    "label": "超额收益下限（概念）",
+    "value": 2.5,
+    "default": 2.5,
+    "display": "概念 +2.5%",
+    "unit": "%",
+    "evidence": "inferred",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "breadth_strong",
+    "label": "上涨家数偏强",
+    "value": 70,
+    "default": 70,
+    "display": "≥ 70% 偏强",
+    "unit": "%",
+    "evidence": "low",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "limit_up_concept",
+    "label": "概念板块效应",
+    "value": 3,
+    "default": 3,
+    "display": "涨停 ≥ 3 家",
+    "unit": "家",
+    "evidence": "low",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "broken_rate_warn",
+    "label": "炸板率警示",
+    "value": 40,
+    "default": 40,
+    "display": "≥ 40%（触板 ≥ 5 家时）",
+    "unit": "%",
+    "evidence": "medium",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "persist_days",
+    "label": "持续",
+    "value": 3,
+    "default": 3,
+    "display": "连续 3 天强于基准",
+    "unit": "天",
+    "evidence": "low",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "ebb_amount_ratio",
+    "label": "退潮",
+    "value": 50,
+    "default": 50,
+    "display": "成交额 < 高峰的 50%",
+    "unit": "%",
+    "evidence": "low",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "broad_rally_pct",
+    "label": "普涨保护",
+    "value": 2,
+    "default": 2,
+    "display": "全 A 涨 ≥ 2% 时降低涨停和上涨家数的权重",
+    "unit": "%",
+    "evidence": "low",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "cooling_days",
+    "label": "新概念冷却期",
+    "value": 10,
+    "default": 10,
+    "display": "10 个交易日",
+    "unit": "天",
+    "evidence": "inferred",
+    "note": null,
+    "overridden": false
+  },
+  {
+    "key": "merge_overlap",
+    "label": "概念合并",
+    "value": 0.6,
+    "default": 0.6,
+    "display": "成分股重合度 ≥ 0.6",
+    "unit": "",
+    "evidence": "inferred",
+    "note": null,
+    "overridden": false
+  }
+]

@@ -1,0 +1,517 @@
+/*
+ * Glass design layer for the next-day plan shell (dark only).
+ * Source of truth: docs/design/core-redesign.html (+ core-redesign.md).
+ *
+ * Everything is scoped under `.plan-shell`; `:root`, `.dark` and the existing page styles are untouched.
+ * Overlays (dialog, drawer, popover, toast) are portaled to <body> inside their own `.plan-shell`
+ * wrapper (see PlanPortal), so the same scope applies to them.
+ * Class names are prefix-free on purpose; the `.plan-shell` scope keeps them from leaking.
+ */
+.plan-shell {
+  color-scheme: dark;
+  --t1: #FFFFFF; --t2: rgba(255,255,255,.84); --t3: rgba(255,255,255,.7); --t4: rgba(255,255,255,.5);
+  --line: rgba(255,255,255,.14); --fill: rgba(255,255,255,.07); --fill2: rgba(255,255,255,.13); --fill3: rgba(255,255,255,.2);
+  --accent: #A9CAFF; --up: #FFB3AB; --down: #7FE0D2; --up-mark: #FF7468; --down-mark: #3CC3B4; --risk: #FFCF6E;
+  --glass: linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.04)), rgba(30,36,74,.5);
+  --glass-edge: inset 0 1px 0 rgba(255,255,255,.22), inset 0 0 0 1px rgba(255,255,255,.1);
+  --glass-shadow: 0 30px 70px -20px rgba(12,16,44,.55);
+  --blur: blur(36px) saturate(160%);
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Segoe UI Variable Text", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Segoe UI Variable Display", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
+  --r-win: 30px; --r-in: 20px; --r-row: 16px;
+  --spring: cubic-bezier(.2,.9,.25,1);
+  --z-orn: 20; --z-pop: 30; --z-drawer: 40; --z-dialog: 50; --z-toast: 60;
+  color: var(--t1);
+  font: 14px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  text-align: left;
+}
+@supports (transition-timing-function: linear(0,1)) {
+  .plan-shell { --spring: linear(0,.06 2.5%,.24 6%,.5 11%,.74 17%,.9 23%,.99 30%,1.03 37%,1.035 43%,1.02 52%,1.005 64%,1); }
+}
+/* Page root (the routed shell). Overlay wrappers are plain `.plan-shell` without this class. */
+.plan-shell.plan-page { position: relative; isolation: isolate; min-height: 100dvh; background: #414E80; }
+.plan-shell.plan-portal { display: contents; }
+.plan-shell a { text-decoration: none; }
+.plan-shell ul, .plan-shell ol { margin: 0; }
+
+/* ---------- Ported from the prototype ---------- */
+.plan-shell button, .plan-shell input, .plan-shell select{font:inherit;color:inherit}
+.plan-shell button{cursor:pointer;-webkit-tap-highlight-color:transparent}
+.plan-shell p{margin:0}
+.plan-shell h1, .plan-shell h2, .plan-shell h3{margin:0;font-family:var(--display);letter-spacing:-.01em}
+.plan-shell .num{font-variant-numeric:tabular-nums;letter-spacing:-.005em}
+.plan-shell .up{color:var(--up)}
+.plan-shell .down{color:var(--down)}
+.plan-shell .flat{color:var(--t3)}
+.plan-shell :focus-visible{outline:2px solid #fff;outline-offset:2px}
+.plan-shell .skiplink{position:absolute;left:12px;top:-60px;background:#fff;color:#2B3260;padding:8px 14px;border-radius:999px;z-index:99}
+.plan-shell .skiplink:focus{top:10px}
+.plan-shell .vh{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+/* 环境背景：模糊的冷色光斑 + 细颗粒 */
+.plan-shell .plan-bg{position:fixed;inset:0;z-index:-1;overflow:hidden;background:linear-gradient(165deg,#56639C 0%,#465487 45%,#3A4675 100%)}
+.plan-shell .plan-bg i{position:absolute;border-radius:50%;filter:blur(90px);opacity:.75}
+.plan-shell .plan-bg i:nth-child(1){width:52vw;height:52vw;left:-12vw;top:-18vw;background:#8EA2DA}
+.plan-shell .plan-bg i:nth-child(2){width:44vw;height:44vw;right:-10vw;top:-6vw;background:#A496D2}
+.plan-shell .plan-bg i:nth-child(3){width:50vw;height:40vw;left:30vw;bottom:-22vw;background:#6F93C2}
+.plan-shell .plan-bg i:nth-child(4){width:26vw;height:26vw;right:14vw;bottom:8vw;background:#B5A7D8;opacity:.4}
+.plan-shell .plan-bg::after{content:"";position:absolute;inset:0;opacity:.06;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E")}
+/* 玻璃材质 */
+.plan-shell .glass, .plan-shell .win{background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);box-shadow:var(--glass-edge),var(--glass-shadow)}
+.plan-shell .win{position:relative;border-radius:var(--r-win);min-width:0}
+.plan-shell .win::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;transition:opacity .4s;background:radial-gradient(520px circle at var(--mx,50%) var(--my,0%),rgba(255,255,255,.07),transparent 60%)}
+.plan-shell .win:hover::before{opacity:1}
+/* 悬浮导航（visionOS 侧边装饰条） */
+.plan-shell .ornament{position:fixed;left:22px;top:50%;transform:translateY(-50%);z-index:var(--z-orn);display:flex;flex-direction:column;gap:4px;padding:8px;border-radius:40px;width:78px}
+.plan-shell .orn-btn{position:relative;isolation:isolate;border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:2px;padding:11px 0 9px;border-radius:26px;color:var(--t3);font-size:11px;transition:color .25s}
+.plan-shell .orn-btn:hover{color:#fff}
+.plan-shell .orn-btn[aria-current=page]{color:#fff;font-weight:600}
+.plan-shell .orn-btn .pill{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3);box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
+.plan-shell .orn-sep{height:1px;background:var(--line);margin:4px 10px}
+/* 页面 */
+.plan-shell .app{max-width:1560px;margin:0 auto;padding:30px 32px 48px 128px}
+.plan-shell main:focus{outline:none}
+.plan-shell .head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.plan-shell .head h1{font-size:34px;line-height:1.15;font-weight:700;letter-spacing:-.025em;text-shadow:0 2px 18px rgba(20,24,60,.25)}
+.plan-shell .sub{color:var(--t3);font-size:13px;margin-top:3px;text-wrap:pretty}
+.plan-shell .head .sub{color:var(--t2)}
+.plan-shell .head-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.plan-shell .cap{display:inline-flex;align-items:center;gap:8px;border:0;border-radius:999px;padding:8px 15px;font-size:13px;color:var(--t2);background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);box-shadow:var(--glass-edge);transition:transform .3s var(--spring),background .2s}
+.plan-shell .cap:hover{background:linear-gradient(180deg,rgba(255,255,255,.18),rgba(255,255,255,.08)),rgba(30,36,74,.5)}
+.plan-shell .cap:active{transform:scale(.97)}
+.plan-shell .dot{width:8px;height:8px;border-radius:50%;background:#7BE3B0;box-shadow:0 0 10px #7BE3B0;flex:none}
+/* 按钮与分段控件 */
+.plan-shell .btn{position:relative;border:0;border-radius:999px;padding:8px 17px;font-size:14px;display:inline-flex;gap:7px;align-items:center;justify-content:center;background:var(--fill2);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.18);transition:background .2s,transform .3s var(--spring)}
+.plan-shell .btn:hover{background:var(--fill3)}
+.plan-shell .btn:active{transform:scale(.96)}
+.plan-shell .btn.primary{background:#fff;color:#2B3266;font-weight:600;box-shadow:0 8px 24px -8px rgba(10,14,40,.5)}
+.plan-shell .btn.primary:hover{background:#EEF1FF}
+.plan-shell .btn.quiet{background:none;box-shadow:none;color:var(--accent);padding-left:10px;padding-right:10px}
+.plan-shell .btn.quiet:hover{background:var(--fill)}
+.plan-shell .btn.sm{padding:6px 13px;font-size:13px}
+.plan-shell .btn[disabled]{opacity:.5;cursor:not-allowed}
+.plan-shell .seg{display:inline-flex;padding:3px;border-radius:999px;background:rgba(10,14,40,.22);box-shadow:inset 0 1px 2px rgba(0,0,0,.15);max-width:100%}
+.plan-shell .seg button{position:relative;isolation:isolate;border:0;background:none;border-radius:999px;padding:6px 15px;font-size:13px;color:var(--t3);transition:color .25s;white-space:nowrap}
+.plan-shell .seg button[aria-pressed=true]{color:#fff;font-weight:600}
+.plan-shell .seg .thumb{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3);box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 4px 12px -4px rgba(0,0,0,.3)}
+.plan-shell .chips{display:flex;gap:6px;flex-wrap:wrap}
+.plan-shell .chip{border:0;border-radius:999px;padding:4px 12px;font-size:13px;background:var(--fill);color:var(--t2);transition:background .2s,color .2s}
+.plan-shell .chip:hover{background:var(--fill2)}
+.plan-shell .chip[aria-pressed=true]{background:#fff;color:#2B3266;font-weight:600}
+.plan-shell .tag{display:inline-block;font-size:12px;line-height:22px;padding:0 9px;border-radius:999px;background:var(--fill2);color:#fff;white-space:nowrap;font-weight:500}
+.plan-shell .tag.buy{background:rgba(255,116,104,.3);color:#FFE0DC}
+.plan-shell .tag.wait{background:rgba(156,194,255,.26);color:#E3EEFF}
+.plan-shell .tag.skip{background:var(--fill);color:var(--t3)}
+.plan-shell .tag.hold{background:#fff;color:#2B3266}
+.plan-shell .tag.warn{background:rgba(255,207,110,.24);color:#FFEBC0}
+.plan-shell .tag.line{background:none;box-shadow:inset 0 0 0 1px var(--line);color:var(--t2)}
+/* 两窗布局：左列表窗 + 右详情窗 */
+.plan-shell .grid2{display:grid;grid-template-columns:340px minmax(0,1fr);gap:20px;align-items:start}
+.plan-shell .side{position:sticky;top:24px;max-height:calc(100dvh - 48px);display:flex;flex-direction:column;overflow:hidden}
+.plan-shell .list-scroll{overflow:auto;padding:6px 10px 14px;flex:1;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.25) transparent}
+.plan-shell .acct{padding:20px 20px 16px;border-bottom:1px solid var(--line)}
+.plan-shell .stats{display:grid;grid-template-columns:1.25fr 1fr .9fr;gap:8px}
+.plan-shell .stats .k{font-size:12px;color:var(--t3)}
+.plan-shell .stats .v{font-size:21px;font-weight:650;font-family:var(--display);line-height:1.25;white-space:nowrap}
+.plan-shell .stats .v small{font-size:14px;font-weight:500}
+.plan-shell .rules-line{font-size:12px;color:var(--t3);margin-top:10px}
+.plan-shell .acct-acts{display:flex;gap:4px;margin-top:10px;margin-left:-4px;flex-wrap:wrap}
+.plan-shell .group-label{display:flex;justify-content:space-between;font-size:12px;color:var(--t3);padding:14px 10px 6px}
+.plan-shell .rows{list-style:none;margin:0;padding:0}
+.plan-shell .row{position:relative;isolation:isolate;width:100%;border:0;background:none;text-align:left;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:11px 12px;border-radius:var(--r-row);transition:background .2s}
+.plan-shell .row:hover{background:var(--fill)}
+.plan-shell .row .ind{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3);box-shadow:inset 0 1px 0 rgba(255,255,255,.22)}
+.plan-shell .row .ind::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:3px;background:#fff}
+.plan-shell .r-top{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}
+.plan-shell .r-top .nm{font-weight:600;font-size:15px;white-space:nowrap}
+.plan-shell .cd{font-size:12px;color:var(--t4);font-variant-numeric:tabular-nums}
+.plan-shell .r-px{grid-row:1/3;grid-column:2;text-align:right;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;line-height:1.35}
+.plan-shell .r-px b{font-weight:600;font-size:15px}
+.plan-shell .r-px span{font-size:12px}
+.plan-shell .one{grid-column:1;color:var(--t3);font-size:12.5px;line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.plan-shell .add-row{padding:10px 4px 0}
+/* 详情窗 */
+.plan-shell .detail{padding:26px 32px 30px}
+.plan-shell .back{display:none}
+.plan-shell .d-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.plan-shell .d-head .id{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.plan-shell .d-head h2{font-size:24px;font-weight:700}
+.plan-shell .d-price{font-size:17px;font-weight:600;display:flex;gap:10px;align-items:baseline}
+.plan-shell .hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px 40px;align-items:end;margin-top:12px}
+.plan-shell .verdict{font-family:var(--display);font-size:76px;line-height:1.05;font-weight:800;letter-spacing:-.035em;background:linear-gradient(180deg,#fff 30%,var(--vtint,#fff));-webkit-background-clip:text;background-clip:text;color:transparent;padding-bottom:4px;filter:drop-shadow(0 6px 24px rgba(20,24,64,.35));width:fit-content}
+.plan-shell .verdict.v-buy{--vtint:#FFD2CC}
+.plan-shell .verdict.v-wait{--vtint:#CFE0FF}
+.plan-shell .verdict.v-skip{opacity:.62}
+.plan-shell .verdict.v-state{font-size:56px}
+.plan-shell .summary{font-size:17px;line-height:1.65;margin-top:12px;max-width:40em;color:var(--t1);text-wrap:pretty}
+.plan-shell .meta{font-size:12px;color:var(--t3);margin-top:8px}
+.plan-shell .figs{display:grid;grid-template-columns:repeat(2,minmax(110px,auto));gap:14px 30px;margin:0;padding:16px 20px;border-radius:var(--r-in);background:var(--fill)}
+.plan-shell .figs.three{grid-template-columns:repeat(3,minmax(96px,auto))}
+.plan-shell .figs dt{font-size:12px;color:var(--t3)}
+.plan-shell .figs dd{margin:0;font-size:22px;font-weight:650;font-family:var(--display);line-height:1.3;white-space:nowrap}
+.plan-shell .figs dd small{font-size:13px;font-weight:500;color:var(--t2);margin-left:2px}
+.plan-shell .body{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:40px;margin-top:26px;padding-top:24px;border-top:1px solid var(--line);align-items:start}
+.plan-shell .body.single{grid-template-columns:minmax(0,1fr)}
+/* 按详情窗自身宽度排版，而不是按屏幕宽度 */
+.plan-shell .detail{container-type:inline-size}
+.plan-shell .plan{container-type:inline-size;min-width:0}
+@container (max-width:780px){
+  .plan-shell .detail .body{grid-template-columns:minmax(0,1fr)}
+  .plan-shell .detail .ladder{max-width:270px}
+}
+@container (max-width:500px){
+  .plan-shell .plan .ifthen li{grid-template-columns:1fr;gap:6px}
+  .plan-shell .plan .ifthen .arr{display:none}
+  .plan-shell .plan .cmp{grid-template-columns:1fr}
+}
+.plan-shell .plan>section+section, .plan-shell .plan>section+.actions{margin-top:26px}
+.plan-shell .sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;margin-bottom:10px}
+.plan-shell .sec-head h3, .plan-shell .plan h3{font-size:15px;font-weight:650}
+.plan-shell .plan>section>h3{margin-bottom:8px}
+.plan-shell .ifthen{list-style:none;margin:0;padding:0}
+.plan-shell .ifthen li{display:grid;grid-template-columns:minmax(0,1fr) 22px minmax(0,1fr);align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line)}
+.plan-shell .ifthen li:last-child{border-bottom:0}
+.plan-shell .ifthen .if{color:var(--t2)}
+.plan-shell .ifthen .arr{color:var(--t4);text-align:center}
+.plan-shell .ifthen .then{justify-self:start;font-weight:600;padding:4px 12px;border-radius:12px;background:var(--fill2)}
+.plan-shell .then.a-sell{background:rgba(255,207,110,.2);color:#FFEBC0}
+.plan-shell .then.a-buy{background:rgba(156,194,255,.24);color:#E3EEFF}
+.plan-shell .note{font-size:12.5px;color:var(--t3);margin-top:10px;max-width:46em}
+.plan-shell .note a{color:var(--accent)}
+.plan-shell .situ{color:var(--t2);max-width:44em}
+.plan-shell .risk-list{margin:0;padding-left:18px;color:var(--t2)}
+.plan-shell .risk-list li+li{margin-top:4px}
+.plan-shell .inset{border-radius:var(--r-in);background:var(--fill);padding:18px 20px}
+.plan-shell .inset .big{font-family:var(--display);font-size:32px;font-weight:700;line-height:1.15}
+.plan-shell .inset .big small{font-family:var(--sans);font-size:14px;font-weight:400;color:var(--t2);margin-left:8px}
+.plan-shell .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:12px 18px;margin-top:14px}
+.plan-shell .facts .k{font-size:12px;color:var(--t3)}
+.plan-shell .facts .v{font-size:16px;font-weight:600}
+.plan-shell .calc{margin-top:12px;font-size:12.5px;color:var(--t3)}
+.plan-shell .calc summary{cursor:pointer;color:var(--accent);width:max-content;list-style:none}
+.plan-shell .calc summary::-webkit-details-marker{display:none}
+.plan-shell .calc summary::after{content:"›";display:inline-block;margin-left:4px;transition:transform .25s}
+.plan-shell .calc[open] summary::after{transform:rotate(90deg)}
+.plan-shell .calc ol{margin:8px 0 0;padding-left:18px}
+.plan-shell .notice{display:flex;gap:10px;align-items:flex-start;border-radius:var(--r-in);padding:12px 16px;font-size:13px;background:rgba(255,207,110,.14);color:#FFEBC0}
+.plan-shell .notice b{white-space:nowrap}
+.plan-shell .notice a{color:#fff}
+.plan-shell .cmp{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:4px}
+.plan-shell .cmp .k{font-size:12px;color:var(--t3)}
+.plan-shell .cond{list-style:none;margin:8px 0 0;padding:0}
+.plan-shell .cond li{display:flex;gap:10px;align-items:flex-start;padding:5px 0;color:var(--t2)}
+.plan-shell .cond .mark{flex:none;width:18px;height:18px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--t4);margin-top:3px}
+.plan-shell .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:26px}
+/* 价格梯子 */
+.plan-shell .ladder figure{margin:0}
+.plan-shell .ladder figcaption{font-size:12px;color:var(--t3);margin-bottom:8px}
+.plan-shell .ladder svg{display:block;width:100%;height:auto;overflow:visible}
+.plan-shell .ladder text{font-size:12px;fill:rgba(255,255,255,.72);font-family:var(--sans)}
+.plan-shell .ladder .p{font-size:14px;fill:#fff;font-weight:650;font-variant-numeric:tabular-nums}
+.plan-shell .ladder .lv-stop .p{fill:var(--risk)}
+/* 板块 */
+.plan-shell .market{display:flex;flex-wrap:wrap;align-items:center;gap:4px 20px;padding:10px 20px;border-radius:999px;font-size:13px;color:var(--t2);margin-bottom:18px;width:fit-content;max-width:100%}
+.plan-shell .market b{font-weight:650;margin-left:6px;color:#fff;font-variant-numeric:tabular-nums}
+.plan-shell .market b.up{color:var(--up)}
+.plan-shell .filters{display:flex;flex-direction:column;gap:10px;padding:18px 20px 14px;border-bottom:1px solid var(--line)}
+.plan-shell .meter{position:relative;height:5px;border-radius:3px;background:rgba(255,255,255,.14);width:72px;flex:none}
+.plan-shell .meter i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:rgba(255,255,255,.75)}
+.plan-shell .meter i.hot{background:var(--up-mark)}
+.plan-shell .meter b{position:absolute;top:-3px;bottom:-3px;width:1px;background:rgba(255,255,255,.4)}
+.plan-shell .b-one{grid-column:1/-1;display:flex;align-items:center;gap:9px;font-size:12px;color:var(--t3);margin-top:2px}
+.plan-shell .bars svg{display:block;width:100%;max-width:640px;height:auto}
+.plan-shell .bars text{font-size:11px;fill:rgba(255,255,255,.66);font-variant-numeric:tabular-nums}
+.plan-shell .bars rect{transition:opacity .2s}
+.plan-shell .bars rect:hover{opacity:.7}
+.plan-shell .legend{display:flex;gap:16px;font-size:12px;color:var(--t3);margin-top:6px;flex-wrap:wrap}
+.plan-shell .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.plan-shell .reps{list-style:none;margin:0;padding:0}
+.plan-shell .reps li{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
+.plan-shell .reps li:last-child{border-bottom:0}
+/* 选股 */
+.plan-shell .toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:18px 24px 0}
+.plan-shell select.sel, .plan-shell label.f input, .plan-shell label.f select{border:0;border-radius:12px;padding:8px 12px;background:rgba(10,14,40,.22);box-shadow:inset 0 0 0 1px var(--line);color:#fff;min-width:0}
+.plan-shell select.sel{min-width:210px;max-width:100%;border-radius:999px;padding:7px 14px}
+.plan-shell option{background:#3A4372;color:#fff}
+.plan-shell .cond-line{font-size:13px;color:var(--t3);padding:12px 24px 14px;border-bottom:1px solid var(--line)}
+.plan-shell .cond-line b{color:#fff;font-weight:600}
+.plan-shell .cands{list-style:none;margin:0;padding:0 12px 8px}
+.plan-shell .cand{display:grid;grid-template-columns:210px minmax(0,1fr) 150px;gap:24px;padding:20px 12px;border-bottom:1px solid var(--line);border-radius:var(--r-row);transition:background .2s}
+.plan-shell .cand:hover{background:var(--fill)}
+.plan-shell .cand:last-child{border-bottom:0}
+.plan-shell .cand .nm{font-size:18px;font-weight:650;font-family:var(--display)}
+.plan-shell .cand .cd{margin-left:6px}
+.plan-shell .cand .px{margin-top:2px;font-size:15px;font-weight:600;display:flex;gap:10px}
+.plan-shell .cand .tags{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.plan-shell .cand dl{margin:0;display:grid;grid-template-columns:64px 1fr;gap:6px 12px}
+.plan-shell .cand dt{color:var(--t3);font-size:13px}
+.plan-shell .cand dd{margin:0;color:var(--t2)}
+.plan-shell .cand ul{margin:0;padding-left:16px}
+.plan-shell .cand .acts{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.plan-shell .empty{padding:56px 24px;max-width:32em}
+.plan-shell .empty.sm{padding:32px 12px}
+.plan-shell .empty h3{font-size:18px}
+.plan-shell .empty p{color:var(--t3);margin-top:6px}
+/* 设置 */
+.plan-shell .settings{display:grid;grid-template-columns:210px minmax(0,1fr)}
+.plan-shell .set-nav{display:flex;flex-direction:column;gap:2px;padding:16px;border-right:1px solid var(--line)}
+.plan-shell .set-nav button{position:relative;isolation:isolate;border:0;background:none;text-align:left;padding:9px 14px;border-radius:14px;color:var(--t2);transition:color .2s}
+.plan-shell .set-nav button:hover{color:#fff}
+.plan-shell .set-nav button[aria-current=true]{color:#fff;font-weight:600}
+.plan-shell .set-nav .thumb{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3)}
+.plan-shell .set-body{padding:24px 28px 28px;min-width:0}
+.plan-shell .set-body h2{font-size:20px}
+.plan-shell .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px 16px;align-items:end}
+.plan-shell label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--t3);min-width:0}
+.plan-shell label.f input[aria-invalid=true]{box-shadow:inset 0 0 0 1.5px var(--up-mark)}
+.plan-shell .err{color:var(--up);font-size:12.5px;min-height:20px;margin-top:8px}
+.plan-shell .tbl{overflow:auto;margin-top:16px}
+.plan-shell table.t{width:100%;border-collapse:collapse;font-size:13px}
+.plan-shell table.t th{text-align:left;font-weight:500;color:var(--t3);padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.plan-shell table.t td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--t2)}
+.plan-shell table.t td:first-child{color:#fff}
+.plan-shell .ev{white-space:nowrap}
+.plan-shell .ev.m{color:#fff!important}
+.plan-shell .ev.l{color:var(--risk)!important}
+.plan-shell .ev.i{color:var(--t3)!important}
+.plan-shell .ok-t{color:#9FF0C6!important}
+.plan-shell .warn-t{color:var(--risk)!important}
+.plan-shell .tag.ok{background:rgba(123,227,176,.22);color:#C9F7DF}
+/* 设置：模型 */
+.plan-shell .set-body{container-type:inline-size}
+.plan-shell .roles{list-style:none;padding:0;margin:0;border-radius:var(--r-in);background:var(--fill)}
+.plan-shell .roles>li{display:grid;grid-template-columns:minmax(0,1fr) minmax(200px,260px);gap:10px 24px;align-items:start;padding:16px 20px}
+.plan-shell .roles>li+li{border-top:1px solid var(--line)}
+.plan-shell .roles .rk{font-weight:600;font-size:14.5px}
+.plan-shell .roles .rd{font-size:12.5px;color:var(--t3);margin-top:3px;text-wrap:pretty}
+.plan-shell .roles label.f select, .plan-shell .roles label.f input{width:100%}
+.plan-shell .fb{list-style:none;padding:0;margin:0 0 8px;display:flex;flex-direction:column;gap:6px}
+.plan-shell .fb li{display:flex;align-items:center;gap:8px;padding:6px 6px 6px 10px;border-radius:12px;background:rgba(10,14,40,.22);box-shadow:inset 0 0 0 1px var(--line);font-size:13px;min-width:0}
+.plan-shell .fb-n{width:20px;height:20px;border-radius:50%;background:var(--fill2);display:grid;place-items:center;font-size:11px;flex:none}
+.plan-shell .fb-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plan-shell .fb-acts{display:flex;gap:2px;flex:none}
+.plan-shell .fb-acts .btn.sm{padding:4px 8px}
+.plan-shell .chs{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
+.plan-shell .ch{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 20px;padding:14px 18px;border-radius:var(--r-in);background:var(--fill)}
+.plan-shell .ch-name{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.plan-shell .ch-meta{font-size:12.5px;color:var(--t3);margin-top:3px;overflow-wrap:anywhere}
+.plan-shell .ch-models{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.plan-shell .ch-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.plan-shell .ch-st{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--t2);white-space:nowrap}
+.plan-shell .sdot{width:7px;height:7px;border-radius:50%;background:var(--t3);flex:none}
+.plan-shell .st-ok .sdot{background:#7BE3B0;box-shadow:0 0 8px #7BE3B0}
+.plan-shell .st-down{color:var(--risk)}
+.plan-shell .st-down .sdot{background:var(--risk)}
+.plan-shell .st-testing .sdot{background:var(--accent);animation:plan-pulse 1s ease-in-out infinite}
+@keyframes plan-pulse{50%{opacity:.3}}
+.plan-shell .ch-btns{display:flex;gap:6px}
+@container (max-width:560px){
+  .plan-shell .set-body .roles>li{grid-template-columns:minmax(0,1fr);padding:14px 16px}
+  .plan-shell .set-body .ch{grid-template-columns:minmax(0,1fr);padding:14px 16px}
+  .plan-shell .set-body .ch-side{flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap}
+}
+/* 助手抽屉 */
+.plan-shell .ctx{margin:0 18px;padding:10px 14px;border-radius:16px;background:var(--fill);font-size:13px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--t2)}
+.plan-shell .ctx b{color:#fff}
+.plan-shell .msgs{flex:1;overflow:auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+.plan-shell .msg{width:fit-content;max-width:92%;line-height:1.65}
+.plan-shell .msg.me{align-self:flex-end;background:#fff;color:#2B3266;border-radius:18px 18px 6px 18px;padding:8px 14px}
+.plan-shell .msg.bot{align-self:flex-start;background:var(--fill);border-radius:18px 18px 18px 6px;padding:10px 14px;color:var(--t1)}
+.plan-shell .msg .src{font-size:11.5px;color:var(--t3);margin-top:4px}
+.plan-shell .quick{display:flex;flex-wrap:wrap;gap:6px;padding:0 18px 10px}
+.plan-shell .quick button{border:0;border-radius:999px;padding:5px 12px;font-size:13px;background:var(--fill2);color:#fff;transition:background .2s,transform .3s var(--spring)}
+.plan-shell .quick button:hover{background:var(--fill3)}
+.plan-shell .quick button:active{transform:scale(.95)}
+.plan-shell .bound{font-size:11.5px;color:var(--t4);padding:0 18px 8px}
+.plan-shell .compose{display:flex;gap:8px;padding:10px 14px calc(14px + env(safe-area-inset-bottom))}
+.plan-shell .compose input{flex:1;border:0;border-radius:999px;padding:10px 16px;background:rgba(10,14,40,.28);box-shadow:inset 0 0 0 1px var(--line);color:#fff;min-width:0}
+.plan-shell .compose input::placeholder{color:var(--t4)}
+@media (min-width:1300px){
+
+}
+/* 弹层（sheet） */
+@keyframes sheet{from{opacity:0;transform:translateY(24px) scale(.97)}}
+.plan-shell .dlg-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 24px 0}
+.plan-shell .dlg-head h2{font-size:20px}
+.plan-shell .x{border:0;width:32px;height:32px;border-radius:50%;background:var(--fill2);color:#fff;display:grid;place-items:center;flex:none}
+.plan-shell .x:hover{background:var(--fill3)}
+.plan-shell .dlg-body{padding:16px 24px 24px}
+.plan-shell .run-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.plan-shell .run-grid h3{font-size:15px}
+.plan-shell .steps{list-style:none;margin:12px 0 0;padding:0}
+.plan-shell .steps li{display:grid;grid-template-columns:20px 1fr auto;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px;color:var(--t2)}
+.plan-shell .steps .ok{color:#9FF0C6}
+.plan-shell .steps .part{color:var(--risk)}
+.plan-shell .holding-edit{display:grid;grid-template-columns:1.5fr 1fr 1fr 1.25fr 1fr auto;gap:10px;align-items:end;padding:12px 0;border-bottom:1px solid var(--line)}
+.plan-shell .cash-field{max-width:260px}
+/* 提示 */
+.plan-shell .proto{font-size:12px;color:var(--t4);margin-top:28px}
+@media (max-width:1240px){
+  .plan-shell .body{grid-template-columns:minmax(0,1fr) 220px;gap:28px}
+  .plan-shell .hero{grid-template-columns:1fr}
+  .plan-shell .figs{grid-template-columns:repeat(4,minmax(0,auto));justify-content:start}
+  .plan-shell .figs.three{grid-template-columns:repeat(3,minmax(0,auto))}
+  .plan-shell .cand{grid-template-columns:190px minmax(0,1fr)}
+  .plan-shell .cand .acts{grid-column:2;flex-direction:row;flex-wrap:wrap}
+}
+@media (max-width:980px){
+  .plan-shell .grid2{grid-template-columns:300px minmax(0,1fr)}
+  .plan-shell .verdict{font-size:62px}
+  .plan-shell .detail{padding:22px 24px 26px}
+}
+@media (max-width:860px){
+  .plan-shell .app{padding:18px 16px 120px}
+  .plan-shell .ornament{left:50%;top:auto;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);flex-direction:row;width:auto;padding:6px;border-radius:999px}
+  .plan-shell .orn-btn{width:66px;padding:7px 0 5px;border-radius:999px}
+  .plan-shell .orn-sep{width:1px;height:auto;margin:8px 2px}
+  .plan-shell .head h1{font-size:28px}
+  .plan-shell .hide-s{display:none}
+  .plan-shell .grid2{grid-template-columns:1fr}
+  .plan-shell .side{position:static;max-height:none;overflow:visible}
+  .plan-shell .list-scroll{overflow:visible}
+  .plan-shell .grid2.show-detail .side{display:none}
+  .plan-shell .grid2:not(.show-detail) .detail{display:none}
+  .plan-shell .back{display:inline-flex;margin:-6px 0 10px -10px}
+  .plan-shell .body{grid-template-columns:1fr}
+  .plan-shell .ladder{max-width:260px}
+  .plan-shell .verdict{font-size:56px}
+  .plan-shell .verdict.v-state{font-size:44px}
+  .plan-shell .figs, .plan-shell .figs.three{grid-template-columns:repeat(2,minmax(0,1fr));width:100%}
+  .plan-shell .cand{grid-template-columns:1fr;gap:12px}
+  .plan-shell .cand .acts{grid-column:1}
+  .plan-shell .settings{grid-template-columns:1fr}
+  .plan-shell .set-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line)}
+  .plan-shell .run-grid{grid-template-columns:1fr}
+  .plan-shell .holding-edit{grid-template-columns:1fr 1fr}
+  .plan-shell .holding-edit .btn{justify-self:start}
+  .plan-shell label.f input, .plan-shell label.f select{width:100%}
+  .plan-shell .cmp{grid-template-columns:1fr}
+  .plan-shell .ifthen li{grid-template-columns:1fr;gap:6px}
+  .plan-shell .ifthen .arr{display:none}
+  .plan-shell .market{border-radius:22px}
+}
+@media (max-width:400px){
+  .plan-shell .app{padding-left:12px;padding-right:12px}
+  .plan-shell .detail{padding:18px 16px 22px}
+  .plan-shell .verdict{font-size:48px}
+  .plan-shell .orn-btn{width:58px}
+  .plan-shell .stats .v{font-size:17px}
+  .plan-shell .inset .big{font-size:26px}
+  .plan-shell .holding-edit{grid-template-columns:1fr}
+  .plan-shell .reps li{grid-template-columns:1fr auto}
+  .plan-shell .reps li .btn{grid-column:1/-1;justify-self:start}
+  .plan-shell .head-right .cap{padding:7px 12px}
+  .plan-shell .figs dd{font-size:19px}
+  .plan-shell .toolbar{padding:16px 16px 0}
+  .plan-shell .cond-line{padding:12px 16px 14px}
+  .plan-shell .cands{padding:0 4px 8px}
+  .plan-shell select.sel{min-width:0;width:100%}
+  .plan-shell .toolbar label{flex:1 1 100%}
+  .plan-shell .set-body{padding:20px 16px 22px}
+  .plan-shell .dlg-body{padding:14px 16px 20px}
+  .plan-shell .dlg-head{padding:18px 16px 0}
+}
+@media (prefers-reduced-motion:reduce){
+  .plan-shell, .plan-shell *, .plan-shell *::before, .plan-shell *::after{transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important}
+}
+
+/* ---------- Shell additions (React port) ---------- */
+.plan-shell a.orn-btn, .plan-shell a.cap, .plan-shell a.btn { text-decoration: none; }
+.plan-shell .orn-btn svg { display: block; }
+.plan-shell .orn-btn:focus-visible { outline-offset: -2px; }
+.plan-shell .orn-more { position: relative; }
+.plan-shell .orn-more .orn-btn { width: 100%; }
+.plan-shell .dot.warn { background: var(--risk); box-shadow: 0 0 10px var(--risk); }
+.plan-shell .dot.bad { background: var(--up-mark); box-shadow: 0 0 10px var(--up-mark); }
+.plan-shell .dot.idle { background: var(--t4); box-shadow: none; }
+.plan-shell .dot.busy { background: var(--accent); box-shadow: 0 0 10px var(--accent); animation: plan-pulse 1.2s ease-in-out infinite; }
+.plan-shell .cap .cap-text { white-space: nowrap; }
+
+/* "More" popover (old pages) */
+.plan-shell .more-pop {
+  position: fixed; z-index: var(--z-pop); left: var(--pop-left, 118px); bottom: var(--pop-bottom, 24px);
+  width: 236px; max-height: calc(100dvh - 32px); overflow: auto; padding: 8px; border-radius: 26px;
+  display: flex; flex-direction: column; gap: 2px; transform-origin: bottom left;
+  background: linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.05)), rgba(36,42,84,.88);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: var(--glass-edge), 0 24px 60px -16px rgba(8,10,34,.65);
+}
+.plan-shell .more-pop h2 { font-size: 12px; font-weight: 500; color: var(--t3); padding: 8px 14px 4px; letter-spacing: 0; }
+.plan-shell .more-pop ul { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.plan-shell .more-pop a { display: flex; align-items: center; padding: 9px 14px; border-radius: 16px; color: var(--t2); transition: background .2s, color .2s; }
+.plan-shell .more-pop a:hover { background: var(--fill2); color: #fff; }
+.plan-shell .more-pop a[aria-current=page] { background: var(--fill3); color: #fff; font-weight: 600; }
+
+/* Dialog sheet */
+.plan-shell .dlg-scrim {
+  position: fixed; inset: 0; z-index: var(--z-dialog); display: grid; place-items: center; padding: 12px;
+  background: rgba(22,26,60,.35); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.plan-shell .dlg {
+  width: min(var(--dlg-w, 760px), 100%); max-height: calc(100dvh - 40px); display: flex; flex-direction: column;
+  border-radius: var(--r-win); color: #fff; overflow: hidden;
+  background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.04)), rgba(36,42,84,.86);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: var(--glass-edge), 0 40px 90px -20px rgba(8,10,34,.7);
+}
+.plan-shell .dlg:focus { outline: none; }
+.plan-shell .dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px 0; flex: none; }
+.plan-shell .dlg-head h2 { font-size: 20px; font-weight: 650; }
+.plan-shell .dlg-body { padding: 16px 24px 24px; overflow: auto; min-height: 0; }
+.plan-shell .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 0 24px 20px; flex: none; flex-wrap: wrap; }
+.plan-shell .x, .plan-shell .drawer .close {
+  border: 0; width: 32px; height: 32px; border-radius: 50%; background: var(--fill2); color: #fff;
+  display: grid; place-items: center; flex: none; transition: background .2s, transform .3s var(--spring);
+}
+.plan-shell .x:hover, .plan-shell .drawer .close:hover { background: var(--fill3); }
+.plan-shell .x:active, .plan-shell .drawer .close:active { transform: scale(.92); }
+
+/* Right drawer (assistant) */
+.plan-shell .scrim { position: fixed; inset: 0; z-index: calc(var(--z-drawer) - 1); background: rgba(20,24,56,.22); }
+@media (min-width: 1300px) { .plan-shell .scrim { background: transparent; } }
+.plan-shell .drawer {
+  position: fixed; top: 16px; right: 16px; bottom: 16px; width: min(var(--drawer-w, 410px), calc(100vw - 32px));
+  z-index: var(--z-drawer); border-radius: var(--r-win); display: flex; flex-direction: column; overflow: hidden; color: #fff;
+  background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.04)), rgba(32,38,78,.78);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+}
+.plan-shell .drawer:focus { outline: none; }
+.plan-shell .drawer > header { display: flex; align-items: center; gap: 10px; padding: 16px 18px 12px; flex: none; }
+.plan-shell .drawer > header h2 { font-size: 18px; display: flex; align-items: center; gap: 8px; font-weight: 650; }
+.plan-shell .drawer > header .close { margin-left: auto; }
+.plan-shell .drawer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.plan-shell .drawer-foot { flex: none; padding: 0 18px calc(14px + env(safe-area-inset-bottom)); }
+
+/* Toast (one at a time) */
+.plan-shell .toast-region {
+  position: fixed; left: 0; right: 0; bottom: 28px; z-index: var(--z-toast); display: flex; justify-content: center;
+  padding: 0 16px; pointer-events: none;
+}
+.plan-shell .toast {
+  padding: 10px 18px; border-radius: 999px; font-size: 14px; max-width: calc(100vw - 32px); color: #fff;
+  background: linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.08)), rgba(36,42,84,.85);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: var(--glass-edge), 0 16px 40px -12px rgba(0,0,0,.5);
+}
+.plan-shell .proto-note { font-size: 12px; color: var(--t4); margin-top: 28px; }
+
+@media (max-width: 860px) {
+  .plan-shell .more-pop {
+    left: 12px; right: 12px; width: auto; bottom: calc(86px + env(safe-area-inset-bottom)); transform-origin: bottom center;
+  }
+  .plan-shell .more-pop ul { display: grid; grid-template-columns: 1fr 1fr; }
+  .plan-shell .drawer { top: 0; right: 0; bottom: 0; width: 100vw; border-radius: 0; }
+  .plan-shell .toast-region { bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .plan-shell .dlg-scrim { padding: 8px; }
+}
+@media (max-width: 400px) {
+  .plan-shell .orn-btn { width: 54px; }
+  .plan-shell .dlg-head { padding: 18px 16px 0; }
+  .plan-shell .dlg-body { padding: 14px 16px 20px; }
+  .plan-shell .dlg-foot { padding: 0 16px 18px; }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .plan-shell .glass, .plan-shell .win, .plan-shell .cap, .plan-shell .dlg, .plan-shell .drawer,
+  .plan-shell .toast, .plan-shell .more-pop { background: #3B4474; }
+}

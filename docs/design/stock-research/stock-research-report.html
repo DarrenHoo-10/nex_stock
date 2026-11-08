@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<link rel="icon" href="data:,">
+<title>个股当日策略 · 交互设计稿</title>
+<style>
+:root{color-scheme:light;--bg:#f3f5f7;--paper:#fff;--ink:#1d2b38;--muted:#617180;--line:#dce3e9;--accent:#246c67;--soft:#edf5f3;--blue:#2a78d6;--orange:#eb6834;--up:#b63743;--down:#217361}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}h1,h2,h3,p,figure{margin:0}h1{font-size:27px;line-height:1.4;font-weight:650}h2{font-size:18px;font-weight:650}h3{font-size:14px}button,select{font:inherit}button{cursor:pointer;background:var(--paper);border:1px solid var(--line);border-radius:5px;padding:7px 12px;min-height:38px;color:var(--ink)}button:hover{border-color:var(--accent)}button[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink)}a{color:var(--accent);text-underline-offset:3px}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}summary{cursor:pointer}button,summary{-webkit-tap-highlight-color:transparent}.muted,.meta{color:var(--muted);font-size:12px}.up{color:var(--up)}.down{color:var(--down)}.topbar{background:var(--paper);border-bottom:1px solid var(--line)}.topbar-inner{max-width:1280px;margin:auto;padding:15px 28px;display:flex;gap:22px;align-items:center}.brand{font-weight:700;letter-spacing:.04em}.prototype{margin-left:auto;color:var(--muted);font-size:12px}.page{max-width:1280px;padding:26px 28px 32px;margin:auto}.stock-header{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}.stock-header h1 small{font-size:13px;color:var(--muted);font-weight:400;margin-left:8px}.date{text-align:right}.status{display:inline-block;padding:2px 8px;border-radius:4px;background:#e6ebf0;color:#435260;font-size:12px}.decision{background:var(--paper);border:1px solid var(--line);border-top:3px solid var(--accent);border-radius:8px;padding:23px 26px;margin-bottom:20px}.decision-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.decision h2{font-size:24px;margin:12px 0 8px}.decision-text{max-width:78ch}.controls{display:flex;gap:5px;flex-wrap:wrap}.controls button{font-size:12px}.decision-bottom{display:grid;grid-template-columns:1fr 1fr;gap:24px;border-top:1px solid var(--line);padding-top:15px;margin-top:18px}.decision-bottom strong{font-size:12px;color:var(--accent);display:block;margin-bottom:4px}.workspace{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}.panel{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:22px;min-width:0;margin-bottom:20px}.section-head{display:flex;gap:14px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:14px}.quote-strip{display:grid;grid-template-columns:1.2fr repeat(3,1fr);gap:14px;padding-bottom:17px;border-bottom:1px solid var(--line);margin-bottom:15px}.quote-strip dt{color:var(--muted);font-size:12px}.quote-strip dd{margin:4px 0 0;font-size:18px}.quote-strip dd small{display:block;font-size:12px}.quote-strip dl{margin:0}.quote-strip .last{font-size:27px;line-height:1.3}.readout{background:var(--bg);padding:11px 13px;border-radius:4px;margin:12px 0;font-size:13px}.reference{display:inline-block;border:0;background:none;padding:0 3px;min-height:24px;color:var(--accent);text-decoration:underline;font-size:12px}.chart-wrap{position:relative}.kline{width:100%;height:300px;display:block;touch-action:pan-y}.chart-note{font-size:12px;color:var(--muted);min-height:38px;font-variant-numeric:tabular-nums;margin-top:8px}.legend{display:flex;gap:15px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}.legend i{display:inline-block;width:12px;height:8px;margin-right:5px;border:1px solid var(--up)}.legend .fall{background:var(--down);border-color:var(--down)}.legend .support{height:0;border:0;border-top:2px solid var(--blue)}.legend .resistance{height:0;border:0;border-top:2px dashed var(--orange)}.chart-caption{margin:8px 0;color:var(--muted);font-size:12px}.levels{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:13px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:15px 0}.levels dt{font-size:12px;color:var(--muted)}.levels dd{margin:3px 0 0;font-size:16px}.evidence{border-top:1px solid var(--line);padding-top:12px;margin-top:16px;font-size:12px;color:var(--muted);scroll-margin-top:20px}.evidence p{margin-top:8px}.evidence:focus{outline:2px solid var(--accent);outline-offset:5px}.table-scroll{overflow:auto;max-height:250px;margin-top:10px}table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:12px;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:7px 10px;border-bottom:1px solid var(--line)}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:var(--bg);font-weight:500}.strategy{border-top:3px solid var(--accent)}.strategy .controls{margin:12px 0}.strategy-intro{font-size:13px;margin:12px 0}.scenario{border-top:1px solid var(--line);padding:15px 0}.scenario h3{margin-bottom:6px}.scenario p{font-size:13px;margin-top:6px}.scenario .label{font-size:11px;color:var(--accent);margin-bottom:5px}.scenario button{font-size:12px;margin-top:9px}.scenario.active{border-left:3px solid var(--accent);padding-left:12px}.risk{padding:12px 14px;background:#f9f1f1;border-radius:4px;font-size:12px;margin-top:10px}.risk strong{display:block;margin-bottom:5px}.events{display:grid;gap:0}.event{display:grid;grid-template-columns:88px minmax(0,1fr);gap:18px;padding:16px 0;border-top:1px solid var(--line)}.event:first-child{border-top:0;padding-top:0}.event time{font-size:12px;color:var(--muted)}.event p{font-size:13px;margin-top:5px;max-width:76ch}.event .effect{color:var(--accent)}.availability{padding:12px 14px;background:var(--bg);font-size:12px}.footer{font-size:12px;color:var(--muted);padding:0 2px}.footer p+p{margin-top:4px}.period-warning{font-size:12px;color:var(--muted);margin-bottom:5px}
+@media(max-width:1000px){.workspace{grid-template-columns:minmax(0,1fr) 300px}.page{padding:20px}.panel{padding:18px}.quote-strip{grid-template-columns:1fr 1fr}}
+@media(max-width:760px){.workspace{display:flex;flex-direction:column}.primary,.strategy{width:100%}.strategy{order:-1}.topbar-inner{padding:13px 16px;gap:12px}.page{padding:18px 14px}.decision{padding:18px}.decision h2{font-size:22px}.decision-bottom{grid-template-columns:1fr;gap:12px}.stock-header{align-items:flex-start}.stock-header h1{font-size:23px}.date{max-width:145px;font-size:12px}.prototype{max-width:90px;text-align:right}.levels{gap:8px}.levels dd{font-size:14px}.event{grid-template-columns:65px 1fr;gap:12px}.kline{height:280px}}
+@media(pointer:coarse){button{min-height:44px}.reference{min-height:34px}summary{padding:5px 0}}
+@media(prefers-reduced-motion:no-preference){button{transition:background-color .12s,border-color .12s}}
+@media(forced-colors:active){.legend i{border-color:CanvasText}.legend .fall{background:CanvasText}.kline{forced-color-adjust:none}}
+</style>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner"><span class="brand">NEX STOCK</span><span>当日投资策略</span><span class="prototype">交互原型 / 非实时数据</span></div></header>
+<main class="page">
+  <header class="stock-header">
+    <div><h1>示例公司 <small>DEMO</small></h1><p class="meta">虚构 A 股公司 / 工业自动化设备</p></div>
+    <div class="date"><span class="status">收盘后分析</span><p>样例交易日 2026-10-23</p><p class="meta">信息截至 15:10（北京时间）</p></div>
+  </header>
+  <section class="decision" aria-labelledby="decision-title">
+    <div class="decision-top"><strong>当日策略结论</strong><div class="controls" role="group" aria-label="持仓状态"><button type="button" data-position="flat" aria-pressed="true">未持仓</button><button type="button" data-position="held" aria-pressed="false">已持仓</button></div></div>
+    <div aria-live="polite"><h2 id="decision-title"></h2><p class="decision-text" id="decision-text"></p></div>
+    <div class="decision-bottom"><div><strong>为什么是这个判断</strong><p>今日上涨 1.24%，但弱于板块；成交量只有前 20 日均量的 1.18 倍，收盘仍未突破 49.20–49.60 元压力区。<button class="reference" data-evidence="evidence-price">[P1]</button><button class="reference" data-evidence="evidence-market">[M1]</button></p></div><div><strong>什么会改变策略</strong><p>回踩后重新站稳，或放量突破压力区，才重新评估介入；跌破 46.60 元或出现新的经营风险，转向风险处置。条件尚未触发，不等于买卖指令。</p></div></div>
+  </section>
+  <div class="workspace">
+    <div class="primary">
+      <section class="panel" id="price-panel" aria-labelledby="price-title">
+        <div class="section-head"><h2 id="price-title">今天的量价，支持行动吗？</h2><span class="meta">行情截至 15:00 / 已收盘</span></div>
+        <div class="quote-strip">
+          <dl><dt>收盘价 / 元</dt><dd class="last">47.99<small class="up">↑ +0.59（+1.24%）</small></dd></dl>
+          <dl><dt>日内区间 / 元</dt><dd>46.92–48.56<small class="muted">开盘 47.30 / 昨收 47.40</small></dd></dl>
+          <dl><dt>成交量 / 万股</dt><dd>1,180<small class="muted">前 20 日均量的 1.18 倍</small></dd></dl>
+          <dl><dt>相对板块表现</dt><dd>−0.86<small class="muted">个百分点 / 板块 +2.10%</small></dd></dl>
+        </div>
+        <p class="readout"><strong>策略解读：</strong>价格仍在支撑与压力之间，追入缺少位置优势。日内曾回踩，但一天反弹不足以确认趋势；板块上涨也不代表这只股票已经走强。</p>
+        <div class="section-head"><h3>关键位置与行情</h3><div class="controls" role="group" aria-label="K线周期"><button data-period="daily" aria-pressed="true">日 K</button><button data-period="weekly" aria-pressed="false">周 K</button><button data-period="monthly" aria-pressed="false">月 K</button></div></div>
+        <p class="period-warning" id="period-warning"></p>
+        <figure class="chart-wrap"><svg class="kline" role="img" aria-label="合成历史K线，支撑、压力与风险参考线；完整数值见下方数据表"></svg><figcaption class="chart-note" id="chart-ohlc"></figcaption></figure>
+        <div class="legend"><span><i></i>上涨 / 空心</span><span><i class="fall"></i>下跌 / 实心</span><span><i class="support"></i>支撑 / 实线</span><span><i class="resistance"></i>压力 / 虚线</span></div>
+        <p class="chart-caption" id="chart-explanation" aria-live="polite"></p>
+        <dl class="levels"><div><dt>回踩观察区</dt><dd>46.80–47.20</dd></div><div><dt>突破 / 止盈观察区</dt><dd>49.20–49.60</dd></div><div><dt>风险参考线</dt><dd>46.60 元</dd></div></dl>
+        <p class="muted">以上均为同一价格口径的技术参考，不是估值目标价。切换 K 线不会自动改变策略周期，也不会生成未来价格路径。</p>
+        <details class="evidence" id="evidence-price" tabindex="-1"><summary>行情依据、价位来源与数据表 · P1</summary><p>来源：内嵌合成日线，非真实行情；币种人民币，示例不含公司行为，无复权差异。当前价、涨跌幅及图表使用同一末日记录。成交量单位为万股，1,180 ÷ 前 20 日均量 1,000 = 1.18；此值不是盘中量比。</p><p>46.80–47.20、49.20–49.60 与 46.60 为人工设定的演示策略参数，仅展示位置与行动的对应关系，不声称由算法识别。正式分析必须给出支撑/压力对应的历史区间、方法、证据和失效条件。1.20 倍均量的突破门槛也只是本例假设，不是通用交易规则。</p><p>图表悬停、点击或聚焦蜡烛可查看 OHLC；数据表与当前图示周期及窗口一致。日线聚合周/月线，月线尚未收盘。合成序列只排除周末，不代表真实交易日历。</p><div class="table-scroll" tabindex="0" aria-label="当前K线数据表"><table><thead><tr><th>截至日期</th><th>开</th><th>高</th><th>低</th><th>收</th><th>成交量 / 万股</th></tr></thead><tbody id="chart-table"></tbody></table></div></details>
+      </section>
+      <section class="panel" aria-labelledby="information-title">
+        <div class="section-head"><h2 id="information-title">哪些信息影响今天的策略？</h2><span class="meta">事实与推断分开展示</span></div>
+        <div class="events">
+          <article class="event"><time>今日收盘<br>15:00</time><div><h3>板块上涨，个股表现落后</h3><p>样例：板块指数 +2.10%，宽基指数 +0.35%，个股 +1.24%。<button class="reference" data-evidence="evidence-market">[M1 行情事实]</button></p><p class="effect">对策略的影响：环境提供支撑，但个股相对偏弱，不把板块热度直接当作追涨理由。</p></div></article>
+          <article class="event"><time>今日<br>14:20</time><div><h3>设备更新话题升温，尚无公司订单证据</h3><p>合成行业新闻讨论设备需求，未提供这家公司的新增订单或利润贡献。<button class="reference" data-evidence="evidence-news">[N1 新闻样例]</button></p><p class="effect">对策略的影响：只增加关注度，不上调盈利判断；后续需要公司层面的披露确认。</p></div></article>
+          <article class="event"><time>上一交易日<br>18:30</time><div><h3>应收回款仍是约束，不因股价上涨而消失</h3><p>合成公司公告提示部分客户回款放缓，未给出可量化盈利影响。<button class="reference" data-evidence="evidence-news">[N2 公告样例]</button></p><p class="effect">对策略的影响：不支持仅凭题材加仓。长期判断等待盈利与现金流验证，不展开无关的公司研报章节。</p></div></article>
+        </div>
+        <div class="availability"><strong>会影响判断的数据缺口：</strong>未取得可验证的资金流明细、订单变化和最新可比估值。不判断“主力吸筹”，不给出精确胜率或长期目标价；未核实全部公告，不能表述为“无新增风险”。</div>
+        <details class="evidence" id="evidence-market" tabindex="-1"><summary>市场数据口径 · M1</summary><p>个股、板块及宽基均为同一交易日收盘涨跌幅，板块与宽基数值为合成样例。1.24% − 2.10% = −0.86 个百分点。正式版需明确板块归属与指数标识，不能混用盘中值和收盘值。</p></details>
+        <details class="evidence" id="evidence-news" tabindex="-1"><summary>消息时间、来源与核验状态 · N1 / N2</summary><p>N1：虚构行业资讯，发布于 2026-10-23 14:20，样例获取于 14:25；N2：虚构公司公告，发布于 2026-10-22 18:30，样例获取于 18:35。两条内容仅用于演示，没有真实原文链接，不能作为投资证据。</p><p>正式版需显示真实来源、原文定位、发布时间及获取时间，核验是否已在分析时点公开。公告事实、媒体报道和模型推断不可混为一谈；晚于分析截止时点的消息不能回填旧策略。</p></details>
+      </section>
+    </div>
+    <aside class="panel strategy" aria-labelledby="strategy-title">
+      <h2 id="strategy-title">接下来怎么应对</h2>
+      <div class="controls" role="group" aria-label="策略周期"><button data-horizon="short" aria-pressed="false">短期</button><button data-horizon="swing" aria-pressed="true">波段</button><button data-horizon="long" aria-pressed="false">长期</button></div>
+      <p class="strategy-intro" id="horizon-note" aria-live="polite"></p>
+      <div id="scenarios" aria-live="polite"></div>
+      <div class="risk"><strong>执行前的限制</strong>本例为收盘分析，用于下一交易时段预案，不暗示可以按今天收盘价成交。盘中触价不等于收盘确认；A 股当日买入受 T+1 约束，跳空、跌停及流动性都可能使止损无法按计划执行。</div>
+      <p class="muted" style="margin-top:12px">未提供成本、仓位和风险预算，不计算个人盈亏，不给出精确仓位比例。成本价不是补仓理由。</p>
+    </aside>
+  </div>
+  <footer class="footer"><p>交互设计样例：所有价格、消息和公司信息均为虚构。这里的“今日”指 2026-10-23，不是当前日期或实时行情。</p><p>有效边界：仅依据标注时点的可用信息。下一交易日、重大公告、价格破位或数据更正后需重新分析，不自动沿用旧结论；不代表收益承诺。</p></footer>
+</main>
+<script>
+(() => {
+  const state = { position: 'flat', horizon: 'swing', period: 'daily', scenario: 'pullback' };
+  const ns = 'http://www.w3.org/2000/svg';
+  const chart = document.querySelector('.kline');
+  const daily = [];
+  let previous = 38;
+  for (let date = new Date('2024-01-02T00:00:00Z'), i = 0; date <= new Date('2026-10-23T00:00:00Z'); date.setUTCDate(date.getUTCDate() + 1)) {
+    if ([0, 6].includes(date.getUTCDay())) continue;
+    const close = 38 + i * .014 + Math.sin(i * .11) * 1.4;
+    const open = previous + Math.sin(i * .7) * .3;
+    daily.push({ date: date.toISOString().slice(0, 10), open, high: Math.max(open, close) + .4, low: Math.min(open, close) - .4, close, volume: 1000 });
+    previous = close;
+    i++;
+  }
+  Object.assign(daily.at(-2), { open: 47.65, high: 48.12, low: 47.10, close: 47.40 });
+  Object.assign(daily.at(-1), { open: 47.30, high: 48.56, low: 46.92, close: 47.99, volume: 1180 });
+  const horizons = {
+    short: '短期看下一交易时段的承接与风险。优先等待，盘中反弹只作观察，不提前标成突破确认。',
+    swing: '波段看未来数个交易日的确认。当前没有新介入信号，先写好触发条件，不预测明天一定怎么走。',
+    long: '当日价格只影响执行节奏，不能替代长期投资逻辑。订单、现金流和估值证据未补齐前，不给长期买点或目标价。'
+  };
+  const explanations = {
+    pullback: '当前关注：46.80–47.20 元回踩区（实线）。观察再次回踩后能否收回上沿，不把今天触及区域视为已满足下一次介入条件。',
+    breakout: '当前关注：49.20–49.60 元压力区（虚线）。放量收盘突破后才重新评估，压力区不是保证兑现的目标价。',
+    defend: '当前关注：46.60 元风险参考线（点划线）。触及下方需及时评估风险，不机械等到收盘；不保证成交价格。'
+  };
+  function add(parent, tag, attributes = {}, text) {
+    const node = document.createElementNS(ns, tag);
+    Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, value));
+    if (text !== undefined) node.textContent = text;
+    parent.append(node);
+    return node;
+  }
+  function label(x, y, text, attributes = {}) {
+    return add(chart, 'text', { x, y, fill: 'var(--muted)', 'font-size': 11, ...attributes }, text);
+  }
+  function aggregate() {
+    if (state.period === 'daily') return daily;
+    const groups = new Map();
+    daily.forEach(bar => {
+      let key = bar.date.slice(0, 7);
+      if (state.period === 'weekly') {
+        const monday = new Date(bar.date + 'T00:00:00Z');
+        monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
+        key = monday.toISOString().slice(0, 10);
+      }
+      if (!groups.has(key)) groups.set(key, { ...bar });
+      else {
+        const group = groups.get(key);
+        group.high = Math.max(group.high, bar.high);
+        group.low = Math.min(group.low, bar.low);
+        group.close = bar.close;
+        group.volume += bar.volume;
+        group.date = bar.date;
+      }
+    });
+    return [...groups.values()];
+  }
+  function describe(bar) {
+    return `${bar.date}　开 ${bar.open.toFixed(2)}　高 ${bar.high.toFixed(2)}　低 ${bar.low.toFixed(2)}　收 ${bar.close.toFixed(2)} 元　量 ${bar.volume.toFixed(0)} 万股`;
+  }
+  function draw() {
+    const width = chart.clientWidth, height = chart.clientHeight;
+    if (!width) return;
+    chart.replaceChildren();
+    chart.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    const shown = aggregate().slice(-(width < 420 ? 20 : 34));
+    const left = 8, right = width - 53, top = 18, bottom = height - 27;
+    const minimum = Math.min(46, ...shown.map(bar => bar.low)) - .3;
+    const maximum = Math.max(50.2, ...shown.map(bar => bar.high)) + .3;
+    const y = value => bottom - (value - minimum) / (maximum - minimum) * (bottom - top);
+    const step = (right - left) / shown.length;
+    const x = index => left + step * (index + .5);
+    [0, .25, .5, .75, 1].forEach(fraction => {
+      const value = minimum + (maximum - minimum) * fraction;
+      add(chart, 'line', { x1: left, x2: right, y1: y(value), y2: y(value), stroke: 'var(--line)', 'stroke-width': .6 });
+      label(right + 5, y(value) + 4, value.toFixed(2));
+    });
+    label(right + 5, 12, '元');
+    const bands = [
+      { key: 'pullback', low: 46.8, high: 47.2, color: 'var(--blue)', dash: '' },
+      { key: 'breakout', low: 49.2, high: 49.6, color: 'var(--orange)', dash: '5 4' }
+    ];
+    bands.forEach(band => {
+      add(chart, 'rect', { x: left, y: y(band.high), width: right - left, height: y(band.low) - y(band.high), fill: band.color, opacity: state.scenario === band.key ? .13 : .04 });
+      [band.low, band.high].forEach(value => add(chart, 'line', { x1: left, x2: right, y1: y(value), y2: y(value), stroke: band.color, 'stroke-width': state.scenario === band.key ? 1.6 : .8, 'stroke-dasharray': band.dash }));
+    });
+    add(chart, 'line', { x1: left, x2: right, y1: y(46.6), y2: y(46.6), stroke: 'var(--ink)', 'stroke-width': state.scenario === 'defend' ? 2 : 1, 'stroke-dasharray': '7 3 1 3' });
+    const crosshair = add(chart, 'line', { y1: top, y2: bottom, stroke: 'var(--muted)', 'stroke-width': 1, visibility: 'hidden', 'pointer-events': 'none' });
+    const readout = document.querySelector('#chart-ohlc');
+    shown.forEach((bar, index) => {
+      const rising = bar.close >= bar.open;
+      const color = rising ? 'var(--up)' : 'var(--down)';
+      const barWidth = Math.min(8, step * .55);
+      add(chart, 'line', { x1: x(index), x2: x(index), y1: y(bar.high), y2: y(bar.low), stroke: color });
+      add(chart, 'rect', { x: x(index) - barWidth / 2, y: y(Math.max(bar.open, bar.close)), width: barWidth, height: Math.max(1.2, Math.abs(y(bar.open) - y(bar.close))), fill: rising ? 'var(--paper)' : color, stroke: color });
+      const target = add(chart, 'rect', { x: x(index) - step / 2, y: top, width: step, height: bottom - top, fill: 'transparent', tabindex: 0, role: 'img', 'aria-label': describe(bar) });
+      const inspect = () => {
+        readout.textContent = describe(bar);
+        crosshair.setAttribute('x1', x(index));
+        crosshair.setAttribute('x2', x(index));
+        crosshair.setAttribute('visibility', 'visible');
+      };
+      target.addEventListener('pointerenter', inspect);
+      target.addEventListener('focus', inspect);
+      target.addEventListener('click', inspect);
+    });
+    [0, shown.length - 1].forEach((index, end) => label(x(index), height - 6, shown[index].date, { 'text-anchor': end ? 'end' : 'start' }));
+    readout.textContent = describe(shown.at(-1));
+    document.querySelector('#chart-table').innerHTML = shown.map(bar => `<tr><td>${bar.date}</td>${['open', 'high', 'low', 'close'].map(key => `<td>${bar[key].toFixed(2)}</td>`).join('')}<td>${bar.volume.toFixed(0)}</td></tr>`).join('');
+    document.querySelector('#period-warning').textContent = state.period === 'monthly' ? '月 K：2026 年 10 月尚未收盘，最后一根只表示截至 10 月 23 日的累计数据。' : `${state.period === 'daily' ? '日 K' : '周 K'}：截至样例交易日收盘。参考线只服务于当前策略，不代表所有周期的独立信号。`;
+  }
+  function render() {
+    const held = state.position === 'held', long = state.horizon === 'long';
+    document.querySelector('#decision-title').textContent = long ? (held ? '重新核验持有逻辑，不因今日反弹加仓' : '长期证据不足，暂不建立仓位') : (held ? '持仓观察，暂不加仓，先明确防守条件' : '暂不追入，等待更清晰的介入条件');
+    document.querySelector('#decision-text').textContent = long ? '今天的反弹没有补齐订单、回款和估值证据。价格位置只用于风险观察，不能代替长期价值判断。' : (held ? '今日反弹尚未越过压力区。现有仓位关注支撑是否失守，接近压力区时结合量价评估减仓或止盈；不因成本高低机械补仓。' : '今日反弹，但价格仍在区间中部。下一交易时段先观察回踩承接或放量突破，条件成立后再评估，不按当前收盘价直接下单。');
+    document.querySelector('#horizon-note').textContent = horizons[state.horizon];
+    const scenarios = [
+      { key: 'pullback', title: '回踩后企稳', condition: '再次回到 46.80–47.20 元区域，随后收盘重回 47.20 元上方；若直接跌穿，取消假设。', action: long ? '只记录价格信号；基本面与估值验证完成前，不据此建立长期仓位。' : held ? '先观察承接，不自动加仓；加仓须重新评估原持仓风险和总仓位。' : '重新评估试探性介入；下一时段价格跳空或位置改变时，重新计算风险收益。' },
+      { key: 'breakout', title: '放量越过压力', condition: '收盘站上 49.60 元，当日成交量至少为此前 20 日均量的 1.20 倍；盘中冲高不算确认。', action: long ? '不能用突破替代盈利兑现；不生成长期目标价。' : held ? '未突破时，压力区出现量价转弱则评估减仓或止盈；确认突破后重评持有，不机械卖出。' : '确认后等待回测不破再评估，不追开盘跳空；跌回压力区则取消突破方案。' },
+      { key: 'defend', title: '破位或出现新风险', condition: '价格跌破 46.60 元，或新的公告否定经营改善假设；任一发生就重新评估。', action: held ? '暂停加仓，优先评估减仓或退出；盘中破位及时处置风险，不把等待收盘当作必须。' : '取消介入计划，不因下跌便宜而抄底；等新的证据与结构形成。' }
+    ];
+    const container = document.querySelector('#scenarios');
+    container.innerHTML = scenarios.map(item => `<section class="scenario ${item.key === state.scenario ? 'active' : ''}"><div class="label">${item.key === 'defend' ? '风险预案' : '条件未触发 / 待下一时段验证'}</div><h3>${item.title}</h3><p><strong>条件：</strong>${item.condition}</p><p><strong>${held ? '持仓应对' : '空仓应对'}：</strong>${item.action}</p><button type="button" data-scenario="${item.key}" aria-pressed="${item.key === state.scenario}">查看${item.key === 'pullback' ? '回踩区' : item.key === 'breakout' ? '压力区' : '风险线'}</button></section>`).join('');
+    container.querySelectorAll('[data-scenario]').forEach(button => button.addEventListener('click', () => {
+      state.scenario = button.dataset.scenario;
+      // Keep the clicked node and keyboard focus instead of replacing the controls.
+      container.querySelectorAll('[data-scenario]').forEach(control => {
+        control.setAttribute('aria-pressed', control.dataset.scenario === state.scenario);
+        control.closest('.scenario').classList.toggle('active', control.dataset.scenario === state.scenario);
+      });
+      document.querySelector('#chart-explanation').textContent = explanations[state.scenario];
+      draw();
+      document.querySelector('#price-panel').scrollIntoView({ block: 'start' });
+    }));
+    ['position', 'horizon', 'period'].forEach(key => document.querySelectorAll(`[data-${key}]`).forEach(button => button.setAttribute('aria-pressed', button.dataset[key] === state[key])));
+    document.querySelector('#chart-explanation').textContent = explanations[state.scenario];
+    draw();
+  }
+  ['position', 'horizon', 'period'].forEach(key => document.querySelectorAll(`[data-${key}]`).forEach(button => button.addEventListener('click', () => {
+    state[key] = button.dataset[key];
+    render();
+  })));
+  document.querySelectorAll('[data-evidence]').forEach(button => button.addEventListener('click', () => {
+    const evidence = document.getElementById(button.dataset.evidence);
+    evidence.open = true;
+    evidence.focus({ preventScroll: true });
+    evidence.scrollIntoView({ block: 'start' });
+  }));
+  new ResizeObserver(draw).observe(chart);
+  render();
+})();
+</script>
+</body>
+</html>
