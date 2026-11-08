@@ -30,6 +30,7 @@ function mapProvider(raw: Record<string, unknown>): DataProviderCapability {
     warnings: strings(raw.warnings),
     lastError: raw.last_error == null ? null : String(raw.last_error),
     cooldown: raw.cooldown == null ? null : Boolean(raw.cooldown),
+    configKeys: strings(raw.config_keys),
   };
 }
 

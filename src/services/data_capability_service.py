@@ -21,6 +21,9 @@ class _ProviderDefinition:
     fetcher_name: Optional[str]
     dataset_markets: Mapping[str, Sequence[str]]
     builtin: bool = False
+    # Config keys a user sets to enable / tune this source (the credential first). The settings page
+    # edits exactly these; ``_is_provider_configured`` decides from the credential(s) among them.
+    config_keys: Sequence[str] = ()
 
     @property
     def datasets(self) -> Sequence[str]:
@@ -110,6 +113,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
             "kline.daily": ("cn", "hk"),
             "market.overview": ("cn",),
         },
+        config_keys=("TUSHARE_TOKEN",),
     ),
     _ProviderDefinition(
         name="tickflow",
@@ -121,6 +125,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
             "index.daily": ("cn",),
             "market.overview": ("cn",),
         },
+        config_keys=("TICKFLOW_API_KEY", "TICKFLOW_PRIORITY"),
     ),
     _ProviderDefinition(
         name="biying",
@@ -129,6 +134,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         dataset_markets={
             "quote.realtime": ("cn",),
         },
+        config_keys=("BIYING_LICENCE", "BIYING_TIMEOUT_SECONDS"),
     ),
     _ProviderDefinition(
         name="longbridge",
@@ -138,6 +144,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
             "quote.realtime": ("hk", "us"),
             "kline.daily": ("hk", "us"),
         },
+        config_keys=("LONGBRIDGE_APP_KEY", "LONGBRIDGE_APP_SECRET", "LONGBRIDGE_ACCESS_TOKEN", "LONGBRIDGE_OAUTH_CLIENT_ID"),
     ),
     _ProviderDefinition(
         name="futu",
@@ -148,6 +155,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
             "kline.daily": ("hk",),
             "financial.snapshot": ("hk",),
         },
+        config_keys=("FUTU_OPEND_HOST", "FUTU_OPEND_PORT"),
     ),
     _ProviderDefinition(
         name="finnhub",
@@ -156,6 +164,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         dataset_markets={
             "kline.daily": ("us",),
         },
+        config_keys=("FINNHUB_API_KEY",),
     ),
     _ProviderDefinition(
         name="alphavantage",
@@ -164,6 +173,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         dataset_markets={
             "kline.daily": ("us",),
         },
+        config_keys=("ALPHAVANTAGE_API_KEY",),
     ),
 )
 
@@ -326,6 +336,7 @@ class DataCapabilityService:
                     "warnings": warnings,
                     "last_error": self._safe_last_error(fetcher),
                     "cooldown": None,
+                    "config_keys": list(definition.config_keys),
                 }
             )
 

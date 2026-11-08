@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 设置 →「数据状态」的数据源行可以直接配置：Tushare、TickFlow、必盈、Longbridge、富途、Finnhub、Alpha Vantage 旁边有「配置 / 修改」，展开后填写该数据源的密钥和参数，保存立即生效（密钥不回显，留空不修改）。`GET /api/v1/data/overview` 的每个数据源新增 `config_keys` 字段。
 - [改进] 自选股和持仓的公司公告改为先从巨潮资讯（上市公司法定披露平台，公开检索、无需 token）获取，失败的股票再用东方财富；股票的巨潮 orgId 用官方映射表（多数股票不符合 `gssh0代码` 规则，猜错会查不到公告）。数据状态面板新增「巨潮资讯公告」来源，两个来源分别显示状态。
 - [新功能] 助手可以调用全部系统接口：新增 `read_api_doc`（按「分组目录 → 分组接口 → 单个接口的参数和返回结构」逐层读取由 OpenAPI 生成的 `/api/v1` 文档）和 `call_api`（进程内调用任意 `/api/v1` 接口，读写都可以，权限和登录用户相同），系统提示只告诉助手文档在哪里。自选、我的股票持仓、次日计划、选股、设置等现在都能直接查询和修改；助手自己的对话接口和不会结束的 SSE 流除外。只开放给 Web / 飞书助手，不给报告分析、定时任务、Bot 命令和多 Agent 模式。
 - [修复] 双击日 K 看分时失败时，页面写明真实原因（历史交易日需要配置必盈 `BIYING_LICENCE`、没有可用的分钟线数据源、数据源没有这天的数据、数据源请求失败），不再一律显示「访问外部模型或数据接口失败，请检查代理、DNS」；`GET /api/v1/stocks/{code}/intraday` 的 503 响应新增 `reason` 字段，`error` 仍是 `intraday_unavailable`。

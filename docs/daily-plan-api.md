@@ -130,6 +130,7 @@
 - 模型渠道（同一页左侧渠道列表、右侧编辑）：`LLM_CHANNELS` 与 `LLM_<NAME>_PROTOCOL`、`_BASE_URL`、`_API_KEY(S)`、`_ENABLED`、`_MODELS`（只保存打开的模型）；渠道名只能用小写字母、数字和下划线（`darren-cpa` 保存为 `darren_cpa`）；OpenAI 兼容、DeepSeek、Anthropic Messages 格式可经 `POST /system/config/llm/discover-models` 获取模型列表，其他格式手动添加；正在被某个用途使用的模型不能关闭，所在渠道不能停用或删除
 - 选股：`SCREENING_ENABLED`（选股页「开启选股」按钮）
 - 异动阈值：`BOARD_ANOMALY_THRESHOLDS`（经 `PUT /boards/thresholds` 写入）
+- 数据状态（数据源行的「配置 / 修改」）：每个需要配置的数据源编辑 `GET /data/overview` 里该数据源的 `config_keys`——Tushare `TUSHARE_TOKEN`；TickFlow `TICKFLOW_API_KEY`、`TICKFLOW_PRIORITY`；必盈 `BIYING_LICENCE`、`BIYING_TIMEOUT_SECONDS`；Longbridge `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`、`LONGBRIDGE_OAUTH_CLIENT_ID`；富途 `FUTU_OPEND_HOST`、`FUTU_OPEND_PORT`；Finnhub `FINNHUB_API_KEY`；Alpha Vantage `ALPHAVANTAGE_API_KEY`。内置数据源（AkShare、Efinance 等）没有可配置项。密钥类字段不回显，留空表示不修改；保存时带 `reload_now`，立即生效，随后刷新数据源状态
 
 `BOARD_ANOMALY_THRESHOLDS` 已随板块异动服务落地：值是一个 JSON 对象，只写被覆盖的键（空表示全部默认），字典型阈值可只写其中的字段（如 `{"excess_floor": {"concept": 3}}`）；它在 `src/core/config_registry.py` 中列为不在通用设置页显示的键（由异动阈值页面通过 `PUT /boards/thresholds` 编辑），`.env.example` 里有说明。`POSITION_*` 与 `DAILY_PLAN_ENABLED` 同样列为不在通用设置页显示的键（由新设置页的「仓位规则」「运行和推送」编辑），默认值、取值范围和含义见上面的「次日计划服务」，`.env.example` 里有说明；保存 `DAILY_PLAN_ENABLED` 会重建运行时调度器，其余键下一次读取即生效（非法值回到默认值并写日志）。
 
