@@ -108,3 +108,29 @@
 .plan-shell .stock-link:hover .nm, .plan-shell .stock-link:hover b { text-decoration-color: currentColor; }
 .plan-shell .stock-link .go { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 12px; color: var(--accent); }
 .plan-shell .reps .stock-link { display: inline; width: auto; margin: -4px -6px; padding: 4px 6px; }
+
+/* 计划页：标题区下方的内嵌 K 线 */
+.plan-shell .plan-kline { margin: 14px 0 6px; }
+.plan-shell .plan-kline-state { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 120px; margin: 0; color: var(--t3); text-align: center; }
+.plan-shell .qc-top.compact { justify-content: flex-end; }
+
+/* 分时：盖在 K 线图上，双击日 K 打开 */
+.plan-shell .qi {
+  position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; gap: 8px; min-height: 0;
+  padding: 12px 14px; border-radius: 14px; outline: none;
+  background: rgba(14,18,48,.94); box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+}
+.plan-shell .qi-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.plan-shell .qi-top h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--t1); }
+.plan-shell .qi-readout {
+  display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.plan-shell .qi-readout div { display: flex; gap: 6px; }
+.plan-shell .qi-readout dt { color: var(--t4); }
+.plan-shell .qi-readout dd { margin: 0; color: var(--t1); }
+.plan-shell .qi-readout dd.up { color: var(--up); }
+.plan-shell .qi-readout dd.down { color: var(--down); }
+.plan-shell .qi-svg { display: block; flex: 1; min-height: 0; width: 100%; cursor: crosshair; touch-action: pan-y; }
+.plan-shell .qi-state { display: grid; place-items: center; gap: 12px; flex: 1; color: var(--t3); text-align: center; }
+.plan-shell .qi-state p { margin: 0; }
+.plan-shell .qi-stale { margin: 0; font-size: 11.5px; color: var(--risk); }

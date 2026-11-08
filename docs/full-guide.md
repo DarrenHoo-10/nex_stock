@@ -436,7 +436,7 @@ daily_stock_analysis/
 | 变量名 | 说明 | 默认值 | 必填 |
 |--------|------|--------|:----:|
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
-| `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。 | - | 可选 |
+| `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。个股行情窗口双击日 K 查看历史交易日分时（`GET /api/v1/stocks/{code}/intraday`）也走必盈历史 5 分钟线，未配置时该功能提示读取失败。 | - | 可选 |
 | `BIYING_TIMEOUT_SECONDS` | 必盈单次请求超时（秒） | `8` | 可选 |
 | `INTRADAY_SNAPSHOT_TTL_SECONDS` | 助手盘中数据（全市场快照、个股报价、5 分钟 K 线）的内存缓存时效（秒）；仅提问时取，不做定时刷新，不写入 `stock_daily`。 | `60` | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填 `http://` 或 `https://` 开头的完整地址 | `http://api.tushare.pro` | 可选 |

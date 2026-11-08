@@ -119,6 +119,32 @@ class StockHistoryResponse(BaseModel):
     })
 
 
+class IntradayBar(BaseModel):
+    """分时（5 分钟）K 线数据点"""
+
+    time: str = Field(..., description="K 线结束时间（北京时间，YYYY-MM-DD HH:MM:SS）")
+    open: Optional[float] = Field(None, description="开盘价")
+    high: Optional[float] = Field(None, description="最高价")
+    low: Optional[float] = Field(None, description="最低价")
+    close: float = Field(..., description="收盘价")
+    volume: Optional[float] = Field(None, description="成交量（股）")
+    amount: Optional[float] = Field(None, description="成交额（元）")
+
+
+class StockIntradayResponse(BaseModel):
+    """某个交易日的分时（5 分钟）行情响应"""
+
+    stock_code: str = Field(..., description="股票代码")
+    trade_date: str = Field(..., description="交易日 YYYY-MM-DD")
+    interval: str = Field("5min", description="K 线间隔")
+    source: str = Field(..., description="数据来源（tushare / biying）")
+    as_of: str = Field(..., description="最后一根 K 线时间")
+    fetched_at: str = Field(..., description="本次取数时间")
+    is_stale: bool = Field(False, description="是否为过期数据（刷新失败后沿用旧数据，或盘中数据滞后）")
+    stale_reason: Optional[str] = Field(None, description="过期原因")
+    data: List[IntradayBar] = Field(default_factory=list, description="分时 K 线，按时间升序")
+
+
 class StockProfileQuoteBlock(BaseModel):
     status: StockProfileStatus
     data: Optional[StockQuote] = None
