@@ -475,7 +475,10 @@ def screen(
         llm_ranked = llm_result.ranked
         if not llm_ranked:
             if scope and scope.topics:
-                raise RuntimeError("模型未能完成题材判断，请稍后重试；未返回未核验的候选股票")
+                raise RuntimeError(
+                    f"模型未能完成题材判断（{_describe_topic_ranking_failure(llm_result, len(df_top))}），"
+                    "请稍后重试；未返回未核验的候选股票"
+                )
             picks = llm_fallback_picks
             degradation.append("LLM ranking failed: fell back to screen_score")
             for i, p in enumerate(picks):
@@ -615,6 +618,23 @@ def _emit_progress(
         callback(progress, message)
     except Exception as exc:  # noqa: BLE001 - progress reporting must not fail screening.
         logger.debug("Screening progress callback failed: %s", exc)
+
+
+def _describe_topic_ranking_failure(result: object, candidate_count: int) -> str:
+    """User-facing reason for a topic-scoped ranking failure (no secrets/raw output)."""
+    reason = getattr(result, "failure_reason", "")
+    if reason == "timeout":
+        return "模型响应超时，可调大 LLM_TIMEOUT_SEC"
+    if reason == "invalid_response":
+        coverage = float(getattr(result, "coverage", 0.0) or 0.0)
+        covered = round(coverage * max(candidate_count, 0))
+        return (
+            f"模型只返回了 {covered}/{candidate_count} 只候选的有效判断，"
+            "输出可能被截断，可调大 LLM_MAX_TOKENS"
+        )
+    if reason == "call_failed":
+        return "模型调用失败"
+    return "没有可用模型"
 
 
 def _df_to_picks(df: pd.DataFrame) -> list[Pick]:
