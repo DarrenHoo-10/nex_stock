@@ -7,6 +7,7 @@ validation hints, and category grouping.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
@@ -71,6 +72,10 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 
 WEB_SETTINGS_HIDDEN_FROM_UI = {
+    # Multi-user foundation: the primary user id and the optional root-key override
+    # are deployment-level values edited in .env, never through the settings form.
+    "PRIMARY_USER_ID",
+    "USER_SECRET_KEY",
     # Optional FXMacroData authorization is read from the process environment
     # when a tool runs; it is not a Web settings or model-input field.
     "FXMACRODATA_API_KEY",
@@ -5094,6 +5099,101 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Config scope (docs/design/multi-user.md section 3): single source of truth for
+# whether a key is a per-user setting or a process-level (system) setting.
+#   "user"   - may be set per user in the personal layer (``user_setting``)
+#   "system" - process-wide; only the admin edits it (.env); users always get the system value
+# Anything not listed here is "system" (fail closed): deploy/runtime knobs, auth, bot
+# apps and stream switches, local daemons (FUTU_OPEND/PYTDX), shared-job parameters
+# (board pipeline / news / market sync / market review), data semantics (*_PRIORITY,
+# adjust mode, realtime / chip toggles) and server-side paths or concurrency limits.
+# ---------------------------------------------------------------------------
+SCOPE_USER = "user"
+SCOPE_SYSTEM = "system"
+CONFIG_SCOPES = (SCOPE_USER, SCOPE_SYSTEM)
+
+_USER_SCOPE_KEYS = frozenset({
+    # Watchlist
+    "STOCK_LIST",
+    # Model: channels, provider keys / base urls, model names, sampling
+    "LLM_CHANNELS", "LITELLM_MODEL", "AGENT_LITELLM_MODEL", "LITELLM_LIGHT_MODEL",
+    "LITELLM_FALLBACK_MODELS", "LLM_REASONING_EFFORT", "AGENT_REASONING_EFFORT",
+    "LITELLM_LIGHT_REASONING_EFFORT", "LLM_TEMPERATURE", "MODELFLARE_KEY", "AIHUBMIX_KEY",
+    "ANSPIRE_LLM_ENABLED", "ANSPIRE_LLM_BASE_URL", "ANSPIRE_LLM_MODEL",
+    "DEEPSEEK_API_KEY", "DEEPSEEK_API_KEYS", "GEMINI_API_KEY", "GEMINI_API_KEYS",
+    "GEMINI_MODEL", "GEMINI_MODEL_FALLBACK", "GEMINI_TEMPERATURE",
+    "OPENAI_API_KEY", "OPENAI_API_KEYS", "OPENAI_BASE_URL", "OPENAI_MODEL",
+    "OPENAI_VISION_MODEL", "OPENAI_TEMPERATURE",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEYS", "ANTHROPIC_MODEL", "ANTHROPIC_TEMPERATURE",
+    "ANTHROPIC_MAX_TOKENS", "OLLAMA_API_BASE",
+    # Search keys / endpoints
+    "ANSPIRE_API_KEYS", "TAVILY_API_KEYS", "SERPAPI_API_KEYS", "BRAVE_API_KEYS", "BOCHA_API_KEYS",
+    "MINIMAX_API_KEYS", "SEARXNG_BASE_URLS", "SEARXNG_PUBLIC_INSTANCES_ENABLED",
+    # Data-source credentials only (priority / adjust mode / realtime toggles stay system)
+    "TUSHARE_TOKEN", "BIYING_LICENCE", "TICKFLOW_API_KEY", "MX_APIKEY",
+    "FINNHUB_API_KEY", "ALPHAVANTAGE_API_KEY", "LONGBRIDGE_APP_KEY", "LONGBRIDGE_APP_SECRET",
+    "LONGBRIDGE_ACCESS_TOKEN", "LONGBRIDGE_OAUTH_CLIENT_ID",
+    # Agent: skills, routing, context compression, assistant memory
+    "AGENT_MODE", "AGENT_MAX_STEPS", "AGENT_SKILLS", "AGENT_NL_ROUTING", "AGENT_ARCH",
+    "AGENT_ORCHESTRATOR_MODE", "AGENT_RISK_OVERRIDE", "AGENT_DEEP_RESEARCH_BUDGET",
+    "AGENT_SKILL_AUTOWEIGHT", "AGENT_SKILL_ROUTING", "AGENT_CONTEXT_COMPRESSION_ENABLED",
+    "AGENT_CONTEXT_COMPRESSION_PROFILE", "AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS",
+    "AGENT_CONTEXT_PROTECTED_TURNS", "AGENT_MEMORY_ENABLED", "ASSISTANT_RECALL_PROVIDER",
+    "ASSISTANT_RECALL_MASK_AMOUNTS", "ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT",
+    "ASSISTANT_NOTE_INJECT_MAX_CHARS", "HINDSIGHT_BASE_URL", "HINDSIGHT_API_KEY", "HINDSIGHT_BANK_ID",
+    # Notification channel credentials (not bot apps)
+    "WECHAT_WEBHOOK_URL", "DINGTALK_WEBHOOK_URL", "DINGTALK_SECRET", "PUSHPLUS_TOKEN", "PUSHPLUS_TOPIC",
+    "CUSTOM_WEBHOOK_URLS", "CUSTOM_WEBHOOK_BEARER_TOKEN", "CUSTOM_WEBHOOK_BODY_TEMPLATE",
+    "FEISHU_WEBHOOK_URL", "FEISHU_WEBHOOK_SECRET", "FEISHU_WEBHOOK_KEYWORD",
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_MESSAGE_THREAD_ID",
+    "EMAIL_SENDER", "EMAIL_PASSWORD", "EMAIL_RECEIVERS", "DISCORD_WEBHOOK_URL", "SLACK_WEBHOOK_URL",
+    "PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN", "NTFY_URL", "NTFY_TOKEN", "GOTIFY_URL", "GOTIFY_TOKEN",
+    "SERVERCHAN3_SENDKEY", "ASTRBOT_URL", "ASTRBOT_TOKEN",
+    # Push switches / times, routing preferences
+    "SINGLE_STOCK_NOTIFY", "MERGE_EMAIL_NOTIFICATION", "DAILY_PLAN_ENABLED",
+    "PREOPEN_PUSH_ENABLED", "PREOPEN_PUSH_TIME", "NOTIFICATION_REPORT_CHANNELS",
+    "NOTIFICATION_ALERT_CHANNELS", "NOTIFICATION_DEDUP_TTL_SECONDS", "NOTIFICATION_COOLDOWN_SECONDS",
+    "NOTIFICATION_QUIET_HOURS", "NOTIFICATION_TIMEZONE", "NOTIFICATION_MIN_SEVERITY",
+    "NOTIFICATION_DAILY_DIGEST_ENABLED",
+    # Position rules
+    "POSITION_STOP_LOSS_PCT", "POSITION_MAX_TOTAL_PCT", "POSITION_MAX_HOLDINGS",
+    "POSITION_MAX_SINGLE_PCT", "POSITION_STOP_MODE",
+    # Report preferences
+    "REPORT_TYPE", "REPORT_LANGUAGE", "REPORT_SUMMARY_ONLY", "REPORT_SHOW_LLM_MODEL",
+    "REPORT_HISTORY_COMPARE_N", "MARKET_REVIEW_COLOR_SCHEME",
+})
+
+# Dynamic per-channel model keys (LLM_<NAME>_API_KEY, LLM_<NAME>_BASE_URL, ...) are not
+# registered one by one; registered keys always take the explicit classification above.
+_DYNAMIC_LLM_CHANNEL_KEY_RE = re.compile(
+    r"^LLM_[A-Z0-9]+(?:_[A-Z0-9]+)*_(?:API_KEYS?|BASE_URL|MODELS|PROTOCOL|API_SURFACE|ENABLED|EXTRA_HEADERS)$"
+)
+
+
+def infer_config_scope(key: str) -> str:
+    """Return ``"user"`` or ``"system"`` for a key (registered or not); unknown keys are ``"system"``."""
+    key_upper = (key or "").strip().upper()
+    if key_upper in _USER_SCOPE_KEYS:
+        return SCOPE_USER
+    if key_upper not in _FIELD_DEFINITIONS and _DYNAMIC_LLM_CHANNEL_KEY_RE.match(key_upper):
+        return SCOPE_USER
+    return SCOPE_SYSTEM
+
+
+def get_config_scope(key: str) -> str:
+    """Scope of a config key, read from the registry definition when registered."""
+    key_upper = (key or "").strip().upper()
+    definition = _FIELD_DEFINITIONS.get(key_upper)
+    if definition is not None:
+        return definition["scope"]
+    return infer_config_scope(key_upper)
+
+
+for _key, _definition in _FIELD_DEFINITIONS.items():
+    _definition["scope"] = infer_config_scope(_key)
+del _key, _definition
+
 _DOC_FULL_GUIDE_ENV = [
     {
         "label": "完整指南：环境变量完整列表",
@@ -5683,6 +5783,7 @@ def get_field_definition(key: str, value_hint: Optional[str] = None) -> Dict[str
         "options": [],
         "validation": {},
         "display_order": 9000,
+        "scope": infer_config_scope(key_upper),
     }
     return field
 

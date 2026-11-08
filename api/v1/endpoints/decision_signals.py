@@ -6,9 +6,10 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Security
+from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.security import APIKeyCookie
 
+from api.deps import require_admin
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.decision_signals import (
     DecisionSignalCreateRequest,
@@ -210,6 +211,7 @@ def list_signals(
 
 @router.post(
     "/outcomes/run",
+    dependencies=[Depends(require_admin)],
     response_model=DecisionSignalOutcomeRunResponse,
     responses={
         **AUTH_RESPONSE,

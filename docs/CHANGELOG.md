@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 多用户地基（P1，设计见 `docs/design/multi-user.md`，单用户部署行为不变，普通用户还不能进入）：新增当前用户依赖 `get_current_user` / `require_admin`、`GET /api/v1/me`（`user_id`、`role`、`is_admin`、`auth_mode`、`model_key_configured`）、配置项 `PRIMARY_USER_ID`（默认 `local`，历史数据与无用户上下文入口的归属）和可选 `USER_SECRET_KEY`，`AUTH_MODE=user_center` 校验通过的用户按分钟节流登记到新表 `app_user`。
+- [新功能] 配置项新增 `scope`（`user` / `system`）：`src/core/config_registry.py` 是唯一来源，`/api/v1/system/config/schema` 的字段元数据同时返回；新增个人设置表 `user_setting`、按用户独立的数据密钥表 `user_data_key`（密钥项用该用户的数据密钥加密，根密钥默认保存在数据库同目录的 `user_secret.key`，仅在非主用户保存密钥时才生成）和只读的 `get_user_config(user_id)` 配置视图（模型与搜索 Key 不回退到系统层，数据源凭据和非密钥偏好回退）；P1 暂未接入任何业务服务。
+- [改进] 数据库迁移：计划（`plan_account`/`plan_holding`/`plan_run`/`plan_stock`）、持仓账户、关注板块、提醒规则、Agent 会话状态、助手笔记和 `llm_usage` 新增 `user_id`，`analysis_history` 新增 `requester_user_id` 与 `model_channel_fingerprint`，历史数据一律回填 `PRIMARY_USER_ID`；`plan_holding`、`board_follow`、`assistant_note` 重建为按用户唯一。首次迁移前自动用 SQLite backup API 在数据库旁备份（`*.pre-multi-user-<时间>.bak`），迁移在单个事务内完成，失败即回滚并拒绝启动。升级前请先设置 `PRIMARY_USER_ID`。
+- [改进] 管理员接口守卫：系统设置与调度器（`/api/v1/system/*`）、全站用量（`/api/v1/usage/*`）、资讯源管理与抓取（`/api/v1/intelligence/sources*`）、板块异动阈值与推荐刷新、决策信号后验评估、回测运行和大盘复盘触发改为仅管理员可用，普通用户返回 `403 ADMIN_REQUIRED`；`AUTH_MODE=local` 的当前用户固定为主用户（管理员），现有行为不变。
+- [测试] 新增多用户迁移（旧库升级、回填、唯一约束、幂等、备份、回滚）、每用户密钥隔离、配置视图、配置 `scope` 分类和管理员守卫 / `app_user` 的测试。
 - [新功能] 飞书推送改为扫码连接：Web「运行和推送」页点「扫码创建飞书机器人」，用飞书扫码确认后自动创建机器人、保存 App ID / Secret、开启长连接，并把你的私聊设为推送目标，不再需要到开放平台手动复制凭证（手动配置收进折叠区保留）。新增 `POST /api/v1/system/feishu/register`、`GET /api/v1/system/feishu/register/{session_id}`（凭证只在服务端保存）；Web 新增依赖 `qrcode.react`。
 - [新功能] 助手新增题材新闻工具 `search_market_news`：按关键词（如「寒潮」「天然气 涨价」）查资讯库里最近 1–7 天的快讯和公告，命中少时用已配置的搜索引擎补充，不再只能按单只股票搜新闻。
 - [改进] 助手没有讨论对象的问题（如「寒潮有哪些股票值得关注」）可以调用行情、K 线、筹码、个股新闻等工具查询候选股票，不再全部返回 `stock_scope_violation`；会话里已确认或抽屉选中了股票、对比和待澄清时仍只查这些对象。

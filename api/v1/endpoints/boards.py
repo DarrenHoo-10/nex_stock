@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.deps import get_board_anomaly_service, get_system_config_service
+from api.deps import get_board_anomaly_service, get_system_config_service, require_admin
 from api.v1.errors import api_error
 from api.v1.schemas.boards import (
     BoardAnomalyListResponse,
@@ -95,6 +95,7 @@ def list_thresholds(
 
 @router.put(
     "/thresholds",
+    dependencies=[Depends(require_admin)],
     response_model=ThresholdListResponse,
     responses={
         400: {"model": ErrorResponse},
@@ -253,6 +254,7 @@ def get_recommendations(
 
 @router.post(
     "/recommendations/refresh",
+    dependencies=[Depends(require_admin)],
     status_code=202,
     response_model=RecommendationResponse,
     responses={500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},

@@ -22,6 +22,7 @@ from src.storage import (
     DatabaseManager, DatabaseSchemaMigration, StockDaily,
 )
 from src.services import stock_list_parser as stock_list_parser_module
+from src.storage_multi_user_migration import MULTI_USER_SCHEMA_VERSION
 
 class TestStorage(unittest.TestCase):
 
@@ -178,7 +179,10 @@ class TestStorage(unittest.TestCase):
         with db.get_session() as session:
             versions = session.execute(select(DatabaseSchemaMigration.version)).scalars().all()
 
-        self.assertEqual(sorted(versions), sorted([CURRENT_SCHEMA_VERSION, CHAT_STATE_SCHEMA_VERSION]))
+        self.assertEqual(
+            sorted(versions),
+            sorted([CURRENT_SCHEMA_VERSION, CHAT_STATE_SCHEMA_VERSION, MULTI_USER_SCHEMA_VERSION]),
+        )
 
         DatabaseManager.reset_instance()
 

@@ -134,6 +134,9 @@ MODELFLARE_LLM_BASE_URL_DEFAULT = "https://modelflare.dev/v1"
 MODELFLARE_LLM_MODEL_DEFAULT = "openai/gpt-6.1-sol"
 
 
+DEFAULT_PRIMARY_USER_ID = "local"
+
+
 def _has_ntfy_topic_endpoint(value: Optional[str]) -> bool:
     """Return whether an ntfy URL points at a concrete topic endpoint."""
     raw_url = (value or "").strip()
@@ -891,9 +894,10 @@ def normalize_litellm_temperature(
     )
 
 
-def resolve_unified_llm_temperature(model: str) -> float:
+def resolve_unified_llm_temperature(model: str, env: Optional[Mapping[str, str]] = None) -> float:
     """Resolve the raw unified LLM temperature with backward-compatible fallbacks."""
-    llm_temperature_raw = os.getenv("LLM_TEMPERATURE")
+    env = os.environ if env is None else env
+    llm_temperature_raw = env.get("LLM_TEMPERATURE")
     if llm_temperature_raw and llm_temperature_raw.strip():
         try:
             return float(llm_temperature_raw)
@@ -909,7 +913,7 @@ def resolve_unified_llm_temperature(model: str) -> float:
     }
     preferred_env = provider_temperature_env.get(_get_litellm_provider(model))
     if preferred_env:
-        preferred_value = os.getenv(preferred_env)
+        preferred_value = env.get(preferred_env)
         if preferred_value and preferred_value.strip():
             try:
                 return float(preferred_value)
@@ -917,7 +921,7 @@ def resolve_unified_llm_temperature(model: str) -> float:
                 pass
 
     for env_name in ("GEMINI_TEMPERATURE", "ANTHROPIC_TEMPERATURE", "OPENAI_TEMPERATURE"):
-        env_value = os.getenv(env_name)
+        env_value = env.get(env_name)
         if env_value and env_value.strip():
             try:
                 return float(env_value)
@@ -1602,6 +1606,10 @@ class Config:
     # CONFIG_VALIDATE_MODE=strict: exit(1) when any "error" severity issue is found
     config_validate_mode: str = "warn"
 
+    # === 多用户：主用户（docs/design/multi-user.md 2.3） ===
+    # 既有历史数据、CLI/调度/机器人等无用户上下文入口都归属主用户；其个人设置就是 .env。
+    primary_user_id: str = DEFAULT_PRIMARY_USER_ID
+
     # --- Post-init validation ---------------------------------------------------
     _VALID_AGENT_ARCH = {"single", "multi"}
     _VALID_ORCHESTRATOR_MODES = {"quick", "standard", "full", "specialist"}
@@ -1652,6 +1660,15 @@ class Config:
         if normalized_profile != self.agent_context_compression_profile:
             object.__setattr__(self, "agent_context_compression_profile", normalized_profile)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if self.__dict__.get("_user_view_frozen"):
+            raise AttributeError(f"Config user view is read-only; cannot set {name!r}")
+        object.__setattr__(self, name, value)
+
+    def freeze_as_user_view(self) -> None:
+        """Make this instance read-only (per-user config views are shared between requests)."""
+        object.__setattr__(self, "_user_view_frozen", True)
+
     # 单例实例存储
     _instance: Optional['Config'] = None
     
@@ -1670,7 +1687,12 @@ class Config:
         return cls._instance
     
     @classmethod
-    def _load_from_env(cls) -> 'Config':
+    def _load_from_env(
+        cls,
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        user_override_keys: frozenset = frozenset(),
+    ) -> 'Config':
         """
         从 .env 文件加载配置
         
@@ -1678,16 +1700,25 @@ class Config:
         1. 大多数配置保持系统环境变量优先
         2. WebUI 可写的运行期关键键优先复用持久化 `.env`，但保留启动时显式进程环境变量的 override
         3. 代码中的默认值
+
+        ``env`` 默认是进程环境（``os.environ``），并执行加载 `.env`、设置代理等进程级
+        副作用。传入映射时只用该映射解析配置、不产生任何进程级副作用（多用户配置视图使用，
+        见 ``src/services/user_settings_service.py``）；``user_override_keys`` 是映射里
+        来自用户个人层的键，解析时优先于持久化 `.env` 文件。
         """
-        cls._capture_bootstrap_runtime_env_overrides()
-        preexisting_report_language = os.environ.get("REPORT_LANGUAGE")
+        use_process_env = env is None
+        if use_process_env:
+            env = os.environ
+            cls._capture_bootstrap_runtime_env_overrides()
+        preexisting_report_language = env.get("REPORT_LANGUAGE")
 
         # 确保环境变量已加载
-        setup_env()
+        if use_process_env:
+            setup_env()
 
         # === 智能代理配置 (关键修复) ===
         # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败
-        http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
+        http_proxy = (os.getenv('HTTP_PROXY') or os.getenv('http_proxy')) if use_process_env else None
         if http_proxy:
             # 国内金融数据源域名列表
             domestic_domains = [
@@ -1732,6 +1763,8 @@ class Config:
             'STOCK_LIST',
             default='',
             prefer_env_file=True,
+            env=env,
+            user_override_keys=user_override_keys,
         )
         stock_list = [
             (c or "").strip().upper()
@@ -1741,37 +1774,37 @@ class Config:
         
         # === LiteLLM multi-key parsing ===
         # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
-        _gemini_keys_raw = os.getenv('GEMINI_API_KEYS', '')
+        _gemini_keys_raw = env.get('GEMINI_API_KEYS', '')
         gemini_api_keys = [k.strip() for k in _gemini_keys_raw.split(',') if k.strip()]
-        _single_gemini = os.getenv('GEMINI_API_KEY', '').strip()
+        _single_gemini = env.get('GEMINI_API_KEY', '').strip()
         if not gemini_api_keys and _single_gemini:
             gemini_api_keys = [_single_gemini]
 
         # ANTHROPIC_API_KEYS > ANTHROPIC_API_KEY
-        _anthropic_keys_raw = os.getenv('ANTHROPIC_API_KEYS', '')
+        _anthropic_keys_raw = env.get('ANTHROPIC_API_KEYS', '')
         anthropic_api_keys = [k.strip() for k in _anthropic_keys_raw.split(',') if k.strip()]
-        _single_anthropic = os.getenv('ANTHROPIC_API_KEY', '').strip()
+        _single_anthropic = env.get('ANTHROPIC_API_KEY', '').strip()
         if not anthropic_api_keys and _single_anthropic:
             anthropic_api_keys = [_single_anthropic]
 
         # OPENAI_API_KEYS > AIHUBMIX_KEY > OPENAI_API_KEY
-        _aihubmix = os.getenv('AIHUBMIX_KEY', '').strip()
-        _openai_keys_raw = os.getenv('OPENAI_API_KEYS', '')
+        _aihubmix = env.get('AIHUBMIX_KEY', '').strip()
+        _openai_keys_raw = env.get('OPENAI_API_KEYS', '')
         openai_api_keys = [k.strip() for k in _openai_keys_raw.split(',') if k.strip()]
         if not openai_api_keys:
-            _single_openai = os.getenv('OPENAI_API_KEY', '').strip()
+            _single_openai = env.get('OPENAI_API_KEY', '').strip()
             _fallback_key = _aihubmix or _single_openai
             if _fallback_key:
                 openai_api_keys = [_fallback_key]
-        openai_base_url = os.getenv('OPENAI_BASE_URL') or (
+        openai_base_url = env.get('OPENAI_BASE_URL') or (
             'https://aihubmix.com/v1' if _aihubmix else None
         )
 
         # DEEPSEEK_API_KEYS > DEEPSEEK_API_KEY (independent from OpenAI-compatible layer)
-        _deepseek_keys_raw = os.getenv('DEEPSEEK_API_KEYS', '')
+        _deepseek_keys_raw = env.get('DEEPSEEK_API_KEYS', '')
         deepseek_api_keys = [k.strip() for k in _deepseek_keys_raw.split(',') if k.strip()]
         if not deepseek_api_keys:
-            _single_deepseek = os.getenv('DEEPSEEK_API_KEY', '').strip()
+            _single_deepseek = env.get('DEEPSEEK_API_KEY', '').strip()
             if _single_deepseek:
                 deepseek_api_keys = [_single_deepseek]
 
@@ -1779,15 +1812,15 @@ class Config:
         # OpenAI-compatible LLM gateway.  When no other OpenAI-compatible key is
         # configured, use ANSPIRE_API_KEYS as the legacy openai-compatible
         # provider so "one key" setups work without LLM_CHANNELS.
-        anspire_keys_str = os.getenv('ANSPIRE_API_KEYS', '')
+        anspire_keys_str = env.get('ANSPIRE_API_KEYS', '')
         anspire_api_keys = [k.strip() for k in anspire_keys_str.split(',') if k.strip()]
-        anspire_llm_enabled = parse_env_bool(os.getenv('ANSPIRE_LLM_ENABLED'), default=True)
+        anspire_llm_enabled = parse_env_bool(env.get('ANSPIRE_LLM_ENABLED'), default=True)
         anspire_llm_base_url = (
-            os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
+            env.get('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
         ).strip()
-        _anspire_llm_model_env = os.getenv('ANSPIRE_LLM_MODEL', '').strip()
+        _anspire_llm_model_env = env.get('ANSPIRE_LLM_MODEL', '').strip()
         anspire_channel_declared = False
-        for _raw_channel in os.getenv('LLM_CHANNELS', '').split(','):
+        for _raw_channel in env.get('LLM_CHANNELS', '').split(','):
             if _raw_channel.strip().lower() != "anspire":
                 continue
             anspire_channel_declared = True
@@ -1805,17 +1838,17 @@ class Config:
         # LITELLM_MODEL / LITELLM_FALLBACK_MODELS explicit values are recorded
         # before YAML/channels are parsed, but legacy inference is delayed until
         # the higher-priority sources and Hermes blocking issues are known.
-        litellm_model_explicit = os.getenv('LITELLM_MODEL', '').strip()
+        litellm_model_explicit = env.get('LITELLM_MODEL', '').strip()
         litellm_model = litellm_model_explicit
         inferred_legacy_deepseek_model = False
-        _openai_model_env = os.getenv('OPENAI_MODEL', '').strip()
+        _openai_model_env = env.get('OPENAI_MODEL', '').strip()
         if using_anspire_llm_legacy:
             _openai_model_name = _anspire_llm_model_env or _openai_model_env or ANSPIRE_LLM_MODEL_DEFAULT
         else:
             _openai_model_name = _openai_model_env or 'gpt-5.5'
 
         # LITELLM_FALLBACK_MODELS: comma-separated list of fallback models
-        _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
+        _fallback_str = env.get('LITELLM_FALLBACK_MODELS', '')
         litellm_fallback_models_explicit = bool(_fallback_str.strip())
         if _fallback_str.strip():
             litellm_fallback_models = [m.strip() for m in _fallback_str.split(',') if m.strip()]
@@ -1823,7 +1856,7 @@ class Config:
             litellm_fallback_models = []
 
         # === LLM Channels + YAML config ===
-        litellm_config_path = os.getenv('LITELLM_CONFIG', '').strip() or None
+        litellm_config_path = env.get('LITELLM_CONFIG', '').strip() or None
         llm_models_source = "legacy_env"
         llm_channels: List[Dict[str, Any]] = []
         llm_channel_names: List[str] = []
@@ -1834,13 +1867,13 @@ class Config:
 
         # Priority 1: LITELLM_CONFIG (standard LiteLLM YAML config file)
         if litellm_config_path:
-            llm_model_list = cls._parse_litellm_yaml(litellm_config_path)
+            llm_model_list = cls._parse_litellm_yaml(litellm_config_path, env)
             if llm_model_list:
                 llm_models_source = "litellm_config"
 
         # Priority 2: LLM_CHANNELS (env var based channel config)
         if not llm_model_list:
-            _channels_str = resolve_llm_channel_names(os.environ)
+            _channels_str = resolve_llm_channel_names(env)
             if _channels_str:
                 llm_channel_names = [
                     ch.strip().lower()
@@ -1852,7 +1885,7 @@ class Config:
                     hermes_issues,
                     llm_blocks_legacy_fallback,
                     llm_blocked_hermes_routes,
-                ) = cls._parse_llm_channels_with_issues(_channels_str)
+                ) = cls._parse_llm_channels_with_issues(_channels_str, env)
                 llm_channel_config_issues = [issue.as_dict() for issue in hermes_issues]
                 llm_model_list = cls._channels_to_model_list(llm_channels)
                 if llm_model_list:
@@ -1881,8 +1914,8 @@ class Config:
                 llm_models_source = "legacy_env"
 
             if not litellm_model:
-                _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
-                _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
+                _gemini_model_name = env.get('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
+                _anthropic_model_name = env.get('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
                 if gemini_api_keys:
                     litellm_model = f'gemini/{_gemini_model_name}'
                 elif anthropic_api_keys:
@@ -1899,7 +1932,7 @@ class Config:
 
             if not litellm_fallback_models and not litellm_fallback_models_explicit:
                 # Backward compat: use gemini_model_fallback when primary is gemini
-                _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview').strip()
+                _gemini_fallback = env.get('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview').strip()
                 if litellm_model.startswith('gemini/') and _gemini_fallback:
                     _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
                     litellm_fallback_models = [_fb]
@@ -1916,67 +1949,67 @@ class Config:
             )
 
         generation_backend = (
-            os.getenv('GENERATION_BACKEND', LITELLM_BACKEND_ID).strip().lower()
+            env.get('GENERATION_BACKEND', LITELLM_BACKEND_ID).strip().lower()
             or LITELLM_BACKEND_ID
         )
-        _generation_fallback_raw = os.getenv('GENERATION_FALLBACK_BACKEND')
+        _generation_fallback_raw = env.get('GENERATION_FALLBACK_BACKEND')
         if _generation_fallback_raw is None:
             generation_fallback_backend = LITELLM_BACKEND_ID
         else:
             generation_fallback_backend = _generation_fallback_raw.strip().lower()
         agent_generation_backend = (
-            os.getenv('AGENT_GENERATION_BACKEND', AUTO_AGENT_BACKEND_ID).strip().lower()
+            env.get('AGENT_GENERATION_BACKEND', AUTO_AGENT_BACKEND_ID).strip().lower()
             or AUTO_AGENT_BACKEND_ID
         )
         generation_backend_timeout_seconds = parse_env_int(
-            os.getenv('GENERATION_BACKEND_TIMEOUT_SECONDS'),
+            env.get('GENERATION_BACKEND_TIMEOUT_SECONDS'),
             DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
             field_name='GENERATION_BACKEND_TIMEOUT_SECONDS',
             minimum=1,
             maximum=MAX_LOCAL_CLI_TIMEOUT_SECONDS,
         )
         generation_backend_max_output_bytes = parse_env_int(
-            os.getenv('GENERATION_BACKEND_MAX_OUTPUT_BYTES'),
+            env.get('GENERATION_BACKEND_MAX_OUTPUT_BYTES'),
             DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
             field_name='GENERATION_BACKEND_MAX_OUTPUT_BYTES',
             minimum=1,
             maximum=MAX_LOCAL_CLI_OUTPUT_BYTES,
         )
         generation_backend_max_concurrency = parse_env_int(
-            os.getenv('GENERATION_BACKEND_MAX_CONCURRENCY'),
+            env.get('GENERATION_BACKEND_MAX_CONCURRENCY'),
             DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
             field_name='GENERATION_BACKEND_MAX_CONCURRENCY',
             minimum=1,
             maximum=MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
         )
         local_cli_backend_max_concurrency = parse_env_int(
-            os.getenv('LOCAL_CLI_BACKEND_MAX_CONCURRENCY'),
+            env.get('LOCAL_CLI_BACKEND_MAX_CONCURRENCY'),
             DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
             field_name='LOCAL_CLI_BACKEND_MAX_CONCURRENCY',
             minimum=1,
             maximum=MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
         )
-        opencode_cli_model = (os.getenv('OPENCODE_CLI_MODEL', '') or '').strip()
+        opencode_cli_model = (env.get('OPENCODE_CLI_MODEL', '') or '').strip()
 
         agent_litellm_model = normalize_agent_litellm_model(
-            os.getenv('AGENT_LITELLM_MODEL', ''),
+            env.get('AGENT_LITELLM_MODEL', ''),
             configured_models=set(get_configured_llm_models(llm_model_list)),
         )
         agent_context_compression_profile = normalize_agent_context_compression_profile(
-            os.getenv('AGENT_CONTEXT_COMPRESSION_PROFILE')
+            env.get('AGENT_CONTEXT_COMPRESSION_PROFILE')
         )
         agent_context_compression_preset = get_agent_context_compression_preset(
             agent_context_compression_profile
         )
         agent_context_compression_trigger_tokens = parse_agent_context_compression_int(
-            os.getenv('AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS'),
+            env.get('AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS'),
             agent_context_compression_preset.trigger_tokens,
             field_name='AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS',
             minimum=1000,
             maximum=200000,
         )
         agent_context_protected_turns = parse_agent_context_compression_int(
-            os.getenv('AGENT_CONTEXT_PROTECTED_TURNS'),
+            env.get('AGENT_CONTEXT_PROTECTED_TURNS'),
             agent_context_compression_preset.protected_turns,
             field_name='AGENT_CONTEXT_PROTECTED_TURNS',
             minimum=1,
@@ -1984,22 +2017,22 @@ class Config:
         )
 
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
-        bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
+        bocha_keys_str = env.get('BOCHA_API_KEYS', '')
         bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
 
-        minimax_keys_str = os.getenv('MINIMAX_API_KEYS', '')
+        minimax_keys_str = env.get('MINIMAX_API_KEYS', '')
         minimax_api_keys = [k.strip() for k in minimax_keys_str.split(',') if k.strip()]
         
-        tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')
+        tavily_keys_str = env.get('TAVILY_API_KEYS', '')
         tavily_api_keys = [k.strip() for k in tavily_keys_str.split(',') if k.strip()]
         
-        serpapi_keys_str = os.getenv('SERPAPI_API_KEYS', '')
+        serpapi_keys_str = env.get('SERPAPI_API_KEYS', '')
         serpapi_keys = [k.strip() for k in serpapi_keys_str.split(',') if k.strip()]
 
-        brave_keys_str = os.getenv('BRAVE_API_KEYS', '')
+        brave_keys_str = env.get('BRAVE_API_KEYS', '')
         brave_api_keys = [k.strip() for k in brave_keys_str.split(',') if k.strip()]
 
-        _raw_urls = [u.strip() for u in os.getenv('SEARXNG_BASE_URLS', '').split(',') if u.strip()]
+        _raw_urls = [u.strip() for u in env.get('SEARXNG_BASE_URLS', '').split(',') if u.strip()]
         searxng_base_urls = []
         invalid_searxng_urls = []
         for u in _raw_urls:
@@ -2014,14 +2047,14 @@ class Config:
                 ", ".join(invalid_searxng_urls[:3]),
             )
         searxng_public_instances_enabled = parse_env_bool(
-            os.getenv('SEARXNG_PUBLIC_INSTANCES_ENABLED'),
+            env.get('SEARXNG_PUBLIC_INSTANCES_ENABLED'),
             default=False,
         )
 
         # 企微消息类型与最大字节数逻辑
-        wechat_msg_type = os.getenv('WECHAT_MSG_TYPE', 'markdown')
+        wechat_msg_type = env.get('WECHAT_MSG_TYPE', 'markdown')
         wechat_msg_type_lower = wechat_msg_type.lower()
-        wechat_max_bytes_env = os.getenv('WECHAT_MAX_BYTES')
+        wechat_max_bytes_env = env.get('WECHAT_MAX_BYTES')
         if wechat_max_bytes_env not in (None, ''):
             wechat_max_bytes = parse_env_int(
                 wechat_max_bytes_env,
@@ -2038,6 +2071,8 @@ class Config:
         legacy_run_immediately_env = cls._resolve_env_value(
             'RUN_IMMEDIATELY',
             prefer_env_file=True,
+            env=env,
+            user_override_keys=user_override_keys,
         )
         legacy_run_immediately = (
             legacy_run_immediately_env.lower() == 'true'
@@ -2048,6 +2083,8 @@ class Config:
         schedule_run_immediately_env = cls._resolve_env_value(
             'SCHEDULE_RUN_IMMEDIATELY',
             prefer_env_file=True,
+            env=env,
+            user_override_keys=user_override_keys,
         )
         # Keep backward compatibility for container/process overrides:
         # when RUN_IMMEDIATELY is explicitly provided by the runtime but the
@@ -2069,48 +2106,54 @@ class Config:
             'SCHEDULE_TIME',
             default='18:00',
             prefer_env_file=True,
+            env=env,
+            user_override_keys=user_override_keys,
         )
         schedule_times_value = cls._resolve_env_value(
             'SCHEDULE_TIMES',
             default='',
             prefer_env_file=True,
+            env=env,
+            user_override_keys=user_override_keys,
         )
 
         report_language_raw = cls._resolve_report_language_env_value(
-            preexisting_report_language
+            preexisting_report_language,
+            env=env,
+            user_override_keys=user_override_keys,
         )
-        report_show_llm_model_raw = os.getenv('REPORT_SHOW_LLM_MODEL')
+        report_show_llm_model_raw = env.get('REPORT_SHOW_LLM_MODEL')
         report_show_llm_model = parse_env_bool(report_show_llm_model_raw, default=True)
         if report_show_llm_model_raw is not None and not report_show_llm_model_raw.strip():
             report_show_llm_model = False
 
         return cls(
             stock_list=stock_list,
-            feishu_app_id=os.getenv('FEISHU_APP_ID'),
-            feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
-            feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
-            tushare_token=os.getenv('TUSHARE_TOKEN'),
-            biying_licence=os.getenv('BIYING_LICENCE'),
-            biying_timeout_seconds=parse_env_float(os.getenv('BIYING_TIMEOUT_SECONDS'), 8.0, field_name='BIYING_TIMEOUT_SECONDS', minimum=1.0),
-            intraday_snapshot_ttl_seconds=parse_env_int(os.getenv('INTRADAY_SNAPSHOT_TTL_SECONDS'), 60, field_name='INTRADAY_SNAPSHOT_TTL_SECONDS', minimum=0),
-            tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
-            tickflow_kline_adjust=normalize_tickflow_kline_adjust(os.getenv('TICKFLOW_KLINE_ADJUST')),
-            tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
-            tickflow_batch_daily_enabled=parse_env_bool(os.getenv('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
-            tickflow_batch_size=parse_env_int(os.getenv('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
-            futu_opend_host=os.getenv('FUTU_OPEND_HOST') or None,
-            futu_opend_port=parse_env_int(os.getenv('FUTU_OPEND_PORT'), 11111, field_name='FUTU_OPEND_PORT', minimum=1, maximum=65535),
-            futu_hk_realtime_source_priority=os.getenv('FUTU_HK_REALTIME_SOURCE_PRIORITY', 'futu,longbridge,akshare,yfinance'),
-            mx_apikey=os.getenv('MX_APIKEY') or None,
-            mx_priority=parse_env_int(os.getenv('MX_PRIORITY'), 6, field_name='MX_PRIORITY', minimum=0),
-            finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,
-            alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or None,
-            longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
-            longbridge_app_secret=os.getenv('LONGBRIDGE_APP_SECRET') or None,
-            longbridge_access_token=os.getenv('LONGBRIDGE_ACCESS_TOKEN') or None,
-            longbridge_oauth_client_id=os.getenv('LONGBRIDGE_OAUTH_CLIENT_ID') or None,
+            feishu_app_id=env.get('FEISHU_APP_ID'),
+            feishu_app_secret=env.get('FEISHU_APP_SECRET'),
+            feishu_folder_token=env.get('FEISHU_FOLDER_TOKEN'),
+            tushare_token=env.get('TUSHARE_TOKEN'),
+            biying_licence=env.get('BIYING_LICENCE'),
+            biying_timeout_seconds=parse_env_float(env.get('BIYING_TIMEOUT_SECONDS'), 8.0, field_name='BIYING_TIMEOUT_SECONDS', minimum=1.0),
+            intraday_snapshot_ttl_seconds=parse_env_int(env.get('INTRADAY_SNAPSHOT_TTL_SECONDS'), 60, field_name='INTRADAY_SNAPSHOT_TTL_SECONDS', minimum=0),
+            tickflow_api_key=env.get('TICKFLOW_API_KEY'),
+            tickflow_kline_adjust=normalize_tickflow_kline_adjust(env.get('TICKFLOW_KLINE_ADJUST')),
+            tickflow_priority=parse_env_int(env.get('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
+            tickflow_batch_daily_enabled=parse_env_bool(env.get('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
+            tickflow_batch_size=parse_env_int(env.get('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
+            futu_opend_host=env.get('FUTU_OPEND_HOST') or None,
+            futu_opend_port=parse_env_int(env.get('FUTU_OPEND_PORT'), 11111, field_name='FUTU_OPEND_PORT', minimum=1, maximum=65535),
+            futu_hk_realtime_source_priority=env.get('FUTU_HK_REALTIME_SOURCE_PRIORITY', 'futu,longbridge,akshare,yfinance'),
+            mx_apikey=env.get('MX_APIKEY') or None,
+            mx_priority=parse_env_int(env.get('MX_PRIORITY'), 6, field_name='MX_PRIORITY', minimum=0),
+            finnhub_api_key=env.get('FINNHUB_API_KEY') or None,
+            alphavantage_api_key=env.get('ALPHAVANTAGE_API_KEY') or None,
+            longbridge_app_key=env.get('LONGBRIDGE_APP_KEY') or None,
+            longbridge_app_secret=env.get('LONGBRIDGE_APP_SECRET') or None,
+            longbridge_access_token=env.get('LONGBRIDGE_ACCESS_TOKEN') or None,
+            longbridge_oauth_client_id=env.get('LONGBRIDGE_OAUTH_CLIENT_ID') or None,
             stock_index_remote_update_enabled=parse_env_bool(
-                os.getenv('STOCK_INDEX_REMOTE_UPDATE_ENABLED'),
+                env.get('STOCK_INDEX_REMOTE_UPDATE_ENABLED'),
                 default=True,
             ),
             generation_backend=generation_backend,
@@ -2122,15 +2165,15 @@ class Config:
             opencode_cli_model=opencode_cli_model,
             litellm_model=litellm_model,
             litellm_light_model=normalize_agent_litellm_model(
-                os.getenv('LITELLM_LIGHT_MODEL', ''),
+                env.get('LITELLM_LIGHT_MODEL', ''),
                 configured_models=set(get_configured_llm_models(llm_model_list)),
             ),
             litellm_fallback_models=litellm_fallback_models,
-            llm_temperature=resolve_unified_llm_temperature(litellm_model),
-            llm_reasoning_effort=_parse_reasoning_effort(os.getenv('LLM_REASONING_EFFORT'), 'LLM_REASONING_EFFORT'),
-            agent_reasoning_effort=_parse_reasoning_effort(os.getenv('AGENT_REASONING_EFFORT'), 'AGENT_REASONING_EFFORT'),
+            llm_temperature=resolve_unified_llm_temperature(litellm_model, env),
+            llm_reasoning_effort=_parse_reasoning_effort(env.get('LLM_REASONING_EFFORT'), 'LLM_REASONING_EFFORT'),
+            agent_reasoning_effort=_parse_reasoning_effort(env.get('AGENT_REASONING_EFFORT'), 'AGENT_REASONING_EFFORT'),
             litellm_light_reasoning_effort=_parse_reasoning_effort(
-                os.getenv('LITELLM_LIGHT_REASONING_EFFORT'), 'LITELLM_LIGHT_REASONING_EFFORT'
+                env.get('LITELLM_LIGHT_REASONING_EFFORT'), 'LITELLM_LIGHT_REASONING_EFFORT'
             ),
             litellm_config_path=litellm_config_path,
             llm_models_source=llm_models_source,
@@ -2141,31 +2184,31 @@ class Config:
             llm_blocked_hermes_routes=llm_blocked_hermes_routes,
             llm_model_list=llm_model_list,
             llm_prompt_cache_telemetry_enabled=parse_env_bool(
-                os.getenv("LLM_PROMPT_CACHE_TELEMETRY_ENABLED"),
+                env.get("LLM_PROMPT_CACHE_TELEMETRY_ENABLED"),
                 default=True,
             ),
             llm_prompt_cache_hints_enabled=parse_env_bool(
-                os.getenv("LLM_PROMPT_CACHE_HINTS_ENABLED"),
+                env.get("LLM_PROMPT_CACHE_HINTS_ENABLED"),
                 default=False,
             ),
             llm_prompt_cache_diagnostics_level=parse_prompt_cache_diagnostics_level(
-                os.getenv("LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+                env.get("LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
             ),
             gemini_api_keys=gemini_api_keys,
             anthropic_api_keys=anthropic_api_keys,
             openai_api_keys=openai_api_keys,
             deepseek_api_keys=deepseek_api_keys,
-            gemini_api_key=os.getenv('GEMINI_API_KEY'),
-            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview'),
-            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview'),
-            gemini_temperature=parse_env_float(os.getenv('GEMINI_TEMPERATURE'), 0.7, field_name='GEMINI_TEMPERATURE'),
-            gemini_request_delay=parse_env_float(os.getenv('GEMINI_REQUEST_DELAY'), 2.0, field_name='GEMINI_REQUEST_DELAY', minimum=0.0),
-            gemini_max_retries=parse_env_int(os.getenv('GEMINI_MAX_RETRIES'), 5, field_name='GEMINI_MAX_RETRIES', minimum=0),
-            gemini_retry_delay=parse_env_float(os.getenv('GEMINI_RETRY_DELAY'), 5.0, field_name='GEMINI_RETRY_DELAY', minimum=0.0),
-            anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
-            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
-            anthropic_temperature=parse_env_float(os.getenv('ANTHROPIC_TEMPERATURE'), 0.7, field_name='ANTHROPIC_TEMPERATURE'),
-            anthropic_max_tokens=parse_env_int(os.getenv('ANTHROPIC_MAX_TOKENS'), 8192, field_name='ANTHROPIC_MAX_TOKENS', minimum=1),
+            gemini_api_key=env.get('GEMINI_API_KEY'),
+            gemini_model=env.get('GEMINI_MODEL', 'gemini-3.1-pro-preview'),
+            gemini_model_fallback=env.get('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview'),
+            gemini_temperature=parse_env_float(env.get('GEMINI_TEMPERATURE'), 0.7, field_name='GEMINI_TEMPERATURE'),
+            gemini_request_delay=parse_env_float(env.get('GEMINI_REQUEST_DELAY'), 2.0, field_name='GEMINI_REQUEST_DELAY', minimum=0.0),
+            gemini_max_retries=parse_env_int(env.get('GEMINI_MAX_RETRIES'), 5, field_name='GEMINI_MAX_RETRIES', minimum=0),
+            gemini_retry_delay=parse_env_float(env.get('GEMINI_RETRY_DELAY'), 5.0, field_name='GEMINI_RETRY_DELAY', minimum=0.0),
+            anthropic_api_key=env.get('ANTHROPIC_API_KEY'),
+            anthropic_model=env.get('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
+            anthropic_temperature=parse_env_float(env.get('ANTHROPIC_TEMPERATURE'), 0.7, field_name='ANTHROPIC_TEMPERATURE'),
+            anthropic_max_tokens=parse_env_int(env.get('ANTHROPIC_MAX_TOKENS'), 8192, field_name='ANTHROPIC_MAX_TOKENS', minimum=1),
             # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
             # Within the OpenAI-compatible layer: AIHUBMIX_KEY takes priority over OPENAI_API_KEY.
             # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
@@ -2175,15 +2218,15 @@ class Config:
             openai_api_key=openai_api_keys[0] if openai_api_keys else None,
             openai_base_url=openai_base_url,
             openai_model=_openai_model_name,
-            openai_vision_model=os.getenv('OPENAI_VISION_MODEL') or None,
-            openai_temperature=parse_env_float(os.getenv('OPENAI_TEMPERATURE'), 0.7, field_name='OPENAI_TEMPERATURE'),
+            openai_vision_model=env.get('OPENAI_VISION_MODEL') or None,
+            openai_temperature=parse_env_float(env.get('OPENAI_TEMPERATURE'), 0.7, field_name='OPENAI_TEMPERATURE'),
             # Vision model: VISION_MODEL > OPENAI_VISION_MODEL (alias) > default
             vision_model=(
-                os.getenv('VISION_MODEL')
-                or os.getenv('OPENAI_VISION_MODEL')
+                env.get('VISION_MODEL')
+                or env.get('OPENAI_VISION_MODEL')
                 or ""
             ),
-            vision_provider_priority=os.getenv('VISION_PROVIDER_PRIORITY', 'gemini,anthropic,openai'),
+            vision_provider_priority=env.get('VISION_PROVIDER_PRIORITY', 'gemini,anthropic,openai'),
             anspire_api_keys=anspire_api_keys,
             bocha_api_keys=bocha_api_keys,
             minimax_api_keys=minimax_api_keys,
@@ -2193,518 +2236,521 @@ class Config:
             searxng_base_urls=searxng_base_urls,
             searxng_public_instances_enabled=searxng_public_instances_enabled,
             searxng_timeout_seconds=parse_env_int(
-                os.getenv('SEARXNG_TIMEOUT_SECONDS'), 10, field_name='SEARXNG_TIMEOUT_SECONDS', minimum=1
+                env.get('SEARXNG_TIMEOUT_SECONDS'), 10, field_name='SEARXNG_TIMEOUT_SECONDS', minimum=1
             ),
-            social_sentiment_api_key=os.getenv('SOCIAL_SENTIMENT_API_KEY') or None,
-            social_sentiment_api_url=os.getenv('SOCIAL_SENTIMENT_API_URL', 'https://api.adanos.org').rstrip('/'),
-            news_max_age_days=parse_env_int(os.getenv('NEWS_MAX_AGE_DAYS'), 3, field_name='NEWS_MAX_AGE_DAYS', minimum=1),
+            social_sentiment_api_key=env.get('SOCIAL_SENTIMENT_API_KEY') or None,
+            social_sentiment_api_url=env.get('SOCIAL_SENTIMENT_API_URL', 'https://api.adanos.org').rstrip('/'),
+            news_max_age_days=parse_env_int(env.get('NEWS_MAX_AGE_DAYS'), 3, field_name='NEWS_MAX_AGE_DAYS', minimum=1),
             news_strategy_profile=cls._parse_news_strategy_profile(
-                os.getenv('NEWS_STRATEGY_PROFILE', 'short')
+                env.get('NEWS_STRATEGY_PROFILE', 'short')
             ),
             news_intel_retention_days=parse_env_int(
-                os.getenv('NEWS_INTEL_RETENTION_DAYS'),
+                env.get('NEWS_INTEL_RETENTION_DAYS'),
                 30,
                 field_name='NEWS_INTEL_RETENTION_DAYS',
                 minimum=1,
                 maximum=365,
             ),
             news_intel_fetch_timeout_sec=parse_env_float(
-                os.getenv('NEWS_INTEL_FETCH_TIMEOUT_SEC'),
+                env.get('NEWS_INTEL_FETCH_TIMEOUT_SEC'),
                 8.0,
                 field_name='NEWS_INTEL_FETCH_TIMEOUT_SEC',
                 minimum=1.0,
                 maximum=30.0,
             ),
             news_intel_max_items_per_source=parse_env_int(
-                os.getenv('NEWS_INTEL_MAX_ITEMS_PER_SOURCE'),
+                env.get('NEWS_INTEL_MAX_ITEMS_PER_SOURCE'),
                 50,
                 field_name='NEWS_INTEL_MAX_ITEMS_PER_SOURCE',
                 minimum=1,
                 maximum=200,
             ),
             news_intel_auto_fetch_enabled=parse_env_bool(
-                os.getenv('NEWS_INTEL_AUTO_FETCH_ENABLED'),
+                env.get('NEWS_INTEL_AUTO_FETCH_ENABLED'),
                 False,
             ),
             news_poll_interval_minutes=parse_env_int(
-                os.getenv('NEWS_POLL_INTERVAL_MINUTES'),
+                env.get('NEWS_POLL_INTERVAL_MINUTES'),
                 10,
                 field_name='NEWS_POLL_INTERVAL_MINUTES',
                 minimum=1,
                 maximum=240,
             ),
             news_poll_offhours_interval_minutes=parse_env_int(
-                os.getenv('NEWS_POLL_OFFHOURS_INTERVAL_MINUTES'),
+                env.get('NEWS_POLL_OFFHOURS_INTERVAL_MINUTES'),
                 30,
                 field_name='NEWS_POLL_OFFHOURS_INTERVAL_MINUTES',
                 minimum=1,
                 maximum=1440,
             ),
-            news_akshare_cls_symbol=cls._parse_news_cls_symbol(os.getenv('NEWS_AKSHARE_CLS_SYMBOL')),
+            news_akshare_cls_symbol=cls._parse_news_cls_symbol(env.get('NEWS_AKSHARE_CLS_SYMBOL')),
             news_flash_retention_days=parse_env_int(
-                os.getenv('NEWS_FLASH_RETENTION_DAYS'),
+                env.get('NEWS_FLASH_RETENTION_DAYS'),
                 3,
                 field_name='NEWS_FLASH_RETENTION_DAYS',
                 minimum=1,
                 maximum=365,
             ),
             news_company_retention_days=parse_env_int(
-                os.getenv('NEWS_COMPANY_RETENTION_DAYS'),
+                env.get('NEWS_COMPANY_RETENTION_DAYS'),
                 30,
                 field_name='NEWS_COMPANY_RETENTION_DAYS',
                 minimum=1,
                 maximum=365,
             ),
             news_dedup_window_minutes=parse_env_int(
-                os.getenv('NEWS_DEDUP_WINDOW_MINUTES'),
+                env.get('NEWS_DEDUP_WINDOW_MINUTES'),
                 30,
                 field_name='NEWS_DEDUP_WINDOW_MINUTES',
                 minimum=1,
                 maximum=720,
             ),
             news_fetch_timeout_sec=parse_env_float(
-                os.getenv('NEWS_FETCH_TIMEOUT_SEC'),
+                env.get('NEWS_FETCH_TIMEOUT_SEC'),
                 30.0,
                 field_name='NEWS_FETCH_TIMEOUT_SEC',
                 minimum=3.0,
             ),
-            news_announcement_mode=cls._parse_news_announcement_mode(os.getenv('NEWS_ANNOUNCEMENT_MODE')),
+            news_announcement_mode=cls._parse_news_announcement_mode(env.get('NEWS_ANNOUNCEMENT_MODE')),
             news_announcement_by_code_max=parse_env_int(
-                os.getenv('NEWS_ANNOUNCEMENT_BY_CODE_MAX'),
+                env.get('NEWS_ANNOUNCEMENT_BY_CODE_MAX'),
                 12,
                 field_name='NEWS_ANNOUNCEMENT_BY_CODE_MAX',
                 minimum=1,
                 maximum=200,
             ),
             news_daily_fetch_time=_parse_hhmm(
-                os.getenv('NEWS_DAILY_FETCH_TIME'),
+                env.get('NEWS_DAILY_FETCH_TIME'),
                 default='08:05',
                 field_name='NEWS_DAILY_FETCH_TIME',
             ),
-            news_classify_enabled=parse_env_bool(os.getenv('NEWS_CLASSIFY_ENABLED'), True),
+            news_classify_enabled=parse_env_bool(env.get('NEWS_CLASSIFY_ENABLED'), True),
             news_classify_batch_size=parse_env_int(
-                os.getenv('NEWS_CLASSIFY_BATCH_SIZE'),
+                env.get('NEWS_CLASSIFY_BATCH_SIZE'),
                 20,
                 field_name='NEWS_CLASSIFY_BATCH_SIZE',
                 minimum=1,
                 maximum=50,
             ),
             news_classify_max_items_per_run=parse_env_int(
-                os.getenv('NEWS_CLASSIFY_MAX_ITEMS_PER_RUN'),
+                env.get('NEWS_CLASSIFY_MAX_ITEMS_PER_RUN'),
                 60,
                 field_name='NEWS_CLASSIFY_MAX_ITEMS_PER_RUN',
                 minimum=1,
                 maximum=500,
             ),
             news_classify_max_attempts=parse_env_int(
-                os.getenv('NEWS_CLASSIFY_MAX_ATTEMPTS'),
+                env.get('NEWS_CLASSIFY_MAX_ATTEMPTS'),
                 5,
                 field_name='NEWS_CLASSIFY_MAX_ATTEMPTS',
                 minimum=1,
                 maximum=20,
             ),
             news_board_driver_min_importance=parse_env_int(
-                os.getenv('NEWS_BOARD_DRIVER_MIN_IMPORTANCE'),
+                env.get('NEWS_BOARD_DRIVER_MIN_IMPORTANCE'),
                 4,
                 field_name='NEWS_BOARD_DRIVER_MIN_IMPORTANCE',
                 minimum=1,
                 maximum=5,
             ),
-            newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
-            bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
-            agent_backend=(os.getenv('AGENT_BACKEND', 'auto') or 'auto').strip().lower(),
+            newsnow_base_url=((env.get('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
+            bias_threshold=parse_env_float(env.get('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
+            agent_backend=(env.get('AGENT_BACKEND', 'auto') or 'auto').strip().lower(),
             agent_generation_backend=agent_generation_backend,
             agent_litellm_model=agent_litellm_model,
-            agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
-            _agent_mode_explicit=os.getenv('AGENT_MODE') is not None,
+            agent_mode=env.get('AGENT_MODE', 'false').lower() == 'true',
+            _agent_mode_explicit=env.get('AGENT_MODE') is not None,
             agent_max_steps=parse_env_int(
-                os.getenv('AGENT_MAX_STEPS'),
+                env.get('AGENT_MAX_STEPS'),
                 AGENT_MAX_STEPS_DEFAULT,
                 field_name='AGENT_MAX_STEPS',
                 minimum=1,
             ),
-            agent_skills=[s.strip() for s in os.getenv('AGENT_SKILLS', '').split(',') if s.strip()],
-            agent_skill_dir=os.getenv('AGENT_SKILL_DIR') or os.getenv('AGENT_STRATEGY_DIR'),
-            agent_nl_routing=os.getenv('AGENT_NL_ROUTING', 'false').lower() == 'true',
-            agent_arch=os.getenv('AGENT_ARCH', 'single').lower(),
-            agent_orchestrator_mode=os.getenv('AGENT_ORCHESTRATOR_MODE', 'standard').lower(),
+            agent_skills=[s.strip() for s in env.get('AGENT_SKILLS', '').split(',') if s.strip()],
+            agent_skill_dir=env.get('AGENT_SKILL_DIR') or env.get('AGENT_STRATEGY_DIR'),
+            agent_nl_routing=env.get('AGENT_NL_ROUTING', 'false').lower() == 'true',
+            agent_arch=env.get('AGENT_ARCH', 'single').lower(),
+            agent_orchestrator_mode=env.get('AGENT_ORCHESTRATOR_MODE', 'standard').lower(),
             agent_orchestrator_timeout_s=parse_env_int(
-                os.getenv('AGENT_ORCHESTRATOR_TIMEOUT_S'),
+                env.get('AGENT_ORCHESTRATOR_TIMEOUT_S'),
                 600,
                 field_name='AGENT_ORCHESTRATOR_TIMEOUT_S',
                 minimum=0,
             ),
             agent_technical_agent_timeout_s=parse_env_float(
-                os.getenv('AGENT_TECHNICAL_AGENT_TIMEOUT_S'), 0,
+                env.get('AGENT_TECHNICAL_AGENT_TIMEOUT_S'), 0,
                 field_name='AGENT_TECHNICAL_AGENT_TIMEOUT_S', minimum=0,
             ),
             agent_intel_agent_timeout_s=parse_env_float(
-                os.getenv('AGENT_INTEL_AGENT_TIMEOUT_S'), 0,
+                env.get('AGENT_INTEL_AGENT_TIMEOUT_S'), 0,
                 field_name='AGENT_INTEL_AGENT_TIMEOUT_S', minimum=0,
             ),
             agent_risk_agent_timeout_s=parse_env_float(
-                os.getenv('AGENT_RISK_AGENT_TIMEOUT_S'), 0,
+                env.get('AGENT_RISK_AGENT_TIMEOUT_S'), 0,
                 field_name='AGENT_RISK_AGENT_TIMEOUT_S', minimum=0,
             ),
             agent_decision_agent_timeout_s=parse_env_float(
-                os.getenv('AGENT_DECISION_AGENT_TIMEOUT_S'), 0,
+                env.get('AGENT_DECISION_AGENT_TIMEOUT_S'), 0,
                 field_name='AGENT_DECISION_AGENT_TIMEOUT_S', minimum=0,
             ),
             agent_portfolio_agent_timeout_s=parse_env_float(
-                os.getenv('AGENT_PORTFOLIO_AGENT_TIMEOUT_S'), 0,
+                env.get('AGENT_PORTFOLIO_AGENT_TIMEOUT_S'), 0,
                 field_name='AGENT_PORTFOLIO_AGENT_TIMEOUT_S', minimum=0,
             ),
             agent_skill_agent_timeout_s=parse_env_float(
-                os.getenv('AGENT_SKILL_AGENT_TIMEOUT_S'), 0,
+                env.get('AGENT_SKILL_AGENT_TIMEOUT_S'), 0,
                 field_name='AGENT_SKILL_AGENT_TIMEOUT_S', minimum=0,
             ),
             agent_data_tool_timeout_s=parse_env_float(
-                os.getenv('AGENT_DATA_TOOL_TIMEOUT_S'), 0.0,
+                env.get('AGENT_DATA_TOOL_TIMEOUT_S'), 0.0,
                 field_name='AGENT_DATA_TOOL_TIMEOUT_S', minimum=0.0,
             ),
             agent_search_tool_timeout_s=parse_env_float(
-                os.getenv('AGENT_SEARCH_TOOL_TIMEOUT_S'), 0.0,
+                env.get('AGENT_SEARCH_TOOL_TIMEOUT_S'), 0.0,
                 field_name='AGENT_SEARCH_TOOL_TIMEOUT_S', minimum=0.0,
             ),
             agent_analysis_tool_timeout_s=parse_env_float(
-                os.getenv('AGENT_ANALYSIS_TOOL_TIMEOUT_S'), 0.0,
+                env.get('AGENT_ANALYSIS_TOOL_TIMEOUT_S'), 0.0,
                 field_name='AGENT_ANALYSIS_TOOL_TIMEOUT_S', minimum=0.0,
             ),
             agent_action_tool_timeout_s=parse_env_float(
-                os.getenv('AGENT_ACTION_TOOL_TIMEOUT_S'), 0.0,
+                env.get('AGENT_ACTION_TOOL_TIMEOUT_S'), 0.0,
                 field_name='AGENT_ACTION_TOOL_TIMEOUT_S', minimum=0.0,
             ),
             agent_skill_concurrency=parse_env_int(
-                os.getenv('AGENT_SKILL_CONCURRENCY'),
+                env.get('AGENT_SKILL_CONCURRENCY'),
                 3,
                 field_name='AGENT_SKILL_CONCURRENCY',
                 minimum=1,
                 maximum=4,
             ),
-            agent_risk_override=os.getenv('AGENT_RISK_OVERRIDE', 'true').lower() == 'true',
+            agent_risk_override=env.get('AGENT_RISK_OVERRIDE', 'true').lower() == 'true',
             agent_deep_research_budget=parse_env_int(
-                os.getenv('AGENT_DEEP_RESEARCH_BUDGET'),
+                env.get('AGENT_DEEP_RESEARCH_BUDGET'),
                 30000,
                 field_name='AGENT_DEEP_RESEARCH_BUDGET',
                 minimum=5000,
             ),
             agent_deep_research_timeout=parse_env_int(
-                os.getenv('AGENT_DEEP_RESEARCH_TIMEOUT'),
+                env.get('AGENT_DEEP_RESEARCH_TIMEOUT'),
                 180,
                 field_name='AGENT_DEEP_RESEARCH_TIMEOUT',
                 minimum=30,
             ),
-            agent_memory_enabled=os.getenv('AGENT_MEMORY_ENABLED', 'false').lower() == 'true',
+            agent_memory_enabled=env.get('AGENT_MEMORY_ENABLED', 'false').lower() == 'true',
             agent_skill_autoweight=(
-                os.getenv('AGENT_SKILL_AUTOWEIGHT')
-                or os.getenv('AGENT_STRATEGY_AUTOWEIGHT', 'true')
+                env.get('AGENT_SKILL_AUTOWEIGHT')
+                or env.get('AGENT_STRATEGY_AUTOWEIGHT', 'true')
             ).lower() == 'true',
             agent_skill_routing=(
-                os.getenv('AGENT_SKILL_ROUTING')
-                or os.getenv('AGENT_STRATEGY_ROUTING', 'auto')
+                env.get('AGENT_SKILL_ROUTING')
+                or env.get('AGENT_STRATEGY_ROUTING', 'auto')
             ).lower(),
             agent_context_compression_enabled=parse_env_bool(
-                os.getenv('AGENT_CONTEXT_COMPRESSION_ENABLED'),
+                env.get('AGENT_CONTEXT_COMPRESSION_ENABLED'),
                 default=False,
             ),
             agent_context_compression_profile=agent_context_compression_profile,
             agent_context_compression_trigger_tokens=agent_context_compression_trigger_tokens,
             agent_context_protected_turns=agent_context_protected_turns,
-            agent_event_monitor_enabled=os.getenv('AGENT_EVENT_MONITOR_ENABLED', 'false').lower() == 'true',
-            assistant_recall_provider=(os.getenv('ASSISTANT_RECALL_PROVIDER') or 'none').strip().lower() or 'none',
-            hindsight_base_url=(os.getenv('HINDSIGHT_BASE_URL') or '').strip(),
-            hindsight_api_key=(os.getenv('HINDSIGHT_API_KEY') or '').strip() or None,
-            hindsight_bank_id=(os.getenv('HINDSIGHT_BANK_ID') or '').strip(),
+            agent_event_monitor_enabled=env.get('AGENT_EVENT_MONITOR_ENABLED', 'false').lower() == 'true',
+            assistant_recall_provider=(env.get('ASSISTANT_RECALL_PROVIDER') or 'none').strip().lower() or 'none',
+            hindsight_base_url=(env.get('HINDSIGHT_BASE_URL') or '').strip(),
+            hindsight_api_key=(env.get('HINDSIGHT_API_KEY') or '').strip() or None,
+            hindsight_bank_id=(env.get('HINDSIGHT_BANK_ID') or '').strip(),
             assistant_recall_timeout_s=parse_env_float(
-                os.getenv('ASSISTANT_RECALL_TIMEOUT_S'),
+                env.get('ASSISTANT_RECALL_TIMEOUT_S'),
                 2.0,
                 field_name='ASSISTANT_RECALL_TIMEOUT_S',
                 minimum=0.2,
                 maximum=30.0,
             ),
             assistant_recall_mask_amounts=parse_env_bool(
-                os.getenv('ASSISTANT_RECALL_MASK_AMOUNTS'), default=True,
+                env.get('ASSISTANT_RECALL_MASK_AMOUNTS'), default=True,
             ),
             assistant_note_daily_proposal_limit=parse_env_int(
-                os.getenv('ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT'),
+                env.get('ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT'),
                 2,
                 field_name='ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT',
                 minimum=0,
                 maximum=50,
             ),
             assistant_note_inject_max_chars=parse_env_int(
-                os.getenv('ASSISTANT_NOTE_INJECT_MAX_CHARS'),
+                env.get('ASSISTANT_NOTE_INJECT_MAX_CHARS'),
                 3000,
                 field_name='ASSISTANT_NOTE_INJECT_MAX_CHARS',
                 minimum=200,
                 maximum=20000,
             ),
             agent_event_monitor_interval_minutes=parse_env_int(
-                os.getenv('AGENT_EVENT_MONITOR_INTERVAL_MINUTES'),
+                env.get('AGENT_EVENT_MONITOR_INTERVAL_MINUTES'),
                 5,
                 field_name='AGENT_EVENT_MONITOR_INTERVAL_MINUTES',
                 minimum=1,
             ),
-            agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
-            wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
-            feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
-            feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
-            feishu_webhook_keyword=os.getenv('FEISHU_WEBHOOK_KEYWORD'),
-            dingtalk_webhook_url=os.getenv('DINGTALK_WEBHOOK_URL'),
-            dingtalk_secret=os.getenv('DINGTALK_SECRET'),
+            agent_event_alert_rules_json=env.get('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            wechat_webhook_url=env.get('WECHAT_WEBHOOK_URL'),
+            feishu_webhook_url=env.get('FEISHU_WEBHOOK_URL'),
+            feishu_webhook_secret=env.get('FEISHU_WEBHOOK_SECRET'),
+            feishu_webhook_keyword=env.get('FEISHU_WEBHOOK_KEYWORD'),
+            dingtalk_webhook_url=env.get('DINGTALK_WEBHOOK_URL'),
+            dingtalk_secret=env.get('DINGTALK_SECRET'),
             
 
-            feishu_chat_id=os.getenv('FEISHU_CHAT_ID'),
-            feishu_receive_id_type=os.getenv('FEISHU_RECEIVE_ID_TYPE', 'chat_id'),
-            feishu_domain=os.getenv('FEISHU_DOMAIN', 'feishu'),
-            telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
-            telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
-            telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
-            email_sender=os.getenv('EMAIL_SENDER'),
-            email_sender_name=os.getenv('EMAIL_SENDER_NAME', 'daily_stock_analysis股票分析助手'),
-            email_password=os.getenv('EMAIL_PASSWORD'),
-            email_receivers=[r.strip() for r in os.getenv('EMAIL_RECEIVERS', '').split(',') if r.strip()],
-            stock_email_groups=cls._parse_stock_email_groups(),
-            pushover_user_key=os.getenv('PUSHOVER_USER_KEY'),
-            pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
-            ntfy_url=os.getenv('NTFY_URL'),
-            ntfy_token=os.getenv('NTFY_TOKEN'),
-            gotify_url=os.getenv('GOTIFY_URL'),
-            gotify_token=os.getenv('GOTIFY_TOKEN'),
-            pushplus_token=os.getenv('PUSHPLUS_TOKEN'),
-            pushplus_topic=os.getenv('PUSHPLUS_TOPIC'),
-            serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
-            custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
-            custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
+            feishu_chat_id=env.get('FEISHU_CHAT_ID'),
+            feishu_receive_id_type=env.get('FEISHU_RECEIVE_ID_TYPE', 'chat_id'),
+            feishu_domain=env.get('FEISHU_DOMAIN', 'feishu'),
+            telegram_bot_token=env.get('TELEGRAM_BOT_TOKEN'),
+            telegram_chat_id=env.get('TELEGRAM_CHAT_ID'),
+            telegram_message_thread_id=env.get('TELEGRAM_MESSAGE_THREAD_ID'),
+            email_sender=env.get('EMAIL_SENDER'),
+            email_sender_name=env.get('EMAIL_SENDER_NAME', 'daily_stock_analysis股票分析助手'),
+            email_password=env.get('EMAIL_PASSWORD'),
+            email_receivers=[r.strip() for r in env.get('EMAIL_RECEIVERS', '').split(',') if r.strip()],
+            stock_email_groups=cls._parse_stock_email_groups(env),
+            pushover_user_key=env.get('PUSHOVER_USER_KEY'),
+            pushover_api_token=env.get('PUSHOVER_API_TOKEN'),
+            ntfy_url=env.get('NTFY_URL'),
+            ntfy_token=env.get('NTFY_TOKEN'),
+            gotify_url=env.get('GOTIFY_URL'),
+            gotify_token=env.get('GOTIFY_TOKEN'),
+            pushplus_token=env.get('PUSHPLUS_TOKEN'),
+            pushplus_topic=env.get('PUSHPLUS_TOPIC'),
+            serverchan3_sendkey=env.get('SERVERCHAN3_SENDKEY'),
+            custom_webhook_urls=[u.strip() for u in env.get('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
+            custom_webhook_bearer_token=env.get('CUSTOM_WEBHOOK_BEARER_TOKEN'),
             custom_webhook_body_template=unescape_compose_sensitive_env_value(
                 'CUSTOM_WEBHOOK_BODY_TEMPLATE',
-                os.getenv('CUSTOM_WEBHOOK_BODY_TEMPLATE') or '',
+                env.get('CUSTOM_WEBHOOK_BODY_TEMPLATE') or '',
             ) or None,
-            webhook_verify_ssl=os.getenv('WEBHOOK_VERIFY_SSL', 'true').lower() == 'true',
-            discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
+            webhook_verify_ssl=env.get('WEBHOOK_VERIFY_SSL', 'true').lower() == 'true',
+            discord_bot_token=env.get('DISCORD_BOT_TOKEN'),
             discord_main_channel_id=(
-                os.getenv('DISCORD_MAIN_CHANNEL_ID')
-                or os.getenv('DISCORD_CHANNEL_ID')
+                env.get('DISCORD_MAIN_CHANNEL_ID')
+                or env.get('DISCORD_CHANNEL_ID')
             ),
-            discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
-            discord_interactions_public_key=os.getenv('DISCORD_INTERACTIONS_PUBLIC_KEY'),
-            slack_webhook_url=os.getenv('SLACK_WEBHOOK_URL'),
-            slack_bot_token=os.getenv('SLACK_BOT_TOKEN'),
-            slack_channel_id=os.getenv('SLACK_CHANNEL_ID'),
-            astrbot_url=os.getenv('ASTRBOT_URL'),
-            astrbot_token=os.getenv('ASTRBOT_TOKEN'),
+            discord_webhook_url=env.get('DISCORD_WEBHOOK_URL'),
+            discord_interactions_public_key=env.get('DISCORD_INTERACTIONS_PUBLIC_KEY'),
+            slack_webhook_url=env.get('SLACK_WEBHOOK_URL'),
+            slack_bot_token=env.get('SLACK_BOT_TOKEN'),
+            slack_channel_id=env.get('SLACK_CHANNEL_ID'),
+            astrbot_url=env.get('ASTRBOT_URL'),
+            astrbot_token=env.get('ASTRBOT_TOKEN'),
             notification_report_channels=parse_notification_route_channels(
-                os.getenv('NOTIFICATION_REPORT_CHANNELS')
+                env.get('NOTIFICATION_REPORT_CHANNELS')
             ),
             notification_alert_channels=parse_notification_route_channels(
-                os.getenv('NOTIFICATION_ALERT_CHANNELS')
+                env.get('NOTIFICATION_ALERT_CHANNELS')
             ),
             notification_system_error_channels=parse_notification_route_channels(
-                os.getenv('NOTIFICATION_SYSTEM_ERROR_CHANNELS')
+                env.get('NOTIFICATION_SYSTEM_ERROR_CHANNELS')
             ),
             notification_dedup_ttl_seconds=parse_env_int(
-                os.getenv('NOTIFICATION_DEDUP_TTL_SECONDS'),
+                env.get('NOTIFICATION_DEDUP_TTL_SECONDS'),
                 0,
                 field_name='NOTIFICATION_DEDUP_TTL_SECONDS',
                 minimum=0,
             ),
             notification_cooldown_seconds=parse_env_int(
-                os.getenv('NOTIFICATION_COOLDOWN_SECONDS'),
+                env.get('NOTIFICATION_COOLDOWN_SECONDS'),
                 0,
                 field_name='NOTIFICATION_COOLDOWN_SECONDS',
                 minimum=0,
             ),
-            notification_quiet_hours=(os.getenv('NOTIFICATION_QUIET_HOURS') or '').strip(),
-            notification_timezone=(os.getenv('NOTIFICATION_TIMEZONE') or '').strip(),
-            notification_min_severity=(os.getenv('NOTIFICATION_MIN_SEVERITY') or '').strip().lower(),
+            notification_quiet_hours=(env.get('NOTIFICATION_QUIET_HOURS') or '').strip(),
+            notification_timezone=(env.get('NOTIFICATION_TIMEZONE') or '').strip(),
+            notification_min_severity=(env.get('NOTIFICATION_MIN_SEVERITY') or '').strip().lower(),
             notification_daily_digest_enabled=parse_env_bool(
-                os.getenv('NOTIFICATION_DAILY_DIGEST_ENABLED'),
+                env.get('NOTIFICATION_DAILY_DIGEST_ENABLED'),
                 default=False,
             ),
-            single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
-            report_type=cls._parse_report_type(os.getenv('REPORT_TYPE', 'simple')),
+            single_stock_notify=env.get('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
+            report_type=cls._parse_report_type(env.get('REPORT_TYPE', 'simple')),
             report_language=cls._parse_report_language(report_language_raw),
-            report_summary_only=os.getenv('REPORT_SUMMARY_ONLY', 'false').lower() == 'true',
+            report_summary_only=env.get('REPORT_SUMMARY_ONLY', 'false').lower() == 'true',
             report_show_llm_model=report_show_llm_model,
-            report_templates_dir=os.getenv('REPORT_TEMPLATES_DIR', 'templates'),
-            report_renderer_enabled=os.getenv('REPORT_RENDERER_ENABLED', 'false').lower() == 'true',
-            report_integrity_enabled=os.getenv('REPORT_INTEGRITY_ENABLED', 'true').lower() == 'true',
-            report_integrity_retry=parse_env_int(os.getenv('REPORT_INTEGRITY_RETRY'), 1, field_name='REPORT_INTEGRITY_RETRY', minimum=0),
-            report_history_compare_n=parse_env_int(os.getenv('REPORT_HISTORY_COMPARE_N'), 0, field_name='REPORT_HISTORY_COMPARE_N', minimum=0),
-            analysis_delay=parse_env_float(os.getenv('ANALYSIS_DELAY'), 0.0, field_name='ANALYSIS_DELAY', minimum=0.0),
-            merge_email_notification=os.getenv('MERGE_EMAIL_NOTIFICATION', 'false').lower() == 'true',
-            feishu_max_bytes=parse_env_int(os.getenv('FEISHU_MAX_BYTES'), 20000, field_name='FEISHU_MAX_BYTES', minimum=1),
-            feishu_send_as_file=os.getenv('FEISHU_SEND_AS_FILE', '').lower() in ('true', '1', 'yes'),
+            report_templates_dir=env.get('REPORT_TEMPLATES_DIR', 'templates'),
+            report_renderer_enabled=env.get('REPORT_RENDERER_ENABLED', 'false').lower() == 'true',
+            report_integrity_enabled=env.get('REPORT_INTEGRITY_ENABLED', 'true').lower() == 'true',
+            report_integrity_retry=parse_env_int(env.get('REPORT_INTEGRITY_RETRY'), 1, field_name='REPORT_INTEGRITY_RETRY', minimum=0),
+            report_history_compare_n=parse_env_int(env.get('REPORT_HISTORY_COMPARE_N'), 0, field_name='REPORT_HISTORY_COMPARE_N', minimum=0),
+            analysis_delay=parse_env_float(env.get('ANALYSIS_DELAY'), 0.0, field_name='ANALYSIS_DELAY', minimum=0.0),
+            merge_email_notification=env.get('MERGE_EMAIL_NOTIFICATION', 'false').lower() == 'true',
+            feishu_max_bytes=parse_env_int(env.get('FEISHU_MAX_BYTES'), 20000, field_name='FEISHU_MAX_BYTES', minimum=1),
+            feishu_send_as_file=env.get('FEISHU_SEND_AS_FILE', '').lower() in ('true', '1', 'yes'),
             wechat_max_bytes=wechat_max_bytes,
             wechat_msg_type=wechat_msg_type_lower,
-            discord_max_words=parse_env_int(os.getenv('DISCORD_MAX_WORDS'), 2000, field_name='DISCORD_MAX_WORDS', minimum=1),
+            discord_max_words=parse_env_int(env.get('DISCORD_MAX_WORDS'), 2000, field_name='DISCORD_MAX_WORDS', minimum=1),
             markdown_to_image_channels=[
                 c.strip().lower()
-                for c in os.getenv('MARKDOWN_TO_IMAGE_CHANNELS', '').split(',')
+                for c in env.get('MARKDOWN_TO_IMAGE_CHANNELS', '').split(',')
                 if c.strip()
             ],
             markdown_to_image_max_chars=parse_env_int(
-                os.getenv('MARKDOWN_TO_IMAGE_MAX_CHARS'),
+                env.get('MARKDOWN_TO_IMAGE_MAX_CHARS'),
                 15000,
                 field_name='MARKDOWN_TO_IMAGE_MAX_CHARS',
                 minimum=1,
             ),
-            md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
-            share_image_xiaohongshu_url=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_URL') or '').strip() or None,
-            share_image_xiaohongshu_handle=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_HANDLE') or '').strip() or None,
-            share_image_xiaohongshu_id=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_ID') or '').strip() or None,
-            share_image_xiaohongshu_qr_path=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_QR_PATH') or '').strip() or None,
-            prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
-            database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
-            sqlite_wal_enabled=os.getenv('SQLITE_WAL_ENABLED', 'true').lower() == 'true',
+            md2img_engine=cls._parse_md2img_engine(env.get('MD2IMG_ENGINE', 'wkhtmltoimage')),
+            share_image_xiaohongshu_url=(env.get('SHARE_IMAGE_XIAOHONGSHU_URL') or '').strip() or None,
+            share_image_xiaohongshu_handle=(env.get('SHARE_IMAGE_XIAOHONGSHU_HANDLE') or '').strip() or None,
+            share_image_xiaohongshu_id=(env.get('SHARE_IMAGE_XIAOHONGSHU_ID') or '').strip() or None,
+            share_image_xiaohongshu_qr_path=(env.get('SHARE_IMAGE_XIAOHONGSHU_QR_PATH') or '').strip() or None,
+            prefetch_realtime_quotes=env.get('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
+            database_path=env.get('DATABASE_PATH', './data/stock_analysis.db'),
+            sqlite_wal_enabled=env.get('SQLITE_WAL_ENABLED', 'true').lower() == 'true',
             sqlite_busy_timeout_ms=parse_env_int(
-                os.getenv('SQLITE_BUSY_TIMEOUT_MS'),
+                env.get('SQLITE_BUSY_TIMEOUT_MS'),
                 5000,
                 field_name='SQLITE_BUSY_TIMEOUT_MS',
                 minimum=0,
             ),
             sqlite_write_retry_max=parse_env_int(
-                os.getenv('SQLITE_WRITE_RETRY_MAX'),
+                env.get('SQLITE_WRITE_RETRY_MAX'),
                 3,
                 field_name='SQLITE_WRITE_RETRY_MAX',
                 minimum=0,
             ),
             sqlite_write_retry_base_delay=parse_env_float(
-                os.getenv('SQLITE_WRITE_RETRY_BASE_DELAY'),
+                env.get('SQLITE_WRITE_RETRY_BASE_DELAY'),
                 0.1,
                 field_name='SQLITE_WRITE_RETRY_BASE_DELAY',
                 minimum=0.0,
             ),
             market_snapshot_retention_days=parse_env_int(
-                os.getenv('MARKET_SNAPSHOT_RETENTION_DAYS'),
+                env.get('MARKET_SNAPSHOT_RETENTION_DAYS'),
                 250,
                 field_name='MARKET_SNAPSHOT_RETENTION_DAYS',
                 minimum=30,
             ),
             market_snapshot_backfill_days=parse_env_int(
-                os.getenv('MARKET_SNAPSHOT_BACKFILL_DAYS'),
+                env.get('MARKET_SNAPSHOT_BACKFILL_DAYS'),
                 60,
                 field_name='MARKET_SNAPSHOT_BACKFILL_DAYS',
                 minimum=1,
             ),
-            market_benchmark_code=(os.getenv('MARKET_BENCHMARK_CODE') or '').strip() or '000985.CSI',
+            market_benchmark_code=(env.get('MARKET_BENCHMARK_CODE') or '').strip() or '000985.CSI',
             market_snapshot_requests_per_minute=parse_env_int(
-                os.getenv('MARKET_SNAPSHOT_REQUESTS_PER_MINUTE'),
+                env.get('MARKET_SNAPSHOT_REQUESTS_PER_MINUTE'),
                 60,
                 field_name='MARKET_SNAPSHOT_REQUESTS_PER_MINUTE',
                 minimum=1,
             ),
             market_snapshot_members_requests_per_minute=parse_env_int(
-                os.getenv('MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE'),
+                env.get('MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE'),
                 200,
                 field_name='MARKET_SNAPSHOT_MEMBERS_REQUESTS_PER_MINUTE',
                 minimum=1,
             ),
-            board_anomaly_thresholds=(os.getenv('BOARD_ANOMALY_THRESHOLDS') or '').strip(),
-            board_pipeline_enabled=parse_env_bool(os.getenv('BOARD_PIPELINE_ENABLED'), default=True),
+            board_anomaly_thresholds=(env.get('BOARD_ANOMALY_THRESHOLDS') or '').strip(),
+            board_pipeline_enabled=parse_env_bool(env.get('BOARD_PIPELINE_ENABLED'), default=True),
             board_pipeline_schedule_time=_parse_hhmm(
-                os.getenv('BOARD_PIPELINE_SCHEDULE_TIME'),
+                env.get('BOARD_PIPELINE_SCHEDULE_TIME'),
                 default='17:00',
                 field_name='BOARD_PIPELINE_SCHEDULE_TIME',
             ),
             board_membership_full_day_fallback=parse_env_bool(
-                os.getenv('BOARD_MEMBERSHIP_FULL_DAY_FALLBACK'), default=False
+                env.get('BOARD_MEMBERSHIP_FULL_DAY_FALLBACK'), default=False
             ),
             board_industry_membership_enabled=parse_env_bool(
-                os.getenv('BOARD_INDUSTRY_MEMBERSHIP_ENABLED'), default=True
+                env.get('BOARD_INDUSTRY_MEMBERSHIP_ENABLED'), default=True
             ),
             board_industry_membership_weekday=_parse_weekday(
-                os.getenv('BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY'),
+                env.get('BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY'),
                 default=6,
                 field_name='BOARD_INDUSTRY_MEMBERSHIP_WEEKDAY',
             ),
             board_industry_membership_time=_parse_hhmm(
-                os.getenv('BOARD_INDUSTRY_MEMBERSHIP_TIME'),
+                env.get('BOARD_INDUSTRY_MEMBERSHIP_TIME'),
                 default='10:00',
                 field_name='BOARD_INDUSTRY_MEMBERSHIP_TIME',
             ),
-            us_leaders=(os.getenv('US_LEADERS') or '').strip(),
+            us_leaders=(env.get('US_LEADERS') or '').strip(),
             us_move_stock_pct=parse_env_float(
-                os.getenv('US_MOVE_STOCK_PCT'),
+                env.get('US_MOVE_STOCK_PCT'),
                 4.0,
                 field_name='US_MOVE_STOCK_PCT',
                 minimum=0.1,
             ),
             us_move_index_pct=parse_env_float(
-                os.getenv('US_MOVE_INDEX_PCT'),
+                env.get('US_MOVE_INDEX_PCT'),
                 1.5,
                 field_name='US_MOVE_INDEX_PCT',
                 minimum=0.1,
             ),
-            preopen_push_enabled=parse_env_bool(os.getenv('PREOPEN_PUSH_ENABLED'), default=False),
+            preopen_push_enabled=parse_env_bool(env.get('PREOPEN_PUSH_ENABLED'), default=False),
             preopen_push_time=_parse_hhmm(
-                os.getenv('PREOPEN_PUSH_TIME'),
+                env.get('PREOPEN_PUSH_TIME'),
                 default='08:15',
                 field_name='PREOPEN_PUSH_TIME',
             ),
-            daily_plan_enabled=parse_env_bool(os.getenv('DAILY_PLAN_ENABLED'), default=False),
+            daily_plan_enabled=parse_env_bool(env.get('DAILY_PLAN_ENABLED'), default=False),
             position_stop_loss_pct=parse_env_float(
-                os.getenv('POSITION_STOP_LOSS_PCT'), 10.0, field_name='POSITION_STOP_LOSS_PCT',
+                env.get('POSITION_STOP_LOSS_PCT'), 10.0, field_name='POSITION_STOP_LOSS_PCT',
                 minimum=0.1, maximum=99.9,
             ),
             position_max_total_pct=parse_env_float(
-                os.getenv('POSITION_MAX_TOTAL_PCT'), 100.0, field_name='POSITION_MAX_TOTAL_PCT',
+                env.get('POSITION_MAX_TOTAL_PCT'), 100.0, field_name='POSITION_MAX_TOTAL_PCT',
                 minimum=0.1, maximum=100.0,
             ),
             position_max_holdings=parse_env_int(
-                os.getenv('POSITION_MAX_HOLDINGS'), 1, field_name='POSITION_MAX_HOLDINGS', minimum=1,
+                env.get('POSITION_MAX_HOLDINGS'), 1, field_name='POSITION_MAX_HOLDINGS', minimum=1,
             ),
             position_max_single_pct=_parse_optional_pct(
-                os.getenv('POSITION_MAX_SINGLE_PCT'), field_name='POSITION_MAX_SINGLE_PCT',
+                env.get('POSITION_MAX_SINGLE_PCT'), field_name='POSITION_MAX_SINGLE_PCT',
             ),
-            position_stop_mode=_parse_stop_mode(os.getenv('POSITION_STOP_MODE')),
-            save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
-            backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
-            backtest_eval_window_days=parse_env_int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS'), 10, field_name='BACKTEST_EVAL_WINDOW_DAYS', minimum=1),
-            backtest_min_age_days=parse_env_int(os.getenv('BACKTEST_MIN_AGE_DAYS'), 14, field_name='BACKTEST_MIN_AGE_DAYS', minimum=1),
-            backtest_engine_version=os.getenv('BACKTEST_ENGINE_VERSION', 'v1'),
+            position_stop_mode=_parse_stop_mode(env.get('POSITION_STOP_MODE')),
+            save_context_snapshot=env.get('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
+            backtest_enabled=env.get('BACKTEST_ENABLED', 'true').lower() == 'true',
+            backtest_eval_window_days=parse_env_int(env.get('BACKTEST_EVAL_WINDOW_DAYS'), 10, field_name='BACKTEST_EVAL_WINDOW_DAYS', minimum=1),
+            backtest_min_age_days=parse_env_int(env.get('BACKTEST_MIN_AGE_DAYS'), 14, field_name='BACKTEST_MIN_AGE_DAYS', minimum=1),
+            backtest_engine_version=env.get('BACKTEST_ENGINE_VERSION', 'v1'),
             backtest_neutral_band_pct=parse_env_float(
-                os.getenv('BACKTEST_NEUTRAL_BAND_PCT'),
+                env.get('BACKTEST_NEUTRAL_BAND_PCT'),
                 2.0,
                 field_name='BACKTEST_NEUTRAL_BAND_PCT',
                 minimum=0.0,
             ),
-            etf_rotation_pool=cls._parse_etf_rotation_pool(os.getenv('ETF_ROTATION_POOL')),
+            etf_rotation_pool=cls._parse_etf_rotation_pool(env.get('ETF_ROTATION_POOL')),
             etf_rotation_safe_asset=(
-                os.getenv('ETF_ROTATION_SAFE_ASSET', DEFAULT_ETF_ROTATION_SAFE_ASSET) or ''
+                env.get('ETF_ROTATION_SAFE_ASSET', DEFAULT_ETF_ROTATION_SAFE_ASSET) or ''
             ).strip(),
             etf_rotation_lookback_days=parse_env_int(
-                os.getenv('ETF_ROTATION_LOOKBACK_DAYS'), 60,
+                env.get('ETF_ROTATION_LOOKBACK_DAYS'), 60,
                 field_name='ETF_ROTATION_LOOKBACK_DAYS', minimum=5, maximum=500,
             ),
-            etf_rotation_rebalance=cls._parse_etf_rotation_rebalance(os.getenv('ETF_ROTATION_REBALANCE')),
+            etf_rotation_rebalance=cls._parse_etf_rotation_rebalance(env.get('ETF_ROTATION_REBALANCE')),
             etf_rotation_top_n=parse_env_int(
-                os.getenv('ETF_ROTATION_TOP_N'), 2,
+                env.get('ETF_ROTATION_TOP_N'), 2,
                 field_name='ETF_ROTATION_TOP_N', minimum=1, maximum=10,
             ),
             etf_rotation_switch_buffer_pct=parse_env_float(
-                os.getenv('ETF_ROTATION_SWITCH_BUFFER_PCT'), 2.0,
+                env.get('ETF_ROTATION_SWITCH_BUFFER_PCT'), 2.0,
                 field_name='ETF_ROTATION_SWITCH_BUFFER_PCT', minimum=0.0, maximum=50.0,
             ),
             etf_rotation_cost_bps=parse_env_float(
-                os.getenv('ETF_ROTATION_COST_BPS'), 10.0,
+                env.get('ETF_ROTATION_COST_BPS'), 10.0,
                 field_name='ETF_ROTATION_COST_BPS', minimum=0.0, maximum=500.0,
             ),
             etf_rotation_backtest_years=parse_env_int(
-                os.getenv('ETF_ROTATION_BACKTEST_YEARS'), 8,
+                env.get('ETF_ROTATION_BACKTEST_YEARS'), 8,
                 field_name='ETF_ROTATION_BACKTEST_YEARS', minimum=1, maximum=30,
             ),
-            log_dir=os.getenv('LOG_DIR', './logs'),
-            log_level=os.getenv('LOG_LEVEL', 'INFO'),
-            max_workers=parse_env_int(os.getenv('MAX_WORKERS'), 3, field_name='MAX_WORKERS', minimum=1),
-            debug=os.getenv('DEBUG', 'false').lower() == 'true',
-            config_validate_mode=os.getenv('CONFIG_VALIDATE_MODE', 'warn').lower(),
-            http_proxy=os.getenv('HTTP_PROXY'),
-            https_proxy=os.getenv('HTTPS_PROXY'),
+            log_dir=env.get('LOG_DIR', './logs'),
+            log_level=env.get('LOG_LEVEL', 'INFO'),
+            max_workers=parse_env_int(env.get('MAX_WORKERS'), 3, field_name='MAX_WORKERS', minimum=1),
+            debug=env.get('DEBUG', 'false').lower() == 'true',
+            config_validate_mode=env.get('CONFIG_VALIDATE_MODE', 'warn').lower(),
+            primary_user_id=(env.get('PRIMARY_USER_ID') or '').strip() or DEFAULT_PRIMARY_USER_ID,
+            http_proxy=env.get('HTTP_PROXY'),
+            https_proxy=env.get('HTTPS_PROXY'),
             schedule_enabled=cls._resolve_env_value(
                 'SCHEDULE_ENABLED',
                 default='false',
                 prefer_env_file=True,
+                env=env,
+                user_override_keys=user_override_keys,
             ).lower() == 'true',
             schedule_time=(schedule_time_value or '18:00').strip() or '18:00',
             schedule_times=normalize_schedule_times(
@@ -2713,119 +2759,123 @@ class Config:
             ),
             schedule_run_immediately=schedule_run_immediately,
             run_immediately=legacy_run_immediately,
-            market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
-            daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
+            market_review_enabled=env.get('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            daily_market_context_enabled=env.get('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
-                os.getenv('MARKET_REVIEW_REGION', 'cn')
+                env.get('MARKET_REVIEW_REGION', 'cn')
             ),
             market_review_color_scheme=cls._parse_market_review_color_scheme(
-                os.getenv('MARKET_REVIEW_COLOR_SCHEME', 'green_up')
+                env.get('MARKET_REVIEW_COLOR_SCHEME', 'green_up')
             ),
-            trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
-            webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
-            webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
-            webui_port=parse_env_int(os.getenv('WEBUI_PORT'), 8000, field_name='WEBUI_PORT', minimum=1, maximum=65535),
+            trading_day_check_enabled=env.get('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
+            webui_enabled=env.get('WEBUI_ENABLED', 'false').lower() == 'true',
+            webui_host=env.get('WEBUI_HOST', '127.0.0.1'),
+            webui_port=parse_env_int(env.get('WEBUI_PORT'), 8000, field_name='WEBUI_PORT', minimum=1, maximum=65535),
             # 机器人配置
-            bot_enabled=os.getenv('BOT_ENABLED', 'true').lower() == 'true',
-            bot_command_prefix=os.getenv('BOT_COMMAND_PREFIX', '/'),
-            bot_rate_limit_requests=parse_env_int(os.getenv('BOT_RATE_LIMIT_REQUESTS'), 10, field_name='BOT_RATE_LIMIT_REQUESTS', minimum=1),
-            bot_rate_limit_window=parse_env_int(os.getenv('BOT_RATE_LIMIT_WINDOW'), 60, field_name='BOT_RATE_LIMIT_WINDOW', minimum=1),
-            bot_admin_users=[u.strip() for u in os.getenv('BOT_ADMIN_USERS', '').split(',') if u.strip()],
+            bot_enabled=env.get('BOT_ENABLED', 'true').lower() == 'true',
+            bot_command_prefix=env.get('BOT_COMMAND_PREFIX', '/'),
+            bot_rate_limit_requests=parse_env_int(env.get('BOT_RATE_LIMIT_REQUESTS'), 10, field_name='BOT_RATE_LIMIT_REQUESTS', minimum=1),
+            bot_rate_limit_window=parse_env_int(env.get('BOT_RATE_LIMIT_WINDOW'), 60, field_name='BOT_RATE_LIMIT_WINDOW', minimum=1),
+            bot_admin_users=[u.strip() for u in env.get('BOT_ADMIN_USERS', '').split(',') if u.strip()],
             # 飞书机器人
-            feishu_verification_token=os.getenv('FEISHU_VERIFICATION_TOKEN'),
-            feishu_encrypt_key=os.getenv('FEISHU_ENCRYPT_KEY'),
-            feishu_stream_enabled=os.getenv('FEISHU_STREAM_ENABLED', 'false').lower() == 'true',
+            feishu_verification_token=env.get('FEISHU_VERIFICATION_TOKEN'),
+            feishu_encrypt_key=env.get('FEISHU_ENCRYPT_KEY'),
+            feishu_stream_enabled=env.get('FEISHU_STREAM_ENABLED', 'false').lower() == 'true',
             # 钉钉机器人
-            dingtalk_app_key=os.getenv('DINGTALK_APP_KEY'),
-            dingtalk_app_secret=os.getenv('DINGTALK_APP_SECRET'),
-            dingtalk_stream_enabled=os.getenv('DINGTALK_STREAM_ENABLED', 'false').lower() == 'true',
+            dingtalk_app_key=env.get('DINGTALK_APP_KEY'),
+            dingtalk_app_secret=env.get('DINGTALK_APP_SECRET'),
+            dingtalk_stream_enabled=env.get('DINGTALK_STREAM_ENABLED', 'false').lower() == 'true',
             # 企业微信机器人
-            wecom_corpid=os.getenv('WECOM_CORPID'),
-            wecom_token=os.getenv('WECOM_TOKEN'),
-            wecom_encoding_aes_key=os.getenv('WECOM_ENCODING_AES_KEY'),
-            wecom_agent_id=os.getenv('WECOM_AGENT_ID'),
+            wecom_corpid=env.get('WECOM_CORPID'),
+            wecom_token=env.get('WECOM_TOKEN'),
+            wecom_encoding_aes_key=env.get('WECOM_ENCODING_AES_KEY'),
+            wecom_agent_id=env.get('WECOM_AGENT_ID'),
             # Telegram
-            telegram_webhook_secret=os.getenv('TELEGRAM_WEBHOOK_SECRET'),
+            telegram_webhook_secret=env.get('TELEGRAM_WEBHOOK_SECRET'),
             # Discord 机器人扩展配置
-            discord_bot_status=os.getenv('DISCORD_BOT_STATUS', 'A股智能分析 | /help'),
+            discord_bot_status=env.get('DISCORD_BOT_STATUS', 'A股智能分析 | /help'),
             # 实时行情增强数据配置
-            enable_realtime_quote=os.getenv('ENABLE_REALTIME_QUOTE', 'true').lower() == 'true',
-            enable_realtime_technical_indicators=os.getenv(
+            enable_realtime_quote=env.get('ENABLE_REALTIME_QUOTE', 'true').lower() == 'true',
+            enable_realtime_technical_indicators=env.get(
                 'ENABLE_REALTIME_TECHNICAL_INDICATORS', 'true'
             ).lower() == 'true',
-            enable_chip_distribution=os.getenv('ENABLE_CHIP_DISTRIBUTION', 'true').lower() == 'true',
+            enable_chip_distribution=env.get('ENABLE_CHIP_DISTRIBUTION', 'true').lower() == 'true',
             # 东财接口补丁开关
-            enable_eastmoney_patch=os.getenv('ENABLE_EASTMONEY_PATCH', 'false').lower() == 'true',
+            enable_eastmoney_patch=env.get('ENABLE_EASTMONEY_PATCH', 'false').lower() == 'true',
             # 实时行情数据源优先级：
             # - tencent: 腾讯财经，有量比/换手率/PE/PB等，单股查询稳定（推荐）
             # - akshare_sina: 新浪财经，基本行情稳定，但无量比
             # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
             # - tushare: Tushare Pro，需要2000积分，数据全面
-            realtime_source_priority=cls._resolve_realtime_source_priority(),
-            realtime_cache_ttl=parse_env_int(os.getenv('REALTIME_CACHE_TTL'), 600, field_name='REALTIME_CACHE_TTL', minimum=0),
-            circuit_breaker_cooldown=parse_env_int(os.getenv('CIRCUIT_BREAKER_COOLDOWN'), 300, field_name='CIRCUIT_BREAKER_COOLDOWN', minimum=0),
-            enable_fundamental_pipeline=os.getenv('ENABLE_FUNDAMENTAL_PIPELINE', 'true').lower() == 'true',
+            realtime_source_priority=cls._resolve_realtime_source_priority(env),
+            realtime_cache_ttl=parse_env_int(env.get('REALTIME_CACHE_TTL'), 600, field_name='REALTIME_CACHE_TTL', minimum=0),
+            circuit_breaker_cooldown=parse_env_int(env.get('CIRCUIT_BREAKER_COOLDOWN'), 300, field_name='CIRCUIT_BREAKER_COOLDOWN', minimum=0),
+            enable_fundamental_pipeline=env.get('ENABLE_FUNDAMENTAL_PIPELINE', 'true').lower() == 'true',
             fundamental_stage_timeout_seconds=parse_env_float(
-                os.getenv('FUNDAMENTAL_STAGE_TIMEOUT_SECONDS'),
+                env.get('FUNDAMENTAL_STAGE_TIMEOUT_SECONDS'),
                 FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
                 field_name='FUNDAMENTAL_STAGE_TIMEOUT_SECONDS',
                 minimum=0.0,
             ),
             fundamental_fetch_timeout_seconds=parse_env_float(
-                os.getenv('FUNDAMENTAL_FETCH_TIMEOUT_SECONDS'),
+                env.get('FUNDAMENTAL_FETCH_TIMEOUT_SECONDS'),
                 8.0,
                 field_name='FUNDAMENTAL_FETCH_TIMEOUT_SECONDS',
                 minimum=0.0,
             ),
-            fundamental_retry_max=parse_env_int(os.getenv('FUNDAMENTAL_RETRY_MAX'), 1, field_name='FUNDAMENTAL_RETRY_MAX', minimum=0),
+            fundamental_retry_max=parse_env_int(env.get('FUNDAMENTAL_RETRY_MAX'), 1, field_name='FUNDAMENTAL_RETRY_MAX', minimum=0),
             fundamental_cache_ttl_seconds=parse_env_int(
-                os.getenv('FUNDAMENTAL_CACHE_TTL_SECONDS'),
+                env.get('FUNDAMENTAL_CACHE_TTL_SECONDS'),
                 120,
                 field_name='FUNDAMENTAL_CACHE_TTL_SECONDS',
                 minimum=0,
             ),
             fundamental_cache_max_entries=parse_env_int(
-                os.getenv('FUNDAMENTAL_CACHE_MAX_ENTRIES'),
+                env.get('FUNDAMENTAL_CACHE_MAX_ENTRIES'),
                 256,
                 field_name='FUNDAMENTAL_CACHE_MAX_ENTRIES',
                 minimum=1,
             ),
             portfolio_risk_concentration_alert_pct=parse_env_float(
-                os.getenv('PORTFOLIO_RISK_CONCENTRATION_ALERT_PCT'),
+                env.get('PORTFOLIO_RISK_CONCENTRATION_ALERT_PCT'),
                 35.0,
                 field_name='PORTFOLIO_RISK_CONCENTRATION_ALERT_PCT',
                 minimum=0.0,
             ),
             portfolio_risk_drawdown_alert_pct=parse_env_float(
-                os.getenv('PORTFOLIO_RISK_DRAWDOWN_ALERT_PCT'),
+                env.get('PORTFOLIO_RISK_DRAWDOWN_ALERT_PCT'),
                 15.0,
                 field_name='PORTFOLIO_RISK_DRAWDOWN_ALERT_PCT',
                 minimum=0.0,
             ),
             portfolio_risk_stop_loss_alert_pct=parse_env_float(
-                os.getenv('PORTFOLIO_RISK_STOP_LOSS_ALERT_PCT'),
+                env.get('PORTFOLIO_RISK_STOP_LOSS_ALERT_PCT'),
                 10.0,
                 field_name='PORTFOLIO_RISK_STOP_LOSS_ALERT_PCT',
                 minimum=0.0,
             ),
             portfolio_risk_stop_loss_near_ratio=parse_env_float(
-                os.getenv('PORTFOLIO_RISK_STOP_LOSS_NEAR_RATIO'),
+                env.get('PORTFOLIO_RISK_STOP_LOSS_NEAR_RATIO'),
                 0.8,
                 field_name='PORTFOLIO_RISK_STOP_LOSS_NEAR_RATIO',
                 minimum=0.0,
             ),
             portfolio_risk_lookback_days=parse_env_int(
-                os.getenv('PORTFOLIO_RISK_LOOKBACK_DAYS'),
+                env.get('PORTFOLIO_RISK_LOOKBACK_DAYS'),
                 180,
                 field_name='PORTFOLIO_RISK_LOOKBACK_DAYS',
                 minimum=1,
             ),
-            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
-            screening_enabled=parse_env_bool(os.getenv('SCREENING_ENABLED'), default=False),
+            portfolio_fx_update_enabled=env.get('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
+            screening_enabled=parse_env_bool(env.get('SCREENING_ENABLED'), default=False),
         )
     
     @classmethod
-    def _parse_litellm_yaml(cls, config_path: str) -> List[Dict[str, Any]]:
+    def _parse_litellm_yaml(
+        cls,
+        config_path: str,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
         """Parse a standard LiteLLM config YAML file into Router model_list.
 
         Supports the ``os.environ/VAR_NAME`` syntax for secret references.
@@ -2865,7 +2915,7 @@ class Config:
                 val = params.get(key)
                 if isinstance(val, str) and val.startswith('os.environ/'):
                     env_name = val.split('/', 1)[1]
-                    params[key] = os.getenv(env_name, '')
+                    params[key] = (os.environ if env is None else env).get(env_name, '')
 
         _logger.info(f"LITELLM_CONFIG: loaded {len(model_list)} model deployment(s) from {path}")
         return model_list
@@ -2880,6 +2930,7 @@ class Config:
     def _parse_llm_channels_with_issues(
         cls,
         channels_str: str,
+        env: Optional[Mapping[str, str]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[HermesConfigIssue], bool, List[str]]:
         """Parse LLM_CHANNELS env var and per-channel env vars.
 
@@ -2894,6 +2945,7 @@ class Config:
         """
         import logging
         _logger = logging.getLogger(__name__)
+        env = os.environ if env is None else env
 
         channels: List[Dict[str, Any]] = []
         issues: List[HermesConfigIssue] = []
@@ -2916,44 +2968,44 @@ class Config:
             ch_upper = ch_name.upper()
 
             base_url = resolve_llm_channel_base_url(
-                ch_name, os.getenv(f'LLM_{ch_upper}_BASE_URL', '')
+                ch_name, env.get(f'LLM_{ch_upper}_BASE_URL', '')
             ) or None
             if ch_lower == "anspire" and not base_url:
                 base_url = (
-                    os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
+                    env.get('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
                 ).strip() or None
-            protocol_raw = os.getenv(f'LLM_{ch_upper}_PROTOCOL', '').strip()
+            protocol_raw = env.get(f'LLM_{ch_upper}_PROTOCOL', '').strip()
             if ch_lower == "anspire" and not protocol_raw:
                 protocol_raw = "openai"
-            api_surface_raw = os.getenv(f'LLM_{ch_upper}_API_SURFACE', '').strip()
-            enabled_raw = os.getenv(f'LLM_{ch_upper}_ENABLED')
+            api_surface_raw = env.get(f'LLM_{ch_upper}_API_SURFACE', '').strip()
+            enabled_raw = env.get(f'LLM_{ch_upper}_ENABLED')
             if ch_lower == "anspire" and (enabled_raw is None or not enabled_raw.strip()):
-                enabled_raw = os.getenv('ANSPIRE_LLM_ENABLED')
+                enabled_raw = env.get('ANSPIRE_LLM_ENABLED')
             enabled = parse_env_bool(enabled_raw, default=True)
 
             # API keys: LLM_{NAME}_API_KEYS (multi) > LLM_{NAME}_API_KEY (single)
-            api_keys_raw = os.getenv(f'LLM_{ch_upper}_API_KEYS', '')
+            api_keys_raw = env.get(f'LLM_{ch_upper}_API_KEYS', '')
             api_keys = [k.strip() for k in api_keys_raw.split(',') if k.strip()]
-            single_key = os.getenv(f'LLM_{ch_upper}_API_KEY', '').strip()
+            single_key = env.get(f'LLM_{ch_upper}_API_KEY', '').strip()
             if not api_keys:
                 if single_key:
                     api_keys = [single_key]
             if not api_keys and ch_lower == "anspire":
-                anspire_keys_raw = os.getenv('ANSPIRE_API_KEYS', '')
+                anspire_keys_raw = env.get('ANSPIRE_API_KEYS', '')
                 api_keys = [k.strip() for k in anspire_keys_raw.split(',') if k.strip()]
-            api_keys = resolve_llm_channel_api_keys(ch_name, api_keys, os.environ)
+            api_keys = resolve_llm_channel_api_keys(ch_name, api_keys, env)
 
             # Models
-            models_raw = os.getenv(f'LLM_{ch_upper}_MODELS', '')
+            models_raw = env.get(f'LLM_{ch_upper}_MODELS', '')
             raw_models = [m.strip() for m in models_raw.split(',') if m.strip()]
             raw_models = resolve_llm_channel_models(
                 ch_name, raw_models, channel_names=channels_str,
-                primary_model=os.getenv('LITELLM_MODEL', ''),
-                fallback_models=os.getenv('LITELLM_FALLBACK_MODELS', ''),
+                primary_model=env.get('LITELLM_MODEL', ''),
+                fallback_models=env.get('LITELLM_FALLBACK_MODELS', ''),
             )
             if not raw_models and ch_lower == "anspire":
                 anspire_model = (
-                    os.getenv('ANSPIRE_LLM_MODEL') or ANSPIRE_LLM_MODEL_DEFAULT
+                    env.get('ANSPIRE_LLM_MODEL') or ANSPIRE_LLM_MODEL_DEFAULT
                 ).strip()
                 if anspire_model:
                     raw_models = [anspire_model]
@@ -3005,7 +3057,7 @@ class Config:
                     base_url=base_url or HERMES_DEFAULT_BASE_URL,
                     api_key=single_key,
                     api_keys_raw=api_keys_raw,
-                    extra_headers_raw=os.getenv(f'LLM_{ch_upper}_EXTRA_HEADERS', ''),
+                    extra_headers_raw=env.get(f'LLM_{ch_upper}_EXTRA_HEADERS', ''),
                     models=raw_models,
                 )
                 issues.extend(result.issues)
@@ -3059,7 +3111,7 @@ class Config:
             models = [normalize_llm_channel_model(m, protocol, base_url) for m in raw_models]
 
             # Extra headers (JSON string, optional)
-            extra_headers_raw = os.getenv(f'LLM_{ch_upper}_EXTRA_HEADERS', '').strip()
+            extra_headers_raw = env.get(f'LLM_{ch_upper}_EXTRA_HEADERS', '').strip()
             extra_headers = None
             if extra_headers_raw:
                 try:
@@ -3249,7 +3301,10 @@ class Config:
         return model_list
 
     @classmethod
-    def _parse_stock_email_groups(cls) -> List[Tuple[List[str], List[str]]]:
+    def _parse_stock_email_groups(
+        cls,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> List[Tuple[List[str], List[str]]]:
         """
         Parse STOCK_GROUP_N and EMAIL_GROUP_N from environment.
         Returns [(stocks, emails), ...] ordered by group index.
@@ -3258,14 +3313,15 @@ class Config:
         """
         from data_provider.base import normalize_stock_code
 
+        env = os.environ if env is None else env
         groups: dict = {}
         stock_re = re.compile(r'^STOCK_GROUP_(\d+)$', re.IGNORECASE)
         email_re = re.compile(r'^EMAIL_GROUP_(\d+)$', re.IGNORECASE)
-        for key in os.environ:
+        for key in env:
             m = stock_re.match(key)
             if m:
                 idx = int(m.group(1))
-                val = os.environ[key].strip()
+                val = env[key].strip()
                 groups.setdefault(idx, {})['stocks'] = [
                     normalize_stock_code(c.strip())
                     for c in val.split(',') if c.strip()
@@ -3273,7 +3329,7 @@ class Config:
             m = email_re.match(key)
             if m:
                 idx = int(m.group(1))
-                val = os.environ[key].strip()
+                val = env[key].strip()
                 groups.setdefault(idx, {})['emails'] = [e.strip() for e in val.split(',') if e.strip()]
         result = []
         for idx in sorted(groups.keys()):
@@ -3325,9 +3381,18 @@ class Config:
         *,
         default: Optional[str] = None,
         prefer_env_file: bool = False,
+        env: Optional[Mapping[str, str]] = None,
+        user_override_keys: frozenset = frozenset(),
     ) -> Optional[str]:
-        """Resolve one env value, optionally preferring the persisted `.env` copy."""
-        env_value = os.getenv(key)
+        """Resolve one env value, optionally preferring the persisted `.env` copy.
+
+        ``user_override_keys`` are keys whose value in ``env`` comes from a user's
+        personal layer; they always win over the persisted `.env` copy.
+        """
+        env = os.environ if env is None else env
+        env_value = env.get(key)
+        if key in user_override_keys and env_value is not None:
+            return env_value
         file_value = cls._get_env_file_value(key)
 
         should_prefer_file = prefer_env_file or key in cls._WEBUI_RUNTIME_ENV_FILE_PRIORITY_KEYS
@@ -3391,10 +3456,15 @@ class Config:
     def _resolve_report_language_env_value(
         cls,
         preexisting_env_value: Optional[str],
+        env: Optional[Mapping[str, str]] = None,
+        user_override_keys: frozenset = frozenset(),
     ) -> str:
         """Resolve REPORT_LANGUAGE while preserving real process env overrides."""
+        env = os.environ if env is None else env
+        if "REPORT_LANGUAGE" in user_override_keys and env.get("REPORT_LANGUAGE") is not None:
+            return env["REPORT_LANGUAGE"]
         file_value = cls._get_env_file_value("REPORT_LANGUAGE")
-        env_value = os.getenv("REPORT_LANGUAGE")
+        env_value = env.get("REPORT_LANGUAGE")
 
         if preexisting_env_value is not None:
             env_text = preexisting_env_value.strip()
@@ -3525,7 +3595,7 @@ class Config:
         return 'wkhtmltoimage'
 
     @classmethod
-    def _resolve_realtime_source_priority(cls) -> str:
+    def _resolve_realtime_source_priority(cls, env: Optional[Mapping[str, str]] = None) -> str:
         """
         Resolve realtime source priority with automatic tushare injection.
 
@@ -3533,15 +3603,16 @@ class Config:
         explicitly set, automatically prepend 'tushare' to the default priority
         so that the paid data source is utilized for realtime quotes as well.
         """
-        explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
+        env = os.environ if env is None else env
+        explicit = env.get('REALTIME_SOURCE_PRIORITY')
         default_priority = 'tencent,akshare_sina,efinance,akshare_em'
 
         if explicit:
             # User explicitly set priority, respect it
             return explicit
 
-        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        biying_licence = os.getenv('BIYING_LICENCE', '').strip()
+        tushare_token = env.get('TUSHARE_TOKEN', '').strip()
+        biying_licence = env.get('BIYING_LICENCE', '').strip()
         if tushare_token or biying_licence:
             # Paid sources configured but no explicit priority override:
             # tushare -> biying -> free sources (only the configured ones are injected)
@@ -4278,6 +4349,14 @@ class Config:
 def get_config() -> Config:
     """获取全局配置实例的快捷方式"""
     return Config.get_instance()
+
+
+def get_primary_user_id() -> str:
+    """Return PRIMARY_USER_ID (default ``local``): the owner of legacy data and of header-less entry points."""
+    value = getattr(get_config(), "primary_user_id", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return DEFAULT_PRIMARY_USER_ID
 
 
 # ============================================================

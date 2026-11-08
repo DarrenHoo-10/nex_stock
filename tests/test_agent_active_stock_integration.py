@@ -1505,14 +1505,17 @@ def test_chat_schema_failure_does_not_publish_half_initialized_manager_and_can_r
     with sqlite3.connect(path) as interrupted:
         columns = {row[1] for row in interrupted.execute("PRAGMA table_info(conversation_session_states)")}
         assert "active_stock_code" in columns and "active_stock_canonical_id" not in columns
-        assert interrupted.execute("SELECT * FROM conversation_session_states").fetchone() == (
-            "existing", '["technical"]', "2026-01-01", "2026-01-01", None,
-        )
+        # Explicit columns: the multi-user migration (which runs first) adds ``user_id`` as well.
+        assert interrupted.execute(
+            "SELECT session_id, selected_skill_ids_json, created_at, updated_at, active_stock_code "
+            "FROM conversation_session_states"
+        ).fetchone() == ("existing", '["technical"]', "2026-01-01", "2026-01-01", None)
     recovered = DatabaseManager(db_url=f"sqlite:///{path}")
     snapshot = recovered.read_chat_session_snapshot("existing")
     assert recovered._initialized and snapshot["session_generation"]
     assert snapshot["selected_skill_ids"] == ["technical"] and snapshot["session_state_version"] == 0
-    assert len(inspect(recovered._engine).get_columns("conversation_session_states")) == 13
+    # 13 chat-state columns plus ``user_id`` from the multi-user migration.
+    assert len(inspect(recovered._engine).get_columns("conversation_session_states")) == 14
     with recovered._engine.connect() as connection:
         assert connection.execute(text(
             "SELECT created_at, updated_at FROM conversation_session_states WHERE session_id='existing'"

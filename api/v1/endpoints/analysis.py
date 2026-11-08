@@ -30,7 +30,7 @@ from typing import Optional, Union, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from api.deps import get_config_dep
+from api.deps import get_config_dep, require_admin
 from api.v1.errors import api_error
 from api.v1.schemas.analysis import (
     AnalyzeRequest,
@@ -654,6 +654,7 @@ def _handle_sync_analysis(
 
 @router.post(
     "/market-review",
+    dependencies=[Depends(require_admin)],
     response_model=MarketReviewAccepted,
     status_code=202,
     responses={

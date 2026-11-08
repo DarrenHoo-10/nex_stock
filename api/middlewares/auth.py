@@ -12,7 +12,9 @@ Auth middleware.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import threading
+import time
+from typing import Callable, Dict
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -20,9 +22,14 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.auth import COOKIE_NAME, is_auth_enabled, is_user_center_mode, verify_session
-from src.user_center_auth import UserCenterAuthError, authorize_request
+from src.user_center_auth import UserCenterAuthError, UserSession, authorize_request
 
 logger = logging.getLogger(__name__)
+
+# ``app_user.last_seen_at`` is refreshed at most once per user per this many seconds.
+APP_USER_TOUCH_INTERVAL_SEC = 60.0
+_app_user_last_touch: Dict[str, float] = {}
+_app_user_touch_lock = threading.Lock()
 
 EXEMPT_PATHS = frozenset({
     "/api/v1/auth/login",
@@ -69,6 +76,36 @@ def _user_center_requires_auth(path: str) -> bool:
     return normalized in USER_CENTER_PROTECTED_PATHS or normalized.startswith("/docs/")
 
 
+def _should_touch_app_user(user_id: str) -> bool:
+    """In-memory throttle: True at most once per user per ``APP_USER_TOUCH_INTERVAL_SEC``."""
+    now = time.monotonic()
+    with _app_user_touch_lock:
+        last = _app_user_last_touch.get(user_id)
+        if last is not None and now - last < APP_USER_TOUCH_INTERVAL_SEC:
+            return False
+        _app_user_last_touch[user_id] = now
+        return True
+
+
+def _write_app_user(session: UserSession) -> None:
+    """Upsert ``app_user`` (runs in a worker thread); a failed write is logged, never raised."""
+    try:
+        from src.repositories.user_repo import UserRepository
+
+        UserRepository().touch_app_user(session.user_id, session.handle, session.display_name, session.role)
+    except Exception as exc:  # noqa: BLE001 - recording the user must never fail a request
+        logger.warning("Failed to record app_user %s: %s", session.user_id, exc)
+
+
+async def _record_app_user(session: UserSession) -> None:
+    """Throttled ``app_user`` upsert in a worker thread (off the event loop); never raises."""
+    try:
+        if session.user_id and _should_touch_app_user(session.user_id):
+            await run_in_threadpool(_write_app_user, session)
+    except Exception as exc:  # noqa: BLE001 - recording the user must never fail a request
+        logger.warning("Failed to record app_user %s: %s", session.user_id, exc)
+
+
 def auth_error_response(exc: UserCenterAuthError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
@@ -95,6 +132,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             except UserCenterAuthError as exc:
                 return auth_error_response(exc)
             request.state.user_center_session = session
+            await _record_app_user(session)
             return await call_next(request)
 
         if not is_auth_enabled():

@@ -507,10 +507,12 @@ daily_stock_analysis/
 | `STOCK_LIST` | 自选股代码（逗号分隔） | - |
 | `ADMIN_AUTH_ENABLED` | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password`。Web 的 `.env` 备份导入导出仅在开启该开关后可用（桌面端不受此限制）。 | `false` |
 | `TRUST_X_FORWARDED_FOR` | 单层可信反向代理部署时设为 `true`，取 `X-Forwarded-For` 最右值作为真实客户端 IP（用于登录限流等）；直连公网时保持 `false` 防伪造。多级代理/CDN 场景下限流 key 可能退化为边缘代理 IP，需额外评估 | `false` |
-| `AUTH_MODE` | 认证方式：`local`（默认，本地管理员密码，由 `ADMIN_AUTH_ENABLED` 控制）/ `user_center`（NexorAI 用户中心登录，仅管理员账号）。`user_center` 下本地密码登录、修改密码与认证开关接口返回 `409 auth_mode_user_center`；除健康检查与 `/api/session`、`/api/login`、`/api/logout` 外，所有 `/api/*` 都要求有效的 `user_session` Cookie（逐请求向 `{USER_CENTER_URL}/v1/session` 校验，不缓存），非 GET 请求另需 `Origin` 等于 `PUBLIC_ORIGIN` 且携带 `X-CSRF-Token`。取值写错时按 `user_center` 处理（失败即关闭）。仅能在 `.env`/部署环境修改，改后重启。详见 [deploy/tokyo/README.md](../deploy/tokyo/README.md) | `local` |
+| `AUTH_MODE` | 认证方式：`local`（默认，本地管理员密码，由 `ADMIN_AUTH_ENABLED` 控制）/ `user_center`（NexorAI 用户中心登录，仅管理员账号）。`user_center` 下本地密码登录、修改密码与认证开关接口返回 `409 auth_mode_user_center`；除健康检查与 `/api/session`、`/api/login`、`/api/logout` 外，所有 `/api/*` 都要求有效的 `user_session` Cookie（逐请求向 `{USER_CENTER_URL}/v1/session` 校验，不缓存），非 GET 请求另需 `Origin` 等于 `PUBLIC_ORIGIN` 且携带 `X-CSRF-Token`。取值写错时按 `user_center` 处理（失败即关闭）。`GET /api/v1/me` 返回当前用户（`user_id`、`role`、`is_admin`、`auth_mode`、`model_key_configured`）；系统设置、调度器、全站用量和共享数据维护类接口仅管理员可用（普通用户返回 `403 ADMIN_REQUIRED`）。仅能在 `.env`/部署环境修改，改后重启。详见 [deploy/tokyo/README.md](../deploy/tokyo/README.md) | `local` |
 | `USER_CENTER_URL` | 用户中心地址（`AUTH_MODE=user_center`）：浏览器跳转 `{地址}/login`、`{地址}/logout`，后端校验 `{地址}/v1/session`（3 秒超时、并发 2、429 重试） | `https://user.nexorai.com.cn` |
 | `PUBLIC_ORIGIN` | 站点公开地址（`AUTH_MODE=user_center` 必填；协议+域名+可选端口，不带路径）：登录/退出后的返回地址，也是非 GET 请求唯一允许的 `Origin`；需先加入用户中心的返回地址白名单。未配置时受保护接口返回 `503 AUTH_MISCONFIGURED` | 空 |
 | `USER_CENTER_REQUIRED_ROLE` | 允许使用本系统的最低用户中心角色：`admin`（仅管理员）/ `user`（普通用户和管理员）；不满足时 API 返回 `403 ADMIN_REQUIRED`，Web 显示「无权限」页 | `admin` |
+| `PRIMARY_USER_ID` | 主用户 ID（多用户地基）：既有历史数据，以及 CLI、定时任务、机器人、MCP 等无用户上下文的入口都归属主用户，主用户的个人设置就是 `.env`。`AUTH_MODE=local` 下所有请求都以主用户（管理员）身份运行；`user_center` 下设成管理员在用户中心的 `userId`。升级首次启动时数据库迁移会把历史数据回填给当时配置的值（迁移前自动备份数据库），请在首次启动前设好，之后再改不会移动已回填的数据。仅能在 `.env`/部署环境修改，改后重启 | `local` |
+| `USER_SECRET_KEY` | 用户个人密钥（模型 Key 等）加密用的根密钥，可选。留空时仅在非主用户首次保存密钥时自动生成 `user_secret.key`（与数据库同目录，权限 600），单人 `local` 部署不会生成；需要与数据库分开存放时用本项覆盖（高熵随机串）。备份数据库时一并备份，根密钥丢失后所有用户已保存的密钥无法解密 | 空 |
 | `MAX_WORKERS` | 并发线程数 | `3` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |

@@ -58,8 +58,12 @@ from sqlalchemy.orm import (
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
-from src.config import get_config
+from src.config import get_config, get_primary_user_id
 from src.schemas.decision_profile import extract_legacy_decision_profile
+from src.storage_multi_user_migration import (
+    backup_before_multi_user_migration,
+    run_multi_user_migration,
+)
 from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
@@ -97,6 +101,50 @@ class DatabaseSchemaMigration(Base):
     version = Column(String(64), primary_key=True)
     description = Column(String(255), nullable=False)
     applied_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
+
+def _default_user_id() -> str:
+    """Python-side default of every ``user_id`` column: the primary user (PRIMARY_USER_ID).
+
+    Resolved at insert time so single-user code paths keep working unchanged
+    (docs/design/multi-user.md section 2.3).
+    """
+    return get_primary_user_id()
+
+
+class AppUser(Base):
+    """Known users (user-center ``userId``); lets scheduled jobs enumerate users."""
+
+    __tablename__ = 'app_user'
+
+    user_id = Column(String(64), primary_key=True)
+    handle = Column(String(64))
+    display_name = Column(String(128))
+    role = Column(String(16))
+    first_seen_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    last_seen_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class UserSetting(Base):
+    """Personal-layer setting overrides; secret values are stored encrypted (src/user_secrets.py)."""
+
+    __tablename__ = 'user_setting'
+
+    user_id = Column(String(64), primary_key=True)
+    key = Column(String(128), primary_key=True)
+    value = Column(Text, nullable=False, default="")
+    is_secret = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, nullable=False)
+
+
+class UserDataKey(Base):
+    """One random data key per user, wrapped with the root key (src/user_secrets.py)."""
+
+    __tablename__ = 'user_data_key'
+
+    user_id = Column(String(64), primary_key=True)
+    wrapped_key = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
 
 
 class StockDaily(Base):
@@ -441,6 +489,11 @@ class AnalysisHistory(Base):
     stop_loss = Column(Float)
     take_profit = Column(Float)
 
+    # 发起人与生成该报告的模型渠道摘要（服务商 + Base URL + 模型名），只记录、不参与过滤
+    # （docs/design/multi-user.md 第 4、7 节）
+    requester_user_id = Column(String(64), default=_default_user_id)
+    model_channel_fingerprint = Column(String(64))
+
     created_at = Column(DateTime, default=datetime.now, index=True)
 
     __table_args__ = (
@@ -600,6 +653,8 @@ class PortfolioAccount(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     owner_id = Column(String(64), index=True)
+    # 账户归属用户；owner_id 是前端自由填写的文本，保留原语义，不复用
+    user_id = Column(String(64), default=_default_user_id, index=True)
     name = Column(String(64), nullable=False)
     broker = Column(String(64))
     market = Column(String(8), nullable=False, default='cn', index=True)  # cn/hk/us
@@ -814,6 +869,7 @@ class ConversationSessionState(Base):
     __tablename__ = 'conversation_session_states'
 
     session_id = Column(String(100), primary_key=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     selected_skill_ids_json = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
@@ -870,6 +926,7 @@ class AssistantNote(Base):
     __tablename__ = 'assistant_note'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), default=_default_user_id)
     scope = Column(String(16), nullable=False)  # global / stock / board
     subject = Column(String(32), nullable=True)  # stock code / board id; NULL for global
     title = Column(String(64), nullable=False)
@@ -878,10 +935,11 @@ class AssistantNote(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint('scope', 'subject', name='uix_assistant_note_scope_subject'),
-        # NULL subjects never collide in a plain UNIQUE; keep one global page.
+        UniqueConstraint('user_id', 'scope', 'subject', name='uix_assistant_note_user_scope_subject'),
+        # NULL subjects never collide in a plain UNIQUE; keep one global page per user.
         Index(
             'uix_assistant_note_global',
+            'user_id',
             'scope',
             unique=True,
             sqlite_where=text("subject IS NULL"),
@@ -991,6 +1049,7 @@ class LLMUsage(Base):
     __tablename__ = 'llm_usage'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     # 'analysis' | 'agent' | 'market_review'
     call_type = Column(String(32), nullable=False, index=True)
     model = Column(String(128), nullable=False)
@@ -1150,6 +1209,7 @@ class AlertRuleRecord(Base):
     __tablename__ = 'alert_rules'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     name = Column(String(64), nullable=False)
     target_scope = Column(String(32), nullable=False, default='single_symbol', index=True)
     target = Column(String(64), nullable=False, index=True)
@@ -1713,10 +1773,15 @@ class BoardFollow(Base):
     __tablename__ = 'board_follow'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    board_ref = Column(String(64), nullable=False, unique=True)
+    user_id = Column(String(64), default=_default_user_id)
+    board_ref = Column(String(64), nullable=False)
     board_name = Column(String(64), nullable=False)
     board_type = Column(String(16), nullable=False)
     created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'board_ref', name='uix_board_follow_user_board'),
+    )
 
 
 class BoardRecommendation(Base):
@@ -1746,6 +1811,7 @@ class DailyPlanAccount(Base):
     __tablename__ = 'plan_account'
 
     id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), default=_default_user_id, unique=True, index=True)
     cash = Column(Float, nullable=False, default=0.0)  # 元
     updated_at = Column(DateTime, default=utc_naive_now, nullable=False)
 
@@ -1756,12 +1822,17 @@ class DailyPlanHolding(Base):
     __tablename__ = 'plan_holding'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(10), nullable=False, unique=True)  # 6 位 A 股代码
+    user_id = Column(String(64), default=_default_user_id)
+    code = Column(String(10), nullable=False)  # 6 位 A 股代码
     shares = Column(Integer, nullable=False)
     cost = Column(Float, nullable=False)  # 持仓成本价，元
     buy_date = Column(Date)  # 选填，用于 T+1 判断
     horizon = Column(String(8))  # short / swing，空表示未指定
     position = Column(Integer, nullable=False, default=0)  # 录入顺序
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'code', name='uix_plan_holding_user_code'),
+    )
 
 
 class DailyPlanRun(Base):
@@ -1771,6 +1842,7 @@ class DailyPlanRun(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(64), nullable=False, unique=True, index=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     trade_date = Column(Date, nullable=False, index=True)
     status = Column(String(16), nullable=False, default='running')  # running / succeeded / partial / failed / skipped
     trigger = Column(String(16), nullable=False, default='manual')  # schedule / manual
@@ -1799,6 +1871,7 @@ class DailyPlanStock(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(64), index=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     trade_date = Column(Date, nullable=False)
     code = Column(String(10), nullable=False)
     status = Column(String(16), nullable=False, default='ready')  # ready / failed
@@ -1890,8 +1963,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 autoflush=False,
             )
 
+            # 多用户 P1：旧库首次迁移前先备份（SQLite backup API，WAL 安全），失败即拒绝启动
+            backup_before_multi_user_migration(self._engine)
+
             # 创建所有表
             Base.metadata.create_all(self._engine)
+            # 必须紧随 create_all：后续 _ensure_* 会用 ORM 查询已带 user_id 的表
+            run_multi_user_migration(self._engine, get_primary_user_id())
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_stock_daily_canonical_id()

@@ -28,6 +28,7 @@ import src.user_center_auth as uc
 from api.app import create_app
 from api.v1.endpoints import system_config as system_config_endpoint
 from src.config import Config
+from src.storage import DatabaseManager
 
 SESSION_ID = "a1" * 32  # 64 hex chars
 PUBLIC_ORIGIN = "https://stock.example.test"
@@ -74,9 +75,12 @@ def uc_env(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "_is_auth_enabled_from_env", lambda: False)
     monkeypatch.setattr(uc.time, "sleep", lambda _seconds: None)
     Config.reset_instance()
+    # The auth middleware records the user in app_user (this test's tmp database).
+    DatabaseManager.reset_instance()
     auth.refresh_auth_state()
     yield tmp_path
     auth.refresh_auth_state()
+    DatabaseManager.reset_instance()
     Config.reset_instance()
 
 

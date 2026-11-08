@@ -52,7 +52,7 @@ sudo chmod 600 /data/nex-stock/config/.env
 sudoedit /data/nex-stock/config/.env      # 填 PUBLIC_ORIGIN、TUSHARE_TOKEN、FEISHU_APP_ID/SECRET 等
 ```
 
-`env.production.example` 里是需要设置的键名（密钥留空）：认证（`AUTH_MODE=user_center`、`PUBLIC_ORIGIN`、`USER_CENTER_URL`、`USER_CENTER_REQUIRED_ROLE`）、`TUSHARE_TOKEN`、资讯开关、飞书、调度开关与各任务时间。**LLM 渠道**登录后在 Web「设置 → AI 模型」里配置，保存会写回 `/data/nex-stock/config/.env`。
+`env.production.example` 里是需要设置的键名（密钥留空）：认证（`AUTH_MODE=user_center`、`PUBLIC_ORIGIN`、`USER_CENTER_URL`、`USER_CENTER_REQUIRED_ROLE`、`PRIMARY_USER_ID`）、`TUSHARE_TOKEN`、资讯开关、飞书、调度开关与各任务时间。**LLM 渠道**登录后在 Web「设置 → AI 模型」里配置，保存会写回 `/data/nex-stock/config/.env`。
 
 > 前提：`PUBLIC_ORIGIN`（`https://stock.nexorai.com.cn`）已在用户中心（nex_user）的返回地址白名单中，且用户中心的 `user_session` Cookie 作用域是 `.nexorai.com.cn`。
 

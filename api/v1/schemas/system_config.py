@@ -60,6 +60,10 @@ class SystemConfigFieldSchema(BaseModel):
     options: List[str | SystemConfigOption] = Field(default_factory=list)
     validation: Dict[str, Any] = Field(default_factory=dict)
     display_order: int
+    scope: Literal["user", "system"] = Field(
+        "system",
+        description="'user' = may be set per user; 'system' = process-level, admin only",
+    )
     help_key: Optional[str] = Field(None, description="Stable localization key for detailed help content")
     examples: List[str] = Field(default_factory=list, description="Safe example values for help panels")
     docs: List[SystemConfigDocLink] = Field(default_factory=list, description="Related documentation links")

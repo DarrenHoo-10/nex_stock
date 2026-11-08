@@ -6,7 +6,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from api.deps import require_admin
 
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.intelligence import (
@@ -45,7 +47,7 @@ def _internal_error(message: str, exc: Exception) -> HTTPException:
     )
 
 
-@router.post("/sources", response_model=IntelligenceSourceItem, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Create intelligence source")
+@router.post("/sources", dependencies=[Depends(require_admin)], response_model=IntelligenceSourceItem, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Create intelligence source")
 def create_source(request: IntelligenceSourceCreateRequest) -> IntelligenceSourceItem:
     try:
         return IntelligenceSourceItem(**IntelligenceService().create_source(request.model_dump()))
@@ -55,7 +57,7 @@ def create_source(request: IntelligenceSourceCreateRequest) -> IntelligenceSourc
         raise _internal_error("Create intelligence source failed", exc)
 
 
-@router.get("/sources", response_model=IntelligenceSourceListResponse, responses={500: {"model": ErrorResponse}}, summary="List intelligence sources")
+@router.get("/sources", dependencies=[Depends(require_admin)], response_model=IntelligenceSourceListResponse, responses={500: {"model": ErrorResponse}}, summary="List intelligence sources")
 def list_sources(
     enabled: Optional[bool] = Query(None),
     source_type: Optional[str] = Query(None),
@@ -73,7 +75,7 @@ def list_sources(
         raise _internal_error("List intelligence sources failed", exc)
 
 
-@router.get("/sources/templates", response_model=IntelligenceSourceTemplateListResponse, responses={500: {"model": ErrorResponse}}, summary="List built-in intelligence source templates")
+@router.get("/sources/templates", dependencies=[Depends(require_admin)], response_model=IntelligenceSourceTemplateListResponse, responses={500: {"model": ErrorResponse}}, summary="List built-in intelligence source templates")
 def list_source_templates(
     source_type: Optional[str] = Query(None),
     market: Optional[str] = Query(None),
@@ -87,7 +89,7 @@ def list_source_templates(
         raise _internal_error("List intelligence source templates failed", exc)
 
 
-@router.post("/sources/templates/{template_id}", response_model=IntelligenceSourceItem, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Create intelligence source from a built-in template")
+@router.post("/sources/templates/{template_id}", dependencies=[Depends(require_admin)], response_model=IntelligenceSourceItem, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Create intelligence source from a built-in template")
 def create_source_from_template(
     template_id: str,
     request: IntelligenceSourceTemplateCreateRequest = IntelligenceSourceTemplateCreateRequest(),
@@ -106,7 +108,7 @@ def create_source_from_template(
         raise _internal_error("Create intelligence source from template failed", exc)
 
 
-@router.post("/sources/defaults", response_model=IntelligenceDefaultSourceCreateResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Create built-in default intelligence sources")
+@router.post("/sources/defaults", dependencies=[Depends(require_admin)], response_model=IntelligenceDefaultSourceCreateResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Create built-in default intelligence sources")
 def create_default_sources(
     request: IntelligenceDefaultSourcesCreateRequest = IntelligenceDefaultSourcesCreateRequest(),
 ) -> IntelligenceDefaultSourceCreateResponse:
@@ -120,7 +122,7 @@ def create_default_sources(
         raise _internal_error("Create default intelligence sources failed", exc)
 
 
-@router.post("/sources/test", response_model=IntelligenceSourceTestResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Dry-run an intelligence source payload")
+@router.post("/sources/test", dependencies=[Depends(require_admin)], response_model=IntelligenceSourceTestResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Dry-run an intelligence source payload")
 def test_source_payload(request: IntelligenceSourceCreateRequest) -> IntelligenceSourceTestResponse:
     try:
         return IntelligenceSourceTestResponse(**IntelligenceService().test_source(request.model_dump()))
@@ -130,7 +132,7 @@ def test_source_payload(request: IntelligenceSourceCreateRequest) -> Intelligenc
         raise _internal_error("Test intelligence source failed", exc)
 
 
-@router.post("/sources/{source_id}/fetch", response_model=IntelligenceFetchResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Fetch one intelligence source")
+@router.post("/sources/{source_id}/fetch", dependencies=[Depends(require_admin)], response_model=IntelligenceFetchResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}, summary="Fetch one intelligence source")
 def fetch_source(source_id: int, dry_run: bool = Query(False)) -> IntelligenceFetchResponse:
     try:
         return IntelligenceFetchResponse(**IntelligenceService().fetch_source(source_id, dry_run=dry_run))
@@ -143,7 +145,7 @@ def fetch_source(source_id: int, dry_run: bool = Query(False)) -> IntelligenceFe
         raise _internal_error("Fetch intelligence source failed", exc)
 
 
-@router.post("/sources/fetch-enabled", response_model=IntelligenceFetchResponse, responses={500: {"model": ErrorResponse}}, summary="Fetch all enabled intelligence sources with fail-open semantics")
+@router.post("/sources/fetch-enabled", dependencies=[Depends(require_admin)], response_model=IntelligenceFetchResponse, responses={500: {"model": ErrorResponse}}, summary="Fetch all enabled intelligence sources with fail-open semantics")
 def fetch_enabled_sources() -> IntelligenceFetchResponse:
     try:
         return IntelligenceFetchResponse(**IntelligenceService().fetch_enabled_sources())

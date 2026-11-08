@@ -9,7 +9,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.deps import get_database_manager
+from api.deps import get_database_manager, require_admin
 from api.v1.schemas.backtest import (
     BacktestRunRequest,
     BacktestRunResponse,
@@ -44,6 +44,7 @@ def _validate_analysis_date_range(
 
 @router.post(
     "/run",
+    dependencies=[Depends(require_admin)],
     response_model=BacktestRunResponse,
     responses={
         200: {"description": "回测执行完成"},

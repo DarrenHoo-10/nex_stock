@@ -39,7 +39,8 @@ for d in data logs reports; do ln -s "../$d" "$R/app/$d"; done
 
 ## 2. 配置
 
-- **配置文件**：`$R/config/.env` 的键名与 `deploy/tokyo/env.production.example` 相同，包括 `AUTH_MODE=user_center`、`PUBLIC_ORIGIN`、`TUSHARE_TOKEN` 等。创建后执行 `chmod 600 "$R/config/.env"`。
+- **配置文件**：`$R/config/.env` 的键名与 `deploy/tokyo/env.production.example` 相同，包括 `AUTH_MODE=user_center`、`PUBLIC_ORIGIN`、`PRIMARY_USER_ID`、`TUSHARE_TOKEN` 等。创建后执行 `chmod 600 "$R/config/.env"`。
+- **主用户与备份**：`PRIMARY_USER_ID` 填管理员在用户中心的 `userId`，升级到多用户版本前先设好（首次启动的数据库迁移按它回填历史数据，迁移前会在数据库旁自动生成 `stock_analysis.db.pre-multi-user-<时间>.bak`，确认无误后再清理）。启用普通用户个人密钥后，数据库同目录会出现 `user_secret.key`（权限 600），备份数据库时要一并备份。
 - **路径不写进 `.env`**：数据库、日志路径和监听地址由 launchd 的环境变量指定。不要在 `.env` 里写容器路径（`/app/...`）。
 - **设置页**：Web 设置页保存配置时会写回这个文件。
 - **自定义选股策略**：`SCREENING_EXTRA_STRATEGIES_DIR=data/screening_strategies` 指向 `$R/data/screening_strategies/`。
