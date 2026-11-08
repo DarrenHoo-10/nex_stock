@@ -1948,6 +1948,7 @@ A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是
 - 缓存缺失或过期时，工具仍会按原逻辑从数据源获取日线数据；获取成功后会 best-effort 写回 `stock_daily`，保存失败不会阻断 Agent 回复。
 - `search_stock_news` 与 `search_comprehensive_intel` 成功返回后会 best-effort 写入 `news_intel`，复用现有 URL / fallback key 去重逻辑。
 - `search_market_news(keyword, days=3)` 按题材 / 关键词查新闻，不绑定单只股票：先查资讯库里最近 `days` 天（1–7）的快讯和公告（标题、摘要、关联板块命中任一关键词），命中少于 3 条时再用已配置的搜索引擎做题材搜索；不写入 `news_intel`。
+- 助手的系统接口权限（只给 Web 助手页 / 助手抽屉 / 飞书助手所用的单 Agent Chat，不给报告分析、定时任务、Bot 命令和多 Agent 模式）：`read_api_doc` 按层读取 `/api/v1` 的接口文档（不带参数是分组目录；`group` 是某个分组的接口列表；`endpoint="GET /api/v1/plan/account"` 是参数、请求体和返回结构），文档由当前代码的 OpenAPI 生成，不会和代码脱节；`call_api(method, path, query, body)` 在进程内调用任意 `/api/v1` 接口，读写都可以，和登录用户在网页上的权限一样，不经过鉴权中间件。系统提示只告诉助手文档在哪里，接口细节由它按需查阅。唯一不能调用的是助手自己的对话接口（`/agent/chat`、`/agent/chat/stream` 及其取消接口，避免自我调用）和不会结束的 SSE 流 `GET /analysis/tasks/stream`；三个上传文件的接口需要 multipart，助手调用不了。Codex 后端不提供这两个工具。
 - Chat 股票作用域：没有讨论对象的问题（如「寒潮有哪些股票值得关注」）使用 `open` 作用域，个股工具可以查询任何能校验通过的 A 股 / 指数代码；一旦会话里确认了股票、助手抽屉选中了股票、在做对比或对象待澄清，仍只允许查询这些对象，越界调用返回 `stock_scope_violation`。
 - `get_realtime_quote` 不复用 `stock_daily` 作为实时行情缓存，也不会把盘中实时行情写入日线表；如需实时行情缓存，应单独设计实时行情存储。
 
