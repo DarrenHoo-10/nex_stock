@@ -31,6 +31,30 @@ export type StockHistoryResponse = {
   data: StockHistoryBar[];
 };
 
+/** One 5-minute bar of a trading day; `time` is Beijing time with offset (2026-11-06T09:35:00+08:00). */
+export type StockIntradayBar = {
+  time: string;
+  open?: number | null;
+  high?: number | null;
+  low?: number | null;
+  close: number;
+  /** Shares. */
+  volume?: number | null;
+  /** Yuan. */
+  amount?: number | null;
+};
+
+export type StockIntradayResponse = {
+  stockCode: string;
+  tradeDate: string;
+  interval: string;
+  source: string;
+  asOf: string;
+  isStale: boolean;
+  staleReason?: string | null;
+  data: StockIntradayBar[];
+};
+
 export type StockQuoteResponse = {
   stockCode: string;
   stockName?: string | null;
@@ -54,6 +78,19 @@ export const stocksApi = {
       { params: { period: 'daily', days: options.days ?? 250 }, signal: options.signal, timeout: 60000 },
     );
     return toCamelCase<StockHistoryResponse>(response.data);
+  },
+
+  /** 5-minute bars of one trading day (`YYYY-MM-DD`); A-share only, 503 when no minute source is configured. */
+  async getIntraday(
+    stockCode: string,
+    date: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<StockIntradayResponse> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/stocks/${encodeURIComponent(stockCode)}/intraday`,
+      { params: { date }, signal: options.signal, timeout: 30000 },
+    );
+    return toCamelCase<StockIntradayResponse>(response.data);
   },
 
   /** Realtime quote; `floatShares` feeds the chip distribution's daily turnover. */

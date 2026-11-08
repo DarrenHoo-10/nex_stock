@@ -9,6 +9,7 @@
 2. POST /api/v1/stocks/parse-import 解析 CSV/Excel/剪贴板
 3. GET /api/v1/stocks/{code}/quote 实时行情接口
 4. GET /api/v1/stocks/{code}/history 历史行情接口
+5. GET /api/v1/stocks/{code}/intraday?date= 某个交易日的分时（5 分钟）行情
 """
 
 import logging
@@ -22,13 +23,19 @@ from api.deps import get_system_config_service
 from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
+    IntradayBar,
     KLineData,
     StockHistoryResponse,
+    StockIntradayResponse,
     StockProfileResponse,
     StockQuote,
 )
 from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
 from api.v1.schemas.common import ErrorResponse
+from src.services.intraday_snapshot_service import (
+    IntradayDataUnavailable,
+    get_intraday_snapshot_service,
+)
 from src.services.image_stock_extractor import (
     ALLOWED_MIME,
     MAX_SIZE_BYTES,
@@ -595,3 +602,54 @@ def get_stock_history(
                 "message": f"获取历史行情失败: {str(e)}"
             }
         )
+
+
+@router.get(
+    "/{stock_code}/intraday",
+    response_model=StockIntradayResponse,
+    responses={
+        200: {"description": "指定交易日的分时（5 分钟）行情"},
+        422: {"description": "日期格式错误或为未来日期", "model": ErrorResponse},
+        503: {"description": "没有可用的分钟线数据源", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取个股某个交易日的分时行情",
+    description=(
+        "按需返回 A 股某个交易日的 5 分钟线（不落库）。当天走 Tushare / 必盈实时链路，"
+        "历史交易日走必盈历史分钟线（需配置 BIYING_LICENCE）。"
+    ),
+)
+def get_stock_intraday(
+    stock_code: str,
+    date: str = Query(..., description="交易日 YYYY-MM-DD", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+) -> StockIntradayResponse:
+    try:
+        result = get_intraday_snapshot_service().get_session_bars(stock_code, date)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_date", "message": str(e)},
+        )
+    except IntradayDataUnavailable as e:
+        logger.info("分时行情不可用 %s %s: %s", stock_code, date, e)
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "intraday_unavailable", "message": "暂时取不到这一天的分时数据"},
+        )
+    except Exception as e:
+        logger.error(f"获取分时行情失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取分时行情失败"},
+        )
+
+    return StockIntradayResponse(
+        stock_code=result.code,
+        trade_date=result.trade_date or date,
+        source=result.source,
+        as_of=result.as_of,
+        fetched_at=result.fetched_at,
+        is_stale=result.is_stale,
+        stale_reason=result.stale_reason,
+        data=[IntradayBar(**bar) for bar in result.bars],
+    )

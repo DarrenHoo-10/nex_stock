@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 助手新增题材新闻工具 `search_market_news`：按关键词（如「寒潮」「天然气 涨价」）查资讯库里最近 1–7 天的快讯和公告，命中少时用已配置的搜索引擎补充，不再只能按单只股票搜新闻。
 - [改进] 助手没有讨论对象的问题（如「寒潮有哪些股票值得关注」）可以调用行情、K 线、筹码、个股新闻等工具查询候选股票，不再全部返回 `stock_scope_violation`；会话里已确认或抽屉选中了股票、对比和待澄清时仍只查这些对象。
 - [修复] 助手抽屉选中股票后，没点名股票的提问（如「你对明天的走势怎么看」「风险呢」）现在按抽屉里的股票回答，不再当成大盘问题或要求补代码；`context.daily_plan` 的交易日、周期和板块也会带进提示词。抽屉里的对象只作用于当次提问，不写入会话状态，问题里点名的股票仍然优先。
+- [文档] 新增 `docs/data-sources.md` 数据渠道使用说明：按渠道（Tushare、必盈、TickFlow、Efinance / AkShare / Pytdx / Baostock / YFinance / Tencent、Futu、Longbridge、Finnhub / AlphaVantage、妙想、台湾三大法人、FXMacroData）说明能力、凭据、配置、优先级与自动注入规则、限流、验证方式和排障速查，并在文档中心登记入口；同时写明每日 workflow 尚未映射 `BIYING_LICENCE`。
+- [新功能] 我的股票：个股次日计划页在标题区（等待 / 买入等结论、原因和关键数字）下方、「明天怎么做」上方嵌入这只股票的行情图，与行情窗口是同一个组件（去掉名称 / 代码 / 现价标题栏，保留周期切换、数据条、均线、成交量、筹码分布），读取已有的 `GET /api/v1/stocks/{code}/history` 和 `/quote`；读取失败显示错误并可重试，不影响计划内容。
+- [新功能] 行情图双击日 K 查看当天分时（5 分钟线：价格、均价、昨收、成交量，Esc 或「返回 K 线」关闭），行情窗口和个股计划页都支持，仅 A 股个股和 ETF、日 K 周期。新增 `GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD`：当天走 Tushare / 必盈实时链路，历史交易日走必盈历史 5 分钟线（`BIYING_LICENCE`，未配置时返回 503，页面提示读取失败可重试），历史交易日缓存 6 小时、不落库；日期格式错误或未来日期返回 422。
 - [新功能] 左侧导航新增「助手」页（`/assistant`）：左栏显示历史会话（切换、删除、新对话），右侧对话可选模型和思考强度（只作用于本次请求，记在浏览器里，助手抽屉共用），可查看上下文用量（历史 token、模型上下文窗口、摘要覆盖、自动压缩阈值）并手动「压缩会话」。新增 `GET /api/v1/agent/chat/sessions/{id}/context`、`POST /api/v1/agent/chat/sessions/{id}/compact`；`/agent/chat` 与 `/chat/stream` 新增可选 `model`、`reasoning_effort`，`/agent/models` 追加 `route_model`、默认模型与思考强度字段。会话有摘要后，即使自动压缩关闭也按「摘要 + 最近 20 条」带历史；YAML 路由别名的模型现在能正确标记为主模型。
 - [新功能] 次日计划后端服务（`DailyPlanService`，`/api/v1/plan/*` 不再返回 503）：账户与持仓快照（新表 `plan_account`、`plan_holding`）、按 `POSITION_*` 仓位规则确定性计算股数与止损（主板 / 创业板 / 科创板 / 北交所的申报单位与涨跌停、`fixed` / `nearer` 止损）、每只股票短线 / 波段两个周期的条件计划（模型决定买不买和价位，模型不可用时按规则生成）、持股数已满时的换股判断、运行记录与飞书摘要推送（新表 `plan_run`、`plan_stock`）；`DAILY_PLAN_ENABLED=true` 时在定时模式下按 `SCHEDULE_TIME` 每个交易日独立运行一次；新增配置项 `DAILY_PLAN_ENABLED`、`POSITION_STOP_LOSS_PCT`、`POSITION_MAX_TOTAL_PCT`、`POSITION_MAX_HOLDINGS`、`POSITION_MAX_SINGLE_PCT`、`POSITION_STOP_MODE`，详见 `docs/daily-plan-api.md`。
 - [改进] 我的股票：次日计划服务未就绪时，页面改为显示自选列表（名称、代码，可移出），不再只显示错误；页头搜索打开走势图后「加入自选」会同步刷新这份列表。
@@ -104,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 选股策略新增 `screening.setup_scan` 全市场形态预扫描（`surge_pullback`：放量大涨→回踩 MA10），按交易日缓存 Tushare 全市场日线，候选附带大涨日、下一交易日买入价格线、取消线与市场开关状态；开关关闭时默认只给观察名单并标注，可配置为空名单。
 - [新功能] 选股评分新增 `small_cap` 小市值优先因子（流通市值越小分越高，原 `size` 仍为大市值优先）。
 - [修复] 选股的 Tushare 快照与日 K 改用 DSA 数据源层的 Tushare HTTP 客户端：默认请求官方经典端点 `http://api.tushare.pro`，`TUSHARE_HTTP_URL` 与数据源层含义一致。修复 tushare SDK 1.4 下覆盖接入地址后每次请求都静默返回空表、即使配置了 `TUSHARE_TOKEN` 也总是回退到 Sina 的问题。HTTP 错误、接口错误码和空表现在按来源失败处理并继续降级；选股不再读取未文档化的 `TUSHARE_API_URL`。
+- [文档] 生产后端迁至 Mac：新增 `deploy/mac/`（原生 Python 3.11 + launchd 的部署说明与 plist 模板，含迁移与回滚步骤）；东京 Docker 部署改为备用/回滚说明并补充主机资源警告、改为从 main 部署；首尔 nginx 文档改正为 sites-available 路径并新增「切换后端」步骤。
 
 ## [3.33.0] - 2026-10-15
 

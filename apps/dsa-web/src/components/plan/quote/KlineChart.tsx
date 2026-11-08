@@ -24,6 +24,8 @@ export interface KlineChartProps {
   /** Hovered bar index (into `bars`), null when the pointer is outside. */
   onHoverChange: (index: number | null) => void;
   height?: number;
+  /** Double-click on a candle (index into `bars`); omitted keeps the chart passive. */
+  onBarDoubleClick?: (index: number) => void;
   ariaLabel: string;
 }
 
@@ -77,6 +79,7 @@ export const KlineChart: React.FC<KlineChartProps> = ({
   chip,
   onHoverChange,
   height = 460,
+  onBarDoubleClick,
   ariaLabel,
 }) => {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -501,6 +504,12 @@ export const KlineChart: React.FC<KlineChartProps> = ({
         onPointerDown={handlePointerDown}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onDoubleClick={(event) => {
+          const index = indexAt(event.clientX);
+          if (index !== null) {
+            onBarDoubleClick?.(index);
+          }
+        }}
         onPointerLeave={() => {
           if (!dragRef.current) {
             setHover(null);

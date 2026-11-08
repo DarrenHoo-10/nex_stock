@@ -614,9 +614,10 @@ Optional static asset override:
 
 ### Public deployment (user-center login + single container)
 
-The split deployment (static frontend behind nginx in Seoul, backend in Tokyo) with `AUTH_MODE=user_center` (NexorAI user center, administrators only) is documented step by step in:
+The split deployment (static frontend behind nginx in Seoul, backend reverse-proxied over the ZeroTier private network) with `AUTH_MODE=user_center` (NexorAI user center, administrators only) is documented step by step in:
 
-- Backend (Tokyo): [deploy/tokyo/README.md](../deploy/tokyo/README.md) - one container runs the Web/API and every scheduled job (`python main.py --serve --schedule --no-run-immediately`), and the Feishu long connection starts once; do not start the `analyzer` and `server` services of `docker/docker-compose.yml` together.
+- Backend (current, Mac): [deploy/mac/README.md](../deploy/mac/README.md) - a native Python 3.11 process kept alive by launchd, with the same command as the container; run only one backend instance at a time.
+- Backend (standby / rollback, Tokyo Docker): [deploy/tokyo/README.md](../deploy/tokyo/README.md) - one container runs the Web/API and every scheduled job (`python main.py --serve --schedule --no-run-immediately`), and the Feishu long connection starts once; do not start the `analyzer` and `server` services of `docker/docker-compose.yml` together.
 - Frontend and nginx (Seoul): [deploy/seoul/README.md](../deploy/seoul/README.md)
 - Production `.env` key template: `deploy/tokyo/env.production.example`
 

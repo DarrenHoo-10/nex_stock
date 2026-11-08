@@ -7,6 +7,7 @@ import type { UiTextKey } from '../../../i18n/uiText';
 import { GlassDialog } from '../GlassDialog';
 import { CHART_COLORS } from './chartTheme';
 import { buildChipGrid, computeChipDistribution } from './chipDistribution';
+import { IntradayPanel } from './IntradayPanel';
 import { KlineChart } from './KlineChart';
 import {
   PRICE_MA_WINDOWS,
@@ -75,16 +76,23 @@ export interface StockChartDialogProps {
   onAddWatch?: (target: QuoteTarget) => void;
 }
 
-const ChartBody: React.FC<{ target: QuoteTarget; onAddWatch?: (target: QuoteTarget) => void }> = ({
-  target,
-  onAddWatch,
-}) => {
+export interface StockChartBodyProps {
+  target: QuoteTarget;
+  onAddWatch?: (target: QuoteTarget) => void;
+  /** Drop the name / code / last-price block (the host page already shows the stock). */
+  hideTitle?: boolean;
+}
+
+/** K-line, stats, MAs, volume and chip distribution of one symbol; shared by the dialog and inline hosts. */
+export const StockChartBody: React.FC<StockChartBodyProps> = ({ target, onAddWatch, hideTitle = false }) => {
   const { t } = useUiLanguage();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [floatState, setFloatState] = useState<FloatState>({ status: 'loading' });
   const [reloadKey, setReloadKey] = useState(0);
   const [period, setPeriod] = useState<KlinePeriod>('daily');
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  /** The trading day whose 5-minute chart is open over the candles (double-click on a daily candle). */
+  const [intradayDay, setIntradayDay] = useState<{ date: string; prevClose: number } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -197,21 +205,33 @@ const ChartBody: React.FC<{ target: QuoteTarget; onAddWatch?: (target: QuoteTarg
     },
   ];
 
+  // Minute bars exist for A-share stocks / ETFs only, and a candle maps to one session only on the daily period.
+  const intradaySupported = (target.market === 'CN' || target.market === 'BSE') && target.assetType !== 'index';
+  const openIntraday = (index: number) => {
+    const bar = bars[index];
+    if (!intradaySupported || period !== 'daily' || !bar) {
+      return;
+    }
+    setIntradayDay({ date: bar.date.slice(0, 10), prevClose: index > 0 ? bars[index - 1].close : bar.open });
+  };
+
   return (
     <div className="qc">
-      <div className="qc-top">
-        <div className="qc-id">
-          <div className="qc-name">
-            {!target.name && name !== target.code ? <b>{name}</b> : null}
-            <span className="qc-code">{target.displayCode}</span>
-            {badges}
+      <div className={hideTitle ? 'qc-top compact' : 'qc-top'}>
+        {hideTitle ? null : (
+          <div className="qc-id">
+            <div className="qc-name">
+              {!target.name && name !== target.code ? <b>{name}</b> : null}
+              <span className="qc-code">{target.displayCode}</span>
+              {badges}
+            </div>
+            <div className="qc-price">
+              <span className={`qc-last ${signClass(last.changePercent)}`}>{last.close.toFixed(digits)}</span>
+              <span className={signClass(last.changePercent)}>{formatPercent(last.changePercent)}</span>
+              <span className="qc-date">{last.date.slice(0, 10)}</span>
+            </div>
           </div>
-          <div className="qc-price">
-            <span className={`qc-last ${signClass(last.changePercent)}`}>{last.close.toFixed(digits)}</span>
-            <span className={signClass(last.changePercent)}>{formatPercent(last.changePercent)}</span>
-            <span className="qc-date">{last.date.slice(0, 10)}</span>
-          </div>
-        </div>
+        )}
         <div className="qc-actions">
           <div className="seg" role="radiogroup" aria-label={t('quote.periodGroup')}>
             {PERIODS.map((item) => (
@@ -224,6 +244,7 @@ const ChartBody: React.FC<{ target: QuoteTarget; onAddWatch?: (target: QuoteTarg
                 onClick={() => {
                   setPeriod(item.id);
                   setHoverIndex(null);
+                  setIntradayDay(null);
                 }}
               >
                 {t(item.key)}
@@ -269,8 +290,20 @@ const ChartBody: React.FC<{ target: QuoteTarget; onAddWatch?: (target: QuoteTarg
           digits={digits}
           chip={chip}
           onHoverChange={handleHover}
+          onBarDoubleClick={intradaySupported ? openIntraday : undefined}
           ariaLabel={t('quote.chartLabel', { name })}
         />
+        {intradayDay ? (
+          <IntradayPanel
+            key={intradayDay.date}
+            code={target.code}
+            name={name}
+            date={intradayDay.date}
+            prevClose={intradayDay.prevClose}
+            digits={digits}
+            onClose={() => setIntradayDay(null)}
+          />
+        ) : null}
         <section className="qc-chip" aria-label={t('quote.chip.title')}>
           <h3>
             {t('quote.chip.title')}
@@ -313,6 +346,7 @@ const ChartBody: React.FC<{ target: QuoteTarget; onAddWatch?: (target: QuoteTarg
 
       <div className="qc-foot">
         <span>{t('quote.controls')}</span>
+        {intradaySupported && period === 'daily' ? <span>{t('quote.intraday.hint')}</span> : null}
         {chip ? <span>{t('quote.chip.legend')}</span> : null}
         {turnover?.basis === 'estimated' ? <span className="warn">{t('quote.chip.estimated')}</span> : null}
         <span>{t('quote.source')}</span>
@@ -331,7 +365,7 @@ export const StockChartDialog: React.FC<StockChartDialogProps> = ({ target, onCl
       width={1240}
       title={target ? `${target.name || target.displayCode}` : t('quote.search.label')}
     >
-      {target ? <ChartBody key={target.code} target={target} onAddWatch={onAddWatch} /> : null}
+      {target ? <StockChartBody key={target.code} target={target} onAddWatch={onAddWatch} /> : null}
     </GlassDialog>
   );
 };
