@@ -140,3 +140,45 @@
 .plan-shell .risk-list { list-style: disc; }
 .plan-shell .calc ol { list-style: decimal; }
 .plan-shell .switch-costs { list-style: disc; }
+
+/* header stock search */
+.plan-shell .stock-search { position: relative; width: min(340px, 100%); }
+.plan-shell .stock-search input {
+  width: 100%; border: 0; border-radius: 999px; padding: 9px 16px; font-size: 14px; color: #fff;
+  background: rgba(10,14,40,.24); box-shadow: inset 0 0 0 1px var(--line), inset 0 1px 0 rgba(255,255,255,.08);
+}
+.plan-shell .stock-search input::placeholder { color: var(--t4); }
+.plan-shell .stock-search input:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.plan-shell .stock-search-pop {
+  position: absolute; z-index: 30; top: calc(100% + 8px); left: 0; right: 0; padding: 6px; border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.07)), rgba(44,51,98,.94);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.2), 0 18px 40px -12px rgba(10,14,40,.6);
+  backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+}
+.plan-shell .stock-search-pop ul { list-style: none; margin: 0; padding: 0; }
+.plan-shell .stock-option { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: 12px; cursor: pointer; font-size: 14px; }
+.plan-shell .stock-option.active { background: var(--fill2); }
+.plan-shell .stock-option[aria-disabled=true] { cursor: default; }
+.plan-shell .so-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-shell .so-code { color: var(--t3); font-size: 13px; }
+.plan-shell .stock-option .tag { line-height: 18px; font-size: 11px; padding: 0 7px; }
+.plan-shell .so-act { margin-left: auto; font-size: 12.5px; color: var(--accent); white-space: nowrap; }
+.plan-shell .stock-option[aria-disabled=true] .so-act { color: var(--t4); }
+.plan-shell .stock-search-status { margin: 0; padding: 8px 12px; font-size: 13px; color: var(--t3); }
+.plan-shell .stock-search-status.err { color: #FFCF6E; }
+/* watchlist while the plan service is not ready */
+.plan-shell .watch-fallback { padding: 20px 24px; max-width: 720px; }
+.plan-shell .wf-head { display: flex; align-items: baseline; gap: 10px; }
+.plan-shell .wf-head h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.plan-shell .wf-count { font-size: 13px; color: var(--t3); }
+.plan-shell .wf-notice { margin-top: 12px; flex-wrap: wrap; align-items: center; }
+.plan-shell .wf-notice span { flex: 1 1 260px; }
+.plan-shell .wf-list { list-style: none; margin: 14px 0 0; padding: 0; border-radius: var(--r-in); background: var(--fill); }
+.plan-shell .wf-list li { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
+.plan-shell .wf-list li + li { border-top: 1px solid var(--line); }
+.plan-shell .wf-name { font-weight: 600; min-width: 6em; }
+.plan-shell .wf-code { color: var(--t3); font-size: 13px; }
+.plan-shell .wf-list .btn { margin-left: auto; }
+@media (max-width: 860px) {
+  .plan-shell .stock-search { width: 100%; order: -1; }
+}

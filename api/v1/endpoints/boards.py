@@ -17,6 +17,8 @@ from api.v1.schemas.boards import (
     BoardDetail,
     BoardState,
     BoardType,
+    FollowListResponse,
+    RecommendationResponse,
     ThresholdListResponse,
     ThresholdUpdateRequest,
 )
@@ -148,6 +150,124 @@ def update_thresholds(
         raise
     except Exception as exc:
         raise _internal_error("Update board thresholds failed", exc)
+
+
+def _preference_repo() -> Any:
+    from src.repositories.board_preference_repo import BoardPreferenceRepository
+
+    return BoardPreferenceRepository()
+
+
+def _recommendation_service(anomaly_service: Any) -> Any:
+    from src.services.board_recommendation_service import BoardRecommendationService
+
+    return BoardRecommendationService(anomaly_service=anomaly_service)
+
+
+def _follow_payload(service: Any) -> dict:
+    follows = _preference_repo().list_follows()
+    day, rows = service.board_rows([item["board_ref"] for item in follows])
+    return {
+        "trade_date": day.isoformat() if day else None,
+        "boards": [
+            {
+                "id": item["board_ref"],
+                "name": item["board_name"],
+                "board_type": item["board_type"],
+                "followed_at": item["followed_at"],
+                "today": rows.get(item["board_ref"]),
+            }
+            for item in follows
+        ],
+    }
+
+
+@router.get(
+    "/follows",
+    response_model=FollowListResponse,
+    responses={500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},
+    summary="我关注的板块（含最近一次运行的当日数据）",
+)
+def list_follows(service: Any = Depends(get_board_anomaly_service)) -> FollowListResponse:
+    try:
+        return FollowListResponse.model_validate(_follow_payload(service))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _internal_error("List followed boards failed", exc)
+
+
+@router.put(
+    "/follows/{board_id}",
+    response_model=FollowListResponse,
+    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},
+    summary="关注板块（重复关注无副作用），返回最新的关注列表",
+)
+def follow_board(board_id: str, service: Any = Depends(get_board_anomaly_service)) -> FollowListResponse:
+    try:
+        matches = [b for b in service.repo.find_boards(board_id) if b.get("ref") == board_id]
+        if not matches:
+            raise api_error(404, "not_found", f"未找到板块：{board_id}")
+        board = matches[0]
+        _preference_repo().follow(board["ref"], board["name"], board["board_type"])
+        return FollowListResponse.model_validate(_follow_payload(service))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _internal_error("Follow board failed", exc)
+
+
+@router.delete(
+    "/follows/{board_id}",
+    response_model=FollowListResponse,
+    responses={500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},
+    summary="取消关注板块（未关注时无副作用），返回最新的关注列表",
+)
+def unfollow_board(board_id: str, service: Any = Depends(get_board_anomaly_service)) -> FollowListResponse:
+    try:
+        _preference_repo().unfollow(board_id)
+        return FollowListResponse.model_validate(_follow_payload(service))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _internal_error("Unfollow board failed", exc)
+
+
+@router.get(
+    "/recommendations",
+    response_model=RecommendationResponse,
+    responses={500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},
+    summary="推荐重点跟踪的板块（17:00 板块运行后由分析模型挑选；模型不可用时按规则排序）",
+)
+def get_recommendations(
+    trade_date: Optional[date] = Query(None, description="交易日 YYYY-MM-DD，缺省为最近一次运行"),
+    service: Any = Depends(get_board_anomaly_service),
+) -> RecommendationResponse:
+    try:
+        return RecommendationResponse.model_validate(_recommendation_service(service).view(trade_date))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _internal_error("Get board recommendations failed", exc)
+
+
+@router.post(
+    "/recommendations/refresh",
+    status_code=202,
+    response_model=RecommendationResponse,
+    responses={500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},
+    summary="后台重新生成最近一次运行的推荐板块；用 GET /recommendations 轮询状态",
+)
+def refresh_recommendations(service: Any = Depends(get_board_anomaly_service)) -> RecommendationResponse:
+    try:
+        from src.services.board_recommendation_service import start_refresh
+
+        start_refresh(lambda: _recommendation_service(service))
+        return RecommendationResponse.model_validate(_recommendation_service(service).view(None))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _internal_error("Refresh board recommendations failed", exc)
 
 
 @router.get(

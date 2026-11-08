@@ -74,6 +74,41 @@
 }
 .plan-shell .excess-tip b { font-size: 13.5px; }
 
+/* ---------- 今日建议 / 我关注的 ---------- */
+.plan-shell .focus-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 20px; margin-bottom: 20px; align-items: start; }
+.plan-shell .focus-win { padding: 16px 18px 14px; }
+.plan-shell .focus-head { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.plan-shell .focus-head h2 { margin: 0; font-size: 16px; font-weight: 650; }
+.plan-shell .focus-head .spacer { flex: 1 1 0; }
+.plan-shell .focus-meta { font-size: 12px; color: var(--t3); }
+.plan-shell .focus-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.plan-shell .focus-row { width: 100%; display: flex; gap: 12px; align-items: flex-start; padding: 9px 10px; border: 0; border-radius: 14px; background: none; color: var(--t1); text-align: left; transition: background .2s; }
+.plan-shell .focus-row:hover { background: var(--fill); }
+.plan-shell .focus-row[aria-current=true] { background: var(--fill2); }
+.plan-shell .focus-rank { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: rgba(255,255,255,.9); color: #2B3266; font-weight: 700; margin-top: 1px; }
+.plan-shell .focus-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.plan-shell .focus-name { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
+.plan-shell .focus-name b { font-weight: 650; font-size: 14.5px; }
+.plan-shell .focus-name .tag { line-height: 18px; font-size: 11px; padding: 0 7px; }
+.plan-shell .focus-name .num { font-size: 13px; }
+.plan-shell .focus-reason { font-size: 12.5px; color: var(--t2); text-wrap: pretty; }
+.plan-shell .follow-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.plan-shell .follow-chip { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border: 0; border-radius: 14px; background: var(--fill); color: var(--t1); font-size: 13.5px; transition: background .2s; }
+.plan-shell .follow-chip:hover { background: var(--fill2); }
+.plan-shell .follow-chip[aria-current=true] { background: var(--fill3); box-shadow: inset 0 0 0 1px rgba(255,255,255,.5); }
+.plan-shell .follow-chip b { font-weight: 600; }
+.plan-shell .follow-chip .tag { line-height: 18px; font-size: 11px; padding: 0 7px; }
+.plan-shell .follow-btn { flex: none; }
+.plan-shell .follow-btn span { color: #FFD98A; }
+.plan-shell .follow-btn.on { background: rgba(255,217,138,.18); color: #FFEBC0; }
+.plan-shell .follow-star { color: #FFD98A; font-size: 12px; }
+/* board picker sections */
+.plan-shell .bp-section + .bp-section { margin-top: 12px; }
+.plan-shell .bp-section h4 { margin: 10px 0 0; font-size: 12px; font-weight: 600; color: var(--t3); }
+.plan-shell .bp-why { display: block; width: 100%; font-size: 11.5px; color: var(--t3); white-space: normal; text-align: left; margin-top: 2px; }
+.plan-shell .bp-row.has-why { flex-wrap: wrap; }
+.plan-shell .bp-add-rec { margin-left: auto; }
+
 /* ---------- 机会选股 ---------- */
 .plan-shell .picks-win .toolbar { padding-top: 20px; }
 .plan-shell .picks-win .toolbar .spacer { flex: 1 1 0; }
@@ -103,10 +138,56 @@
 .plan-shell .cand dd li + li { margin-top: 3px; }
 .plan-shell .cand-skel { padding: 20px 24px 24px; }
 .plan-shell .picks-win .empty { max-width: 36em; }
+.plan-shell .picks-win + .picks-win, .plan-shell .stagger-item + .stagger-item .picks-win { margin-top: 18px; }
+.plan-shell .picks-title { margin: 0; font-size: 16px; font-weight: 650; }
+/* board picker */
+.plan-shell .board-picker { padding: 16px 24px 4px; }
+.plan-shell .bp-head { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+.plan-shell .bp-label { font-size: 12px; color: var(--t3); }
+.plan-shell .bp-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.plan-shell .bp-all { font-size: 13px; color: var(--t2); padding: 4px 12px; border-radius: 999px; background: var(--fill); }
+.plan-shell .bp-chip { display: inline-flex; align-items: center; gap: 2px; padding: 3px 4px 3px 12px; border-radius: 999px; background: #fff; color: #2B3266; font-size: 13px; font-weight: 600; }
+.plan-shell .bp-chip button { border: 0; background: none; color: inherit; width: 22px; height: 22px; border-radius: 50%; font-size: 15px; line-height: 1; cursor: pointer; }
+.plan-shell .bp-chip button:hover { background: rgba(43,50,102,.12); }
+.plan-shell .bp-panel { margin-top: 12px; padding: 12px; border-radius: var(--r-in); background: rgba(10,14,40,.18); box-shadow: inset 0 0 0 1px var(--line); }
+.plan-shell .bp-search { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.plan-shell .bp-search input { flex: 1 1 220px; max-width: 360px; border: 0; border-radius: 12px; padding: 8px 12px; background: rgba(10,14,40,.22); box-shadow: inset 0 0 0 1px var(--line); color: #fff; font-size: 14px; }
+.plan-shell .bp-search input::placeholder { color: var(--t4); }
+.plan-shell .bp-hint { font-size: 12px; color: var(--t3); }
+.plan-shell .bp-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; max-height: 300px; overflow: auto; }
+.plan-shell .bp-row { width: 100%; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border: 0; border-radius: 12px; background: var(--fill); color: var(--t1); font-size: 13.5px; text-align: left; transition: background .2s; }
+.plan-shell .bp-row:hover:not([disabled]) { background: var(--fill2); }
+.plan-shell .bp-row[aria-pressed=true] { background: var(--fill3); box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.7); }
+.plan-shell .bp-row[disabled] { opacity: .45; cursor: not-allowed; }
+.plan-shell .bp-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.plan-shell .bp-row .tag { line-height: 18px; font-size: 11px; padding: 0 7px; }
+.plan-shell .bp-check { font-size: 11.5px; color: #C9F7DF; min-width: 2em; text-align: right; }
+/* task list */
+.plan-shell .task-list { list-style: none; margin: 6px 0 0; padding: 0 12px 14px; }
+.plan-shell .task-row { width: 100%; display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 6px 16px; align-items: center; padding: 12px 14px; border: 0; border-radius: var(--r-row); background: none; color: var(--t1); text-align: left; transition: background .2s; }
+.plan-shell .task-row:hover { background: var(--fill); }
+.plan-shell .task-list li + li .task-row { box-shadow: 0 -1px 0 var(--line); border-radius: 0; }
+.plan-shell .task-list li + li .task-row:hover { border-radius: var(--r-row); box-shadow: none; }
+.plan-shell .task-time { font-size: 13px; color: var(--t3); }
+.plan-shell .task-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.plan-shell .task-main b { font-weight: 600; font-size: 14.5px; }
+.plan-shell .task-scope { font-size: 12.5px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-shell .task-status { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-size: 13px; white-space: nowrap; }
+.plan-shell .tone-run { color: #E3EEFF; }
+.plan-shell .tone-ok { color: #C9F7DF; }
+.plan-shell .tone-bad { color: #FFCF6E; }
+.plan-shell .tone-off { color: var(--t3); }
+.plan-shell .task-bar { position: relative; width: 96px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.14); overflow: hidden; }
+.plan-shell .task-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: rgba(255,255,255,.8); transition: width .5s var(--spring); }
+.plan-shell .task-more { padding: 0 24px 18px; }
+.plan-shell .task-head .task-tag { margin-left: 8px; background: var(--fill2); }
 .plan-shell .picks-win .empty .actions { margin-top: 14px; }
 
 @media (max-width: 1240px) {
   .plan-shell .figs.board-figs { grid-template-columns: repeat(3, minmax(104px, 1fr)); }
+}
+@media (max-width: 1100px) {
+  .plan-shell .focus-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 860px) {
   .plan-shell .figs.board-figs, .plan-shell .figs.three.board-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
@@ -114,6 +195,10 @@
   .plan-shell .picks-notice { margin: 14px 16px 0; }
   .plan-shell .pick-progress { padding: 18px 16px 4px; }
   .plan-shell .picks-win .toolbar .spacer { display: none; }
+  .plan-shell .board-picker { padding: 14px 16px 4px; }
+  .plan-shell .task-list { padding: 0 4px 10px; }
+  .plan-shell .task-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .plan-shell .task-time { grid-column: 1 / -1; }
 }
 @media (max-width: 400px) {
   .plan-shell .figs.board-figs dd { font-size: 19px; }

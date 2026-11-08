@@ -2146,6 +2146,7 @@ class SystemConfigService:
             "BOARD_INDUSTRY_MEMBERSHIP_TIME",
             "PREOPEN_PUSH_ENABLED",
             "PREOPEN_PUSH_TIME",
+            "DAILY_PLAN_ENABLED",
             "NEWS_INTEL_AUTO_FETCH_ENABLED",
             "NEWS_POLL_INTERVAL_MINUTES",
             "NEWS_POLL_OFFHOURS_INTERVAL_MINUTES",

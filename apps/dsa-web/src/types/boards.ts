@@ -122,3 +122,34 @@ export interface BoardAnomalyQuery {
 
 /** Request body for PUT /boards/thresholds; empty object restores defaults. */
 export type BoardThresholdOverrides = Record<string, ThresholdValue>;
+
+/** A followed board: name / type recorded when followed, plus the latest run's row (null without one). */
+export interface FollowedBoard {
+  id: string;
+  name: string;
+  boardType: BoardType;
+  followedAt: string | null;
+  today: BoardRow | null;
+}
+
+export interface FollowListResponse {
+  tradeDate: string | null;
+  boards: FollowedBoard[];
+}
+
+export interface RecommendationItem {
+  rank: number;
+  reason: string;
+  board: BoardRow;
+}
+
+/** GET /boards/recommendations. `source`: model = picked by the analysis model; rule = fallback ranking. */
+export interface RecommendationResponse {
+  tradeDate: string | null;
+  status: 'ready' | 'generating' | 'none' | 'no_run';
+  source: 'model' | 'rule' | null;
+  model: string | null;
+  note: string | null;
+  generatedAt: string | null;
+  items: RecommendationItem[];
+}

@@ -1388,6 +1388,12 @@ You can tune the behavior in `.env`:
 | `US_MOVE_INDEX_PCT` | `1.5` | Same for US indices |
 | `PREOPEN_PUSH_ENABLED` | `false` | In schedule mode, run and push a "pre-open edition" on every trading day: fetch the overnight US bars via yfinance into `stock_daily`, run the existing per-stock analysis for `STOCK_LIST` with the overnight US moves, mapped boards and news digest injected as extra context, and push through the existing notification channels. `SCHEDULE_TIME` analysis is unchanged |
 | `PREOPEN_PUSH_TIME` | `08:15` | Start time of the pre-open edition (`HH:MM`, host local time); analysis takes a while, so 08:15 lands around 08:45. The news digest depends on the news-ingestion module and shows "资讯暂不可用" when it is missing; everything else still runs |
+| `DAILY_PLAN_ENABLED` | `false` | In schedule mode, generate the next-day plan for the watchlist and holdings on every A-share trading day at `SCHEDULE_TIME` (every time of `SCHEDULE_TIMES` when set) and push a Feishu summary; runs in its own thread and does not affect the daily analysis firing at the same time. The plan uses the latest trading day in the local data, so schedule it after the 17:00 board pipeline to use same-day data. See [daily-plan-api.md](daily-plan-api.md) (Chinese) |
+| `POSITION_STOP_LOSS_PCT` | `10` | Stop-loss (%) of the next-day plan, measured from the buy price or the holding cost |
+| `POSITION_MAX_TOTAL_PCT` | `100` | Total position cap (%, market value of holdings over total capital) |
+| `POSITION_MAX_HOLDINGS` | `1` | Maximum number of holdings; once reached, new stocks no longer get "buy" and a switch is evaluated instead |
+| `POSITION_MAX_SINGLE_PCT` | empty | Single-stock cap (%); empty = total cap ÷ max holdings |
+| `POSITION_STOP_MODE` | `fixed` | `fixed` percentage stop; `nearer` the nearer of the percentage stop and the technical support |
 | `NEWS_INTEL_AUTO_FETCH_ENABLED` | `false` | Master switch: when on (in schedule mode, `SCHEDULE_ENABLED=true` or `--schedule`) AKShare news is fetched and classified on a schedule, and the lazy pre-analysis refresh of rss / newsnow sources keeps working; `NEWS_INTEL_RETENTION_DAYS` still only governs rss / atom / newsnow items, AKShare items use the two tiered keys below |
 | `NEWS_POLL_INTERVAL_MINUTES` | `10` | Trading days 08:00-15:30 (China time): fetch the CLS telegraph and Eastmoney flash together every N minutes, merged and deduplicated; Sina / Futu / THS are used only when one of the two fails |
 | `NEWS_POLL_OFFHOURS_INTERVAL_MINUTES` | `30` | Polling interval at other times and on non-trading days |
@@ -1593,7 +1599,8 @@ For this feature, the product behavior is:
 | `/api/v1/analysis/tasks/stream` | GET (SSE) | Subscribe to realtime task updates |
 | `/api/v1/analysis/status/{task_id}` | GET | Query task status |
 | `/api/v1/screening/screen/tasks` | POST | Submit a screening task (`SCREENING_ENABLED` must be enabled first); an optional anonymous `variant_seed` samples a bounded near-score combination per run while preserving materially superior candidates, filters, risk controls, and scores |
-| `/api/v1/screening/screen/tasks/{task_id}` | GET | Query screening task status and completed result |
+| `/api/v1/screening/screen/tasks` | GET | Persisted screening tasks, newest first (`limit` / `offset`; no results) |
+| `/api/v1/screening/screen/tasks/{task_id}` | GET | Query screening task status and completed result (read from the database after a restart; unfinished tasks are reported as `interrupted`) |
 | `/api/v1/history` | GET | Query analysis history |
 | `/api/v1/history/{record_id}/share-image` | GET | Generate a historical-report PNG for browsers; requires an available `MD2IMG_ENGINE` |
 | `/api/v1/history/{record_id}/share-image-html` | GET | Generate restricted poster HTML for capture by the Electron desktop Chromium runtime |

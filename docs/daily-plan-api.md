@@ -6,8 +6,49 @@
 
 - API 层（`api/v1/endpoints/boards.py`、`api/v1/endpoints/daily_plan.py`）和 Web 页面已实现。
 - 板块异动服务 `src/services/board_anomaly_service.py`（`BoardAnomalyService`）已实现，读取本地的板块指标和判定结果（见[核心流程后端设计](design/core-backend-design.md)第 2 节），数据由调度器每个交易日 17:00 运行的板块日度流程（`BOARD_PIPELINE_*`，也可用 `scripts/run_board_pipeline.py` 手动运行）产生；没有任何已完成的运行时 `/boards/anomalies` 返回空列表和说明，不返回 503。
-- 次日计划服务 `src/services/daily_plan_service.py`（`DailyPlanService`）**尚未实现**。在它存在之前，`/plan/*` 一律返回 `503 {"error": "daily_plan_unavailable", "message": "次日计划服务未就绪"}`，Web 页面显示「次日计划服务未就绪」说明，不影响其他页面。
-- API 在每次请求时按需导入服务模块，服务类需支持无参构造。
+- 次日计划服务 `src/services/daily_plan_service.py`（`DailyPlanService`）已实现，数据流和规则见下面的「次日计划服务」一节。服务模块无法导入时 `/plan/*` 仍返回 `503 {"error": "daily_plan_unavailable", "message": "次日计划服务未就绪"}`，Web 页面显示「次日计划服务未就绪」说明，不影响其他页面。
+- API 在每次请求时按需导入服务模块，服务类支持无参构造。
+
+## 次日计划服务
+
+模块分工：`daily_plan_service.py`（账户、读取与按需生成、运行编排）、`daily_plan_engine.py`（单只股票的价位、模型判断、条件计划、换股判断，纯计算）、`daily_plan_sizing.py`（仓位规则、涨跌停与申报单位、股数计算）、`daily_plan_push.py`（飞书摘要）、`daily_plan_schedule.py`（定时任务）、`src/repositories/daily_plan_repo.py`（存储与本地行情读取）。
+
+**数据来源**：只读本地数据，不请求任何数据商。交易日 = `market_stock_daily` 里最新的一天（17:00 板块流程入库当日数据，之后才有当天收盘；运行时本地最新日期早于应有的交易日会写进运行的 `data_gaps`），下一交易日按 A 股交易日历推算（日历不可用时取下一个工作日）。个股行情取最近 60 个交易日的 `market_stock_daily`；`stock_daily`（每日分析抓过的股票才有）里的最高 / 最低价用来估算支撑和压力，没有时用收盘价近似并写进 `data_gaps`。所属板块和今天的异动判定来自最近一次完成的板块运行（`board_membership` + `board_signal`）。
+
+**账户**：现金与持仓快照存在 SQLite（`plan_account`、`plan_holding`），`PUT /plan/holdings` 整体覆盖（代码不能重复，最多 50 只，校验失败返回 400）。持仓行补上名称、板块（主板 / 创业板 / 科创板 / 北交所）、ST、最新收盘与涨跌幅、市值、盈亏；没有行情的持仓按成本计市值。`sellable`（T+1）：买入日期不早于本地最新交易日则为 `false`（今天买入，今天不能卖），没填买入日期时为 `true` 并在 `sellable_note` 提示确认。总资金 = 现金 + 持仓市值。
+
+**自选与持仓范围**：持仓在前，其后是自选（`STOCK_LIST`）。只处理 6 位 A 股代码，指数、港股、美股等其他条目跳过，并在运行的 `data_gaps` 里列出。
+
+**仓位规则**（`POSITION_*`，不写死任何数值，配置缺失或非法时回到默认值）：
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `POSITION_STOP_LOSS_PCT` | `10` | 止损幅度（%），从买入价（持仓则为成本）起算 |
+| `POSITION_MAX_TOTAL_PCT` | `100` | 总仓位上限（%，持仓市值占总资金） |
+| `POSITION_MAX_HOLDINGS` | `1` | 最多持股数；达到后新股票不再给「买入」，改为换股判断 |
+| `POSITION_MAX_SINGLE_PCT` | 空 | 单只上限（%）；留空 = 总仓位上限 ÷ 最多持股数（`max_single_pct_derived=true`） |
+| `POSITION_STOP_MODE` | `fixed` | `fixed` 固定比例；`nearer` 固定比例与技术支撑取较近者（支撑低于买入价时取较高的那个） |
+
+**股数怎么算**（模型只判断买不买、在什么价位买，股数始终由规则算出，`steps` 列出每一步）：按单只上限 = 总资金 × 单只上限 ÷ 买入价 − 已持股数；按总仓位 = (总资金 × 总仓位上限 − 持仓市值) ÷ 买入价；按现金 = 现金 ÷ 买入价；取三者最小值（不小于 0），再按申报单位向下取整。主板、创业板、北交所每手 100 股；科创板最少 200 股，达到后按 1 股递增。不足一手为 `below_lot`（不硬凑），未持有该股且持股数已满为 `max_holdings`，没有买入价为 `no_price`。止损价 = 买入价 × (1 − 止损幅度)，同时给出到止损的最大亏损、占总资金比例、买后总仓位，以及止损日再跌停的成交价和亏损。示例：总资金 10 万、空仓、47.00 元买入 → 2,100 股、98,700 元、占 98.7%、止损 42.30、亏损 9,870 元。涨跌停幅度：主板 ±10%、创业板与科创板 ±20%、北交所 ±30%、主板 ST ±5%（创业板 / 科创板 ST 沿用本板块的 20%，不按 5% 计算）；价格四舍五入到 0.01。
+
+**每只股票的计划**（`StockPlan`）：
+
+- 模型（`LITELLM_MODEL`，`LLM_REASONING_EFFORT`，`call_type=daily_plan`，每只股票一次调用，短线和波段在同一次回复里）决定结论（未持仓：买入 / 等待 / 放弃；已持仓：持有 / 加仓 / 减仓 / 清仓）和价位（买入价与区间、突破价、跌破放弃价、止盈价、当日情况、风险）。模型给出的价格必须落在下一交易日涨跌停范围内且顺序合理，否则该项沿用规则值。
+- 规则始终参与并优先于模型：收盘跌破止损价 → 清仓；最多持股数已满 → 新股票的「买入」降为「等待」；仓位规则下不足一手 → 放弃；明天因 T+1 不能卖出 → 卖出类结论改为持有并提示；停牌 → 结论 `suspended`，没有交易计划，只列复牌后要关注的事项。条件计划的文字、`outside_limit`（价位超出涨跌停范围）、股数和止损都由规则生成。
+- 模型没配置、调用失败或回复不可用时，生成规则计划：均线 / 区间高低点 / 平均波幅得到支撑、压力和止盈，趋势向上且贴近支撑为「买入」、离支撑较远为「等待」、趋势向下为「放弃」；`model` 为 `null`，并在 `data_gaps` 写明「这份计划按规则生成」及原因。计划始终能生成。
+- 两个周期（短线看 10 个交易日窗口，波段看 30 个交易日窗口）各有价位、结论和股数；`default_horizon` 为持仓的计划周期，未填为 `short`。风险包含止损与涨跌停的提示（主板一个跌停约 10%、创业板科创板可能跳空越过止损）、按止损价亏损与跌停亏损两个数字、涨跌停收盘、T+1。
+
+**换股判断**（`switch`，只在持股数已满时给持仓股）：候选来自自选里「买入 / 等待」的股票和最近一次完成的选股任务的前 3 只（不在自选里的用规则计划评估，不额外调用模型）。两个条件同时满足才换：当前持仓破位（收盘跌破止损价或被判减仓 / 清仓）、候选收盘已在买入区内（盘中企稳要明天才能确认，所以多数情况 `met` 为 `null`）；默认结论是不换（`keep`）。`costs` 列出 T+1、两边止损与卖出盈亏、换入后的最大亏损、最多持股数限制。
+
+**存储与读取**：每次运行把每只股票的计划存进 `plan_stock`（含失败的）；`GET /plan/stocks`、`GET /plan/stocks/{code}` 读取该交易日最新一份存档，所以打开页面不调用模型。没有可用存档的股票（刚加入自选，或持仓变动后存档过期）：列表里显示 `status=missing`；打开详情时现算一份（一次模型调用）并存档，下次直接读取。已生成的计划不会随仓位规则的修改而改写，修改后下一次运行才会按新规则重算（历史存档按生成时的规则展示）。不在自选也不在持仓里且没有存档的代码返回 404。
+
+**运行**（`POST /plan/runs`、定时任务）：后台线程依次执行 板块（读取最近一次完成的板块运行）→ 选股（读取最近一次完成的选股任务，不会发起新的选股）→ 个股计划（`MAX_WORKERS` 个工作线程，一只失败不影响其他）→ 换股判断 → 飞书推送，每一步的状态和用时写进 `steps`，`plan_run` 保存运行记录、失败项、推送状态、推送预览和模型调用次数。同一进程同一时间只有一个运行，运行中再触发返回 409；进程重启后遗留的 `running` 记录在下次读取时标为 `failed`。运行状态：全部成功 `succeeded`；有失败股票或板块 / 选股 / 换股步骤降级为 `partial`；没有一只成功为 `failed`；没有自选和持仓为 `skipped`。推送失败只记在 `push` 和 `push` 步骤上，不改变计划与运行状态。
+
+**飞书推送**：只发飞书（复用现有发送逻辑：应用机器人绑定会话 / `FEISHU_CHAT_ID`，或群 Webhook，签名、关键词、超长分段不变）。内容：持仓结论（第一屏）→ 换股判断 → 自选股一行一只（买入在前）→ 板块异动前几名 → 数据提醒（缺失数据、失败股票）→ 网页查看提示。未配置飞书时 `push.status=skipped`、`push.configured=false`，预览照常生成。
+
+**定时**：`DAILY_PLAN_ENABLED=true`（默认 `false`）且开启定时模式（`SCHEDULE_ENABLED=true` 或 `--schedule`）时，调度器每个 A 股交易日（交易所日历）在 `SCHEDULE_TIME`（设置了 `SCHEDULE_TIMES` 时在每个时间点各一次）运行一次。`SCHEDULE_TIME` 同时是每日逐只分析的运行时间，两者是**两个独立的任务**：次日计划放在独立线程里运行，不替换、不阻塞同一时刻的每日分析（需要的话可以在设置里关掉其中一个，此处不改动每日分析的任何行为）；上一次次日计划没跑完时下一次跳过，失败只记日志和运行记录。注意 `SCHEDULE_TIME` 代码默认值是 `18:00`，产品设计的 16:00 需要在设置页「运行和推送」里设置；计划基于本地已入库的最新交易日，而当天数据要等 17:00 板块流程入库后才有，想用当天数据应把时间设在 17:00 之后，否则会基于上一个交易日并在 `data_gaps` 里说明。
+
+**已知限制**：模型实际用的是 `LITELLM_MODEL`（备用模型的回退不会反映在 `model.fallback_from`）；计划只用本地行情和板块信号，没有接入新闻和业绩数据；盘前版（`preopen_push`）还没有读取这里的计划做「基准计划对比」。
 
 ## 约定
 
@@ -19,7 +60,7 @@
 | --- | --- | --- |
 | 400 | `validation_error` | 服务抛出 `DailyPlanValidationError`；阈值校验失败（`detail` 为问题列表） |
 | 404 | `not_found` | 板块、股票计划或运行记录不存在 |
-| 409 | `daily_plan_run_conflict` | 已有运行在进行中时再次 `POST /plan/runs` |
+| 409 | `daily_plan_run_conflict` | 已有运行在进行中时再次 `POST /plan/runs`（手动或定时触发均占用同一个运行名额） |
 | 409 | `config_version_conflict` | 保存阈值时配置已被修改（`detail.current_config_version`） |
 | 422 | `validation_error` | 请求字段格式错误（股票代码非 6 位、股数 ≤ 0、现金为负等），沿用全局请求校验处理 |
 | 500 | `internal_error` | 其他异常（含服务返回的数据不符合响应模型） |
@@ -32,6 +73,10 @@
 | GET | `/boards/anomalies?trade_date=&board_type=industry\|concept&state=` | 市场概况与板块列表（含状态、标签、涨幅、超额、成交额放大、上涨占比、涨停数） |
 | GET | `/boards/{board_id}?trade_date=` | 板块详情：6 项指标、近 8 日超额收益、代表股票（龙头 / 成交额 / 跟风）、判定理由、`can_pick` |
 | GET | `/boards/thresholds` | `{"items": [...]}`：每个阈值的说明、默认值、当前值、依据等级（`medium` / `low` / `inferred`） |
+| GET | `/boards/follows` | 我关注的板块：`{"trade_date", "boards": [{"id", "name", "board_type", "followed_at", "today"}]}`，`today` 是最近一次运行里该板块的列表行（没有时为 null） |
+| PUT / DELETE | `/boards/follows/{board_id}` | 关注 / 取消关注（重复操作无副作用），返回最新的关注列表；未知板块 404 |
+| GET | `/boards/recommendations?trade_date=` | 推荐重点跟踪的板块：`status`（`ready` / `generating` / `none` / `no_run`）、`source`（`model` 模型挑选 / `rule` 按规则排序）、`model`、`note`（按规则排序的原因）、`items: [{rank, reason, board}]` |
+| POST | `/boards/recommendations/refresh` | 后台重新生成最近一次运行的推荐（返回 202 和当前状态，用 GET 轮询） |
 | PUT | `/boards/thresholds` | 请求体 `{"overrides": {...}}`，空对象表示全部恢复默认；校验通过后写入 `BOARD_ANOMALY_THRESHOLDS`，返回刷新后的 `{"items": [...]}` |
 | GET | `/plan/account` | 现金、持仓、总资金、仓位与生效的仓位规则 |
 | PUT | `/plan/holdings` | 请求体 `{"cash", "holdings": [{code, shares, cost, buy_date?, horizon?}]}`，整体覆盖持仓快照（最多 50 只） |
@@ -49,9 +94,9 @@
 | 路由 | 页面 | 数据来源 |
 | --- | --- | --- |
 | `/` | 跳转到 `/mine` | — |
-| `/boards` | 板块异动：市场概况、行业 / 概念切换、状态筛选、板块详情与超额收益走势；可跳到该板块选股 | `/boards/*` |
-| `/picks` | 机会选股：策略选择、可选的板块范围（`?board=`）、运行进度与结果、加入自选 | 现有 `/screening/*` 异步任务接口与 `/stocks/watchlist/add`；选股结果中的 `horizons`、`entry_condition`、`invalid_condition`、`risks`、`note` 为可选字段，缺失时回退到已有字段 |
-| `/mine` | 我的股票：账户、持仓与自选列表、计划详情（价格梯子、「怎么算的」、换股判断）、持仓与资金录入、记录买入；支持 `?code=` 深链 | `/plan/*`、`/stocks/watchlist/*` |
+| `/boards` | 板块异动：市场概况；「今日建议」（模型推荐的板块和理由，可重新生成）与「我关注的」（关注板块的当日状态，点击打开详情）；行业 / 概念切换、状态筛选（关注的板块带 ★）、板块详情（可关注 / 取消关注）与超额收益走势；可跳到该板块选股 | `/boards/*` |
+| `/picks` | 机会选股：新建选股（策略 + 可选 1–5 个板块，`?board=` 预选该板块）、选股任务列表、点进任务（`?task=`）看进度或结果、加入自选 | `/screening/screen/tasks`（发起、列表、单个任务）、`/boards/anomalies`、`/boards/recommendations`、`/boards/follows`（板块选择：模型推荐、我关注的、今日异动，可搜索全部板块）与 `/stocks/watchlist/add`；选股结果中的 `horizons`、`entry_condition`、`invalid_condition`、`risks`、`note` 为可选字段，缺失时回退到已有字段 |
+| `/mine` | 我的股票：页头搜索股票加入自选（代码 / 名称 / 拼音，`stocks.index.json`）；次日计划服务未就绪时显示自选列表；账户、持仓与自选列表、计划详情（价格梯子、「怎么算的」、换股判断）、持仓与资金录入、记录买入；支持 `?code=` 深链 | `/plan/*`、`/stocks/watchlist/*` |
 | `/preferences` | 设置：仓位规则、模型、异动阈值、运行和推送、数据状态；支持 `?tab=` 深链 | `/system/config`、`/boards/thresholds`、`/plan/*`、`/system/scheduler/status`、`/data/overview` |
 | `/home` | 原首页（从 `/` 移到这里） | 不变 |
 
@@ -78,7 +123,7 @@
 - 选股：`SCREENING_ENABLED`（选股页「开启选股」按钮）
 - 异动阈值：`BOARD_ANOMALY_THRESHOLDS`（经 `PUT /boards/thresholds` 写入）
 
-`BOARD_ANOMALY_THRESHOLDS` 已随板块异动服务落地：值是一个 JSON 对象，只写被覆盖的键（空表示全部默认），字典型阈值可只写其中的字段（如 `{"excess_floor": {"concept": 3}}`）；它在 `src/core/config_registry.py` 中列为不在通用设置页显示的键（由异动阈值页面通过 `PUT /boards/thresholds` 编辑），`.env.example` 里有说明。`POSITION_*`、`DAILY_PLAN_*` 的默认值、注册与 `.env.example` 说明随次日计划服务一起落地；在此之前设置页按普通值读写，保存后不影响任何现有流程。
+`BOARD_ANOMALY_THRESHOLDS` 已随板块异动服务落地：值是一个 JSON 对象，只写被覆盖的键（空表示全部默认），字典型阈值可只写其中的字段（如 `{"excess_floor": {"concept": 3}}`）；它在 `src/core/config_registry.py` 中列为不在通用设置页显示的键（由异动阈值页面通过 `PUT /boards/thresholds` 编辑），`.env.example` 里有说明。`POSITION_*` 与 `DAILY_PLAN_ENABLED` 同样列为不在通用设置页显示的键（由新设置页的「仓位规则」「运行和推送」编辑），默认值、取值范围和含义见上面的「次日计划服务」，`.env.example` 里有说明；保存 `DAILY_PLAN_ENABLED` 会重建运行时调度器，其余键下一次读取即生效（非法值回到默认值并写日志）。
 
 ### 板块异动阈值键
 
@@ -125,5 +170,6 @@ python scripts/run_board_pipeline.py --industry-membership             # 按需�
 
 ## 回滚
 
+- 次日计划后端：关闭 `DAILY_PLAN_ENABLED` 即停止定时运行（已存计划保留）；彻底下线时删除 `src/services/daily_plan_*.py`、`src/repositories/daily_plan_repo.py`，并去掉 `runtime_scheduler.py` / `main.py` 里对 `build_daily_plan_jobs` 的调用；`plan_account`、`plan_holding`、`plan_run`、`plan_stock` 四张表是新增表，不影响其他功能，可留着也可删除。
 - 删除 `api/v1/router.py` 中 `boards` 与 `daily_plan` 两个路由注册即可下线 API；`api/deps.py` 中的两个依赖函数无副作用。
 - Web 回滚：把 `App.tsx` 中 `/` 改回渲染 `HomePage`、去掉 `PlanShell` 路由组，并恢复 `loginRedirect.ts` 默认值和 `SidebarNav` 首页路径。

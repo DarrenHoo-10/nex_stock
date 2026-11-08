@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 次日计划后端服务（`DailyPlanService`，`/api/v1/plan/*` 不再返回 503）：账户与持仓快照（新表 `plan_account`、`plan_holding`）、按 `POSITION_*` 仓位规则确定性计算股数与止损（主板 / 创业板 / 科创板 / 北交所的申报单位与涨跌停、`fixed` / `nearer` 止损）、每只股票短线 / 波段两个周期的条件计划（模型决定买不买和价位，模型不可用时按规则生成）、持股数已满时的换股判断、运行记录与飞书摘要推送（新表 `plan_run`、`plan_stock`）；`DAILY_PLAN_ENABLED=true` 时在定时模式下按 `SCHEDULE_TIME` 每个交易日独立运行一次；新增配置项 `DAILY_PLAN_ENABLED`、`POSITION_STOP_LOSS_PCT`、`POSITION_MAX_TOTAL_PCT`、`POSITION_MAX_HOLDINGS`、`POSITION_MAX_SINGLE_PCT`、`POSITION_STOP_MODE`，详见 `docs/daily-plan-api.md`。
+- [新功能] 我的股票页头新增股票搜索：按代码、名称或拼音搜索（使用前端自带的股票索引），回车或点击加入自选，已在自选的会标出；次日计划服务未就绪时，页面改为显示自选列表（可移出），不再只显示错误。
+- [新功能] 板块异动页新增「今日建议」与「我关注的」：17:00 板块运行后由分析模型从当日异动板块里挑 3–5 个值得重点跟踪的板块并给出理由（模型不可用时按规则排序并说明原因，可手动重新生成），存入新表 `board_recommendation`；板块详情可关注 / 取消关注（新表 `board_follow`），关注的板块在列表里带 ★。机会选股的板块选择按「模型推荐 / 我关注的 / 今日异动」分组，可一键选上推荐板块，也可搜索全部板块。新增 `GET/PUT/DELETE /api/v1/boards/follows`、`GET /api/v1/boards/recommendations`、`POST /api/v1/boards/recommendations/refresh`。
+- [新功能] 机会选股改为任务制：新建选股时可以选 1–5 个板块（今日异动板块在前，可搜索全部板块），每次选股都是持久化任务（新表 `screening_tasks`，记录状态、进度、范围、策略和结果关联）；页面先列出任务，点进任务才显示进度或选股结果，离开页面或刷新后进度仍在；服务重启时未完成的任务标为「已中断」。新增 `GET /api/v1/screening/screen/tasks`，`GET /screen/tasks/{task_id}` 在内存队列找不到任务时改读数据库。
+- [修复] 助手流式回答在模型长时间思考时每 15 秒发送一次 SSE 保活注释，避免经 Cloudflare 等代理访问时约 100 秒无数据被断开、页面提示「无法连接到本地服务」；300 秒没有任何进度仍按原来的「分析超时」结束。
 - [改进] 设置页「模型」改为渠道列表 + 编辑区：在同一页添加、编辑、停用、删除渠道（名称、接口地址、API 格式、API Key），获取模型、手动添加、搜索并逐个打开模型；用途里新增轻量模型和三项推理强度；正在使用的模型不能关闭，所在渠道不能停用或删除。
 - [改进] 模型列表获取支持 Anthropic Messages 格式（`{base}/v1/models`，`x-api-key` + `anthropic-version`）。
 - [改进] 新页面不再跳转旧页面：去掉导航「更多」、模型页「高级设置」、助手「在问股页打开」和选股页「去选股工具开启」；飞书应用机器人、群 Webhook 与开启选股改为在新页面直接设置，用户中心登录时导航提供「退出」。

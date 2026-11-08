@@ -20,14 +20,17 @@ export interface BoardListProps {
   boards: BoardRow[];
   activeId: string | null;
   onSelect: (id: string) => void;
+  /** Ids of followed boards (shown with a star). */
+  followedIds?: ReadonlySet<string>;
 }
 
 const BoardRowItem: React.FC<{
   board: BoardRow;
   index: number;
   active: boolean;
+  followed: boolean;
   onSelect: (id: string) => void;
-}> = ({ board, index, active, onSelect }) => {
+}> = ({ board, index, active, followed, onSelect }) => {
   const reduced = usePlanReducedMotion();
   const warnState = board.state === 'insufficient_history';
   return (
@@ -46,6 +49,11 @@ const BoardRowItem: React.FC<{
         ) : null}
         <span className="r-top">
           <span className="nm">{board.name}</span>
+          {followed ? (
+            <span className="follow-star" role="img" aria-label="已关注">
+              ★
+            </span>
+          ) : null}
           <span className="tag line">{BOARD_TYPE_LABEL[board.boardType]}</span>
           {board.state !== 'none' ? (
             <span className={`tag ${warnState ? 'warn' : 'line'}`}>{BOARD_STATE_LABEL[board.state]}</span>
@@ -90,11 +98,18 @@ const BoardRowItem: React.FC<{
 };
 
 /** Board rows of the list window; the active row drives the detail window (aria-expanded + aria-controls). */
-export const BoardList: React.FC<BoardListProps> = ({ boards, activeId, onSelect }) => (
+export const BoardList: React.FC<BoardListProps> = ({ boards, activeId, onSelect, followedIds }) => (
   <LayoutGroup id="board-list">
     <ul className="rows">
       {boards.map((board, index) => (
-        <BoardRowItem key={board.id} board={board} index={index} active={board.id === activeId} onSelect={onSelect} />
+        <BoardRowItem
+          key={board.id}
+          board={board}
+          index={index}
+          active={board.id === activeId}
+          followed={followedIds?.has(board.id) ?? false}
+          onSelect={onSelect}
+        />
       ))}
     </ul>
   </LayoutGroup>

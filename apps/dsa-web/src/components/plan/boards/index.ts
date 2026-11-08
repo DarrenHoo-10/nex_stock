@@ -1,4 +1,7 @@
 export { BoardDetailPanel } from './BoardDetailPanel';
+export { BoardFocusStrip } from './BoardFocusStrip';
+export { useBoardRecommendations } from './useBoardRecommendations';
+export type { RecommendationState } from './useBoardRecommendations';
 export type { BoardDetailPanelProps } from './BoardDetailPanel';
 export { BoardFilters } from './BoardFilters';
 export type { BoardFiltersProps, BoardStateFilter, BoardTypeFilter } from './BoardFilters';
