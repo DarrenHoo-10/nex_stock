@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 所有东方财富请求（AkShare、efinance、选股、热点、资讯库）改为经过统一限速：同一子域名一次一个请求、至少间隔 1 秒并加随机抖动；返回 403 后该子域名暂停 30 分钟、期间自动改用其他来源。设置 →「数据状态」新增「东方财富（统一限速）」一行，显示冷却状态，可修改 `EASTMONEY_MIN_INTERVAL_SEC`、`EASTMONEY_BAN_COOLDOWN_MINUTES`。
+- [修复] 加自选、录入持仓时输入北交所旧代码（43 / 83 / 87 开头）会自动换成 920 开头的新代码，查不到对应新代码时提示，不再存下会返回冻结行情的旧代码；实时行情新增 `stale_reason`：北交所旧代码标为过期（`legacy_bse_code`），价格等于昨收且无成交标为 `no_trade_today`。
 - [改进] 飞书助手私聊改为话题模式：直接发给机器人的每条新消息会开一个话题回答并新建一个助手会话，话题内的后续消息都在同一个会话里；不同话题可并行回答，回复推送仍延续推送所在的会话。
 - [改进] 问股对话上下文自动压缩默认开启，触发点改为 Agent 模型上下文窗口的 80%（新增 `AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO`，默认 0.8；0 或窗口未知时沿用固定 `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS`）；摘要调用的超时随输入长度放宽。设 `AGENT_CONTEXT_COMPRESSION_ENABLED=false` 可恢复只带最近 20 条的旧行为。
 - [修复] 数据状态里只提供实时行情的数据源（如必盈）不再被误标为「不可用」：可用性探测改为按它实际提供的实时行情能力询问。

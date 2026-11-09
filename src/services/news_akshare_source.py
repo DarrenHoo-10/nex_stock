@@ -32,6 +32,10 @@ from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 from zoneinfo import ZoneInfo
 
+from data_provider.eastmoney_gate import install as _install_eastmoney_gate
+
+_install_eastmoney_gate()  # AkShare flash / notice calls hit East Money
+
 logger = logging.getLogger(__name__)
 
 CN_TZ = ZoneInfo("Asia/Shanghai")

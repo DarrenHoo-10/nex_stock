@@ -105,6 +105,14 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         builtin=True,
     ),
     _ProviderDefinition(
+        name="eastmoney",
+        label="东方财富（统一限速）",
+        fetcher_name=None,
+        dataset_markets={},
+        builtin=True,
+        config_keys=("EASTMONEY_MIN_INTERVAL_SEC", "EASTMONEY_BAN_COOLDOWN_MINUTES"),
+    ),
+    _ProviderDefinition(
         name="tushare",
         label="Tushare",
         fetcher_name="TushareFetcher",
@@ -307,7 +315,11 @@ class DataCapabilityService:
             enabled = bool(definition.builtin or configured)
             warnings: List[str] = []
 
-            if not configured and not definition.builtin:
+            cooldown = None
+            if definition.name == "eastmoney":
+                status, cooldown, gate_warnings = self._eastmoney_gate_status()
+                warnings.extend(gate_warnings)
+            elif not configured and not definition.builtin:
                 status = "unconfigured"
             elif fetcher is None and enabled:
                 status = "unavailable"
@@ -335,12 +347,26 @@ class DataCapabilityService:
                     },
                     "warnings": warnings,
                     "last_error": self._safe_last_error(fetcher),
-                    "cooldown": None,
+                    "cooldown": cooldown,
                     "config_keys": list(definition.config_keys),
                 }
             )
 
         return providers
+
+    @staticmethod
+    def _eastmoney_gate_status() -> tuple:
+        """(status, cooldown, warnings) of the process-wide East Money gate."""
+        try:
+            from data_provider import eastmoney_gate
+
+            rows = eastmoney_gate.GATE.status()
+        except Exception as exc:  # noqa: BLE001 - diagnostics must fail open.
+            logger.debug("East Money gate status unavailable: %s", exc)
+            return "unknown", None, ["runtime_probe_not_performed"]
+        cooling = [row for row in rows if row["cooling_down"]]
+        warnings = [f"cooldown:{row['host']} until {row['cooldown_until']}" for row in cooling]
+        return ("partial" if cooling else "ok"), bool(cooling), warnings
 
     @staticmethod
     def _provider_runtime_status(fetcher: Any, definition: Optional[_ProviderDefinition] = None) -> str:

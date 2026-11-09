@@ -376,6 +376,8 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | Variable | Description | Default | Required |
 |--------|------|--------|:----:|
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | Optional |
+| `EASTMONEY_MIN_INTERVAL_SEC` | East Money rate limit: minimum seconds between two requests to the same East Money host (plus 0.1-0.5 s jitter), applied to every East Money request in the process | `1.0` | Optional |
+| `EASTMONEY_BAN_COOLDOWN_MINUTES` | Minutes to stop calling an East Money host after it answers HTTP 403, so callers switch to other sources | `30` | Optional |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP endpoint; defaults to `http://api.tushare.pro` when unset/empty. Set only when routing through a corporate proxy, cross-border network, or a self-hosted mirror (must start with `http://` or `https://`). | `http://api.tushare.pro` | Optional |
 | `TICKFLOW_API_KEY` | TickFlow API key; enables optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement. Permission failures fall back to existing providers. | - | Optional |
 | `TICKFLOW_PRIORITY` | TickFlow priority for the generic A-share daily K-line route; lower values are tried earlier. No effect unless `TICKFLOW_API_KEY` is configured. Registered indices use a separate fixed chain and ignore this variable. Realtime quotes are ordered by `REALTIME_SOURCE_PRIORITY`. | `2` | Optional |

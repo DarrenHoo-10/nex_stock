@@ -302,6 +302,21 @@ def test_put_holdings_passes_plain_dicts_to_service(client, service):
     assert holdings == [{"code": "002475", "shares": 2400, "cost": 40.2, "buy_date": "2026-11-03", "horizon": "swing"}]
 
 
+def test_put_holdings_maps_old_bse_codes_and_rejects_unknown_ones(client, service, monkeypatch):
+    from src.services import news_cninfo_source
+
+    monkeypatch.setattr(news_cninfo_source, "orgid_map", lambda **kwargs: {"920002": "gfbj0873843"})
+    row = {"code": "873843", "shares": 100, "cost": 10.0, "buy_date": "2026-11-03", "horizon": "swing"}
+    response = client.put("/api/v1/plan/holdings", json={"cash": 1000, "holdings": [row]})
+    assert response.status_code == 200
+    assert service.calls[-1][2][0]["code"] == "920002"
+
+    calls_before = len(service.calls)
+    bad = client.put("/api/v1/plan/holdings", json={"cash": 1000, "holdings": [dict(row, code="430999")]})
+    assert bad.status_code == 400 and bad.json()["error"] == "legacy_bse_code"
+    assert len(service.calls) == calls_before  # nothing saved
+
+
 def test_put_holdings_allows_clearing_everything(client, service):
     response = client.put("/api/v1/plan/holdings", json={"cash": 0, "holdings": []})
     assert response.status_code == 200

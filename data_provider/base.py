@@ -2438,15 +2438,38 @@ class DataFetcherManager:
             setattr(quote, "provider_timestamp", None)
             setattr(quote, "stale_seconds", None)
             setattr(quote, "is_stale", None)
-            return quote
-
-        setattr(quote, "provider_timestamp", provider_dt.isoformat())
-        fetched_dt = self._parse_realtime_timestamp(fetched_at) or datetime.now(timezone.utc)
-        stale_seconds = max(0, int((fetched_dt - provider_dt).total_seconds()))
-        ttl = realtime_cache_ttl if realtime_cache_ttl is not None else 600
-        setattr(quote, "stale_seconds", stale_seconds)
-        setattr(quote, "is_stale", stale_seconds > int(ttl))
+        else:
+            setattr(quote, "provider_timestamp", provider_dt.isoformat())
+            fetched_dt = self._parse_realtime_timestamp(fetched_at) or datetime.now(timezone.utc)
+            stale_seconds = max(0, int((fetched_dt - provider_dt).total_seconds()))
+            ttl = realtime_cache_ttl if realtime_cache_ttl is not None else 600
+            setattr(quote, "stale_seconds", stale_seconds)
+            setattr(quote, "is_stale", stale_seconds > int(ttl))
+        self._mark_frozen_quote(quote)
         return quote
+
+    @staticmethod
+    def _mark_frozen_quote(quote) -> None:
+        """Flag quotes that look current but are not (a-stock-data §1.1 "zombie" quotes).
+
+        * an old 北交所 code (43/83/87): some sources keep returning a frozen price -> stale;
+        * price equal to the previous close with no turnover: no trade yet today (pre-open,
+          suspension) -> labelled only, since every stock looks like this before the open.
+        """
+        code = str(getattr(quote, "code", "") or "").strip()
+        digits = code[-6:] if len(code) >= 6 else code
+        if digits.isdigit() and len(digits) == 6 and digits.startswith(("43", "83", "87")):
+            setattr(quote, "stale_reason", "legacy_bse_code")
+            setattr(quote, "is_stale", True)
+            return
+        price = getattr(quote, "price", None)
+        pre_close = getattr(quote, "pre_close", None)
+        amount = getattr(quote, "amount", None)
+        volume = getattr(quote, "volume", None)
+        no_turnover = (amount is not None and amount == 0) or (amount is None and volume == 0)
+        if (isinstance(price, (int, float)) and price > 0 and isinstance(pre_close, (int, float))
+                and abs(price - pre_close) < 1e-9 and no_turnover):
+            setattr(quote, "stale_reason", "no_trade_today")
     
     def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True,
                            analysis_target: Optional[AnalysisTarget] = None):

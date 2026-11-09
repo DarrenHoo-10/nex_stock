@@ -87,23 +87,30 @@ def parse_orgid_map(payload: Any) -> Dict[str, str]:
     }
 
 
-def org_id(code: str, *, timeout_sec: float, now: Callable[[], float] = time.monotonic) -> str:
-    """orgId of a 6-digit code from the cached official map (pattern fallback, logged)."""
+def orgid_map(*, timeout_sec: float, now: Callable[[], float] = time.monotonic) -> Dict[str, str]:
+    """code -> orgId of all A shares, loaded at most once a day (old map kept when a reload fails)."""
     with _orgid_lock:
         fresh = _orgid_cache["map"] and now() - _orgid_cache["loaded_at"] < ORGID_CACHE_SECONDS
         mapping: Dict[str, str] = _orgid_cache["map"]
-    if not fresh:
-        try:
-            response = _session().get(ORGID_MAP_URL, headers=_HEADERS, timeout=timeout_sec)
-            response.raise_for_status()
-            loaded = parse_orgid_map(response.json())
-            if loaded:
-                with _orgid_lock:
-                    _orgid_cache["map"] = loaded
-                    _orgid_cache["loaded_at"] = now()
-                mapping = loaded
-        except Exception as exc:  # noqa: BLE001 - keep the old map / the pattern
-            logger.warning("[News] 巨潮 orgId 映射表获取失败，沿用%s: %s", "缓存" if mapping else "代码规则", exc)
+    if fresh:
+        return mapping
+    try:
+        response = _session().get(ORGID_MAP_URL, headers=_HEADERS, timeout=timeout_sec)
+        response.raise_for_status()
+        loaded = parse_orgid_map(response.json())
+        if loaded:
+            with _orgid_lock:
+                _orgid_cache["map"] = loaded
+                _orgid_cache["loaded_at"] = now()
+            return loaded
+    except Exception as exc:  # noqa: BLE001 - keep the old map / the pattern
+        logger.warning("[News] 巨潮 orgId 映射表获取失败，沿用%s: %s", "缓存" if mapping else "代码规则", exc)
+    return mapping
+
+
+def org_id(code: str, *, timeout_sec: float, now: Callable[[], float] = time.monotonic) -> str:
+    """orgId of a 6-digit code from the cached official map (pattern fallback, logged)."""
+    mapping = orgid_map(timeout_sec=timeout_sec, now=now)
     found = mapping.get(code)
     if found:
         return found

@@ -178,6 +178,7 @@ class UnifiedRealtimeQuote:
     provider_timestamp: Optional[str] = None     # Provider 真实行情时间（ISO 8601 datetime）
     is_stale: Optional[bool] = None              # provider_timestamp 超过最小 TTL 阈值时为 True
     stale_seconds: Optional[int] = None          # provider_timestamp 距 fetched_at 的秒数
+    stale_reason: Optional[str] = None           # legacy_bse_code（北交所旧代码，行情冻结）/ no_trade_today（价格等于昨收且无成交）
     fallback_from: Optional[str] = None          # 整源 fallback 的失败首选源 token
     market: Optional[str] = None                 # 市场标签（cn/hk/us/jp/kr/tw）
     currency: Optional[str] = None               # 报价币种（JPY/KRW/TWD/USD/HKD/CNY 等）
@@ -222,7 +223,7 @@ class UnifiedRealtimeQuote:
         }
         # 只添加非 None 的字段
         optional_fields = [
-            'fetched_at', 'provider_timestamp', 'is_stale', 'stale_seconds',
+            'fetched_at', 'provider_timestamp', 'is_stale', 'stale_seconds', 'stale_reason',
             'fallback_from', 'market', 'currency', 'data_quality', 'missing_fields',
             'price', 'change_pct', 'change_amount', 'volume', 'amount',
             'volume_ratio', 'turnover_rate', 'amplitude',

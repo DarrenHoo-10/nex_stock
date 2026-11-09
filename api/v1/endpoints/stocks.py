@@ -46,6 +46,7 @@ from src.services.import_parser import (
     parse_import_from_bytes,
     parse_import_from_text,
 )
+from src.services.stock_code_guard import LegacyBseCodeError, resolve_bse_code
 from src.services.stock_service import StockService
 from src.services.stock_profile_service import InvalidStockProfileCode, StockProfileService
 from src.services.run_diagnostics import sanitize_diagnostic_text
@@ -367,12 +368,21 @@ def add_to_watchlist(
 ) -> WatchlistResponse:
     try:
         validated = _validate_and_normalize_stock_code(request.stock_code)
+        entered = request.stock_code.strip()
+        try:
+            renamed = resolve_bse_code(validated)
+        except LegacyBseCodeError as exc:
+            raise HTTPException(status_code=400, detail={"error": "legacy_bse_code", "message": str(exc)})
+        if renamed != validated:
+            # Old 北交所 codes return frozen quotes in some sources: store the new code.
+            validated, entered = renamed, renamed
         codes = _read_watchlist_codes(service)
         existing_keys = [_watchlist_match_key(c) for c in codes]
         if _watchlist_match_key(validated) not in existing_keys:
-            codes.append(request.stock_code.strip())
+            codes.append(entered)
             _write_watchlist_codes(service, codes)
-        return WatchlistResponse(stock_codes=codes, message=f"已加入 {request.stock_code.strip()}")
+        note = f"（{request.stock_code.strip()} 是北交所旧代码，已换成新代码）" if entered != request.stock_code.strip() else ""
+        return WatchlistResponse(stock_codes=codes, message=f"已加入 {entered}{note}")
     except HTTPException:
         raise
     except Exception as e:

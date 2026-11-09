@@ -233,6 +233,17 @@ ENABLE_EASTMONEY_PATCH=true
 
 会注入 NID 令牌和随机 User-Agent，降低被东财限流的概率。默认关闭。
 
+### 5.5 东方财富统一限速（默认开启）
+
+东方财富按 IP 风控：每秒超过约 5 次、同一 IP 10 个以上并发、每分钟约 200 次就会临时封 IP，不同子域名（`push2`、`push2his`、`datacenter-web` 等）分开封。本进程内所有发往 `*.eastmoney.com` 的请求（AkShare、efinance、选股、热点、资讯库）都经过 `data_provider/eastmoney_gate.py`：
+
+- 同一子域名一次只发一个请求，两次请求至少间隔 `EASTMONEY_MIN_INTERVAL_SEC` 秒（默认 1.0），另加 0.1–0.5 秒随机抖动；不同子域名互不影响。
+- 某子域名返回 HTTP 403（封禁信号）后不重试，暂停 `EASTMONEY_BAN_COOLDOWN_MINUTES` 分钟（默认 30）；期间对它的请求直接抛 `EastmoneyCoolingDown`（属于 `requests` 的连接错误），各处现有的回退逻辑会换用其他来源。
+- 在子进程里运行的 AkShare 东财函数（如 `stock_zh_a_hist`、`stock_zh_a_spot_em`）整个调用期间占住对应子域名。
+- 设置 →「数据状态」里有「东方财富（统一限速）」一行：显示是否有子域名在冷却（warnings 里写明子域名和恢复时间），两个配置项可以直接修改，保存后立即生效。
+- 选股原有的 `SCREENING_EASTMONEY_MIN_INTERVAL_SEC` / `SCREENING_EASTMONEY_JITTER_SEC` 仍作用于选股自己的东财请求，排队和 403 冷却与全局共用。
+- 与 5.4 的东财接口补丁可以同时开启，两者叠加。
+
 ## 6. 优先级与回退规则
 
 **A 股日线**：`DataFetcherManager` 按优先级数字从小到大尝试，单个渠道失败就换下一个，连续失败会短期熔断。默认顺序：
