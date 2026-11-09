@@ -176,7 +176,7 @@ def test_health_reports_per_source_status_open_gaps_and_pending_classification(d
     assert by_source["cls"]["last_success_at"] == "2026-11-09T09:40:00+08:00" and by_source["cls"]["gap_check"] == "filtered"
     assert by_source["em"]["last_status"] == "ok" and by_source["em"]["last_error"] is None
     assert by_source["sina"]["last_status"] == "never" and by_source["sina"]["last_success_at"] is None
-    assert {"cls", "em", "sina", "futu", "ths", "cninfo", "notice", "szse", "irm", "sse_e", "cjzc"} == set(by_source)
+    assert {"cls", "em", "sina", "futu", "ths", "cninfo", "notice", "szse", "irm", "sse_e", "cjzc", "wscn", "major"} == set(by_source)
     assert [(g["source"], g["from"], g["to"]) for g in health["open_gaps"]] == [
         ("em", "2026-11-09T09:10:00+08:00", "2026-11-09T09:20:00+08:00")
     ]  # covered and expired gaps are not "open"

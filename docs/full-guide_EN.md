@@ -1399,7 +1399,7 @@ You can tune the behavior in `.env`:
 | `POSITION_MAX_SINGLE_PCT` | empty | Single-stock cap (%); empty = total cap ÷ max holdings |
 | `POSITION_STOP_MODE` | `fixed` | `fixed` percentage stop; `nearer` the nearer of the percentage stop and the technical support |
 | `NEWS_INTEL_AUTO_FETCH_ENABLED` | `false` | Master switch: when on (in schedule mode, `SCHEDULE_ENABLED=true` or `--schedule`) AKShare news is fetched and classified on a schedule, and the lazy pre-analysis refresh of rss / newsnow sources keeps working; `NEWS_INTEL_RETENTION_DAYS` still only governs rss / atom / newsnow items, AKShare items use the two tiered keys below |
-| `NEWS_POLL_INTERVAL_MINUTES` | `10` | Trading days 08:00-15:30 (China time): fetch the CLS telegraph and Eastmoney flash together every N minutes, merged and deduplicated; Sina / Futu / THS are used only when one of the two fails |
+| `NEWS_POLL_INTERVAL_MINUTES` | `10` | Trading days 08:00-15:30 (China time): fetch the CLS telegraph and Eastmoney flash together every N minutes, merged and deduplicated; Sina / Futu / THS / Wallstreetcn are tried in order only when one of the two fails; when AkShare fails for CLS, the same round reads the official CLS API directly |
 | `NEWS_POLL_OFFHOURS_INTERVAL_MINUTES` | `30` | Polling interval at other times and on non-trading days |
 | `NEWS_DAILY_FETCH_TIME` | `08:05` | Time of the daily fetch of announcements (watchlist `STOCK_LIST` + current holdings) and the Eastmoney morning brief on trading days (`HH:MM`, host local time; keep it before 08:15) |
 | `NEWS_AKSHARE_CLS_SYMBOL` | `全部` | CLS telegraph scope: `全部` (default, gap-checked) or `重点` (only level A/B among the latest 20 rows, usually very few; not gap-checked) |

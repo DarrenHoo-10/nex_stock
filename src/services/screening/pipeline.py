@@ -228,6 +228,9 @@ def screen(
                 + _format_filter_waterfall(snapshot_waterfall)
             )
     df = apply_hard_filters(snapshot_df, snapshot_filters)
+    df, watch_note = drop_risk_watch(df, market)
+    if watch_note:
+        degradation.append(watch_note)
     after_filter_count = len(df)
     _emit_progress(
         progress_callback,
@@ -635,6 +638,31 @@ def _describe_topic_ranking_failure(result: object, candidate_count: int) -> str
     if reason == "call_failed":
         return "模型调用失败"
     return "没有可用模型"
+
+
+def drop_risk_watch(df: pd.DataFrame, market: str) -> tuple[pd.DataFrame, str]:
+    """Remove A-shares in an active 东方财富重点监控名单 window (stored list; skipped when unavailable)."""
+    if market != "cn" or df.empty:
+        return df, ""
+    code_col = next((c for c in ("code", "代码", "symbol") if c in df.columns), None)
+    if code_col is None:
+        return df, ""
+    try:
+        from src.services.stock_event_service import StockEventService
+
+        watched = StockEventService().watched_codes()
+    except Exception as exc:  # noqa: BLE001 - the list is an add-on; screening goes on without it
+        logger.debug("risk watch list unavailable: %s", exc)
+        return df, ""
+    if not watched:
+        return df, ""
+    codes = df[code_col].map(lambda value: normalize_code(value, allow_ticker=True))
+    hit = codes.isin(set(watched))
+    removed = sorted(set(codes[hit]))
+    if not removed:
+        return df, ""
+    note = f"Risk watch list: removed {len(removed)} stock(s) in 东方财富重点监控名单 ({', '.join(removed[:10])})"
+    return df[~hit].copy(), note
 
 
 def _df_to_picks(df: pd.DataFrame) -> list[Pick]:

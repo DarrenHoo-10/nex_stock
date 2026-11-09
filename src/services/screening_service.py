@@ -3682,7 +3682,8 @@ def search_dsa_stock_events(stock_code: str, stock_name: str = "", max_results: 
 
 # Risk-relevant kinds first: they matter most to a buy decision.
 _STRUCTURED_EVENT_ORDER = (
-    "share_float", "holder_trade", "forecast", "express", "pledge", "dragon_tiger", "repurchase", "research", "survey",
+    "price_anomaly", "risk_watch", "share_float", "holder_trade", "forecast", "express", "pledge", "dragon_tiger",
+    "limit_board", "hot_rank", "repurchase", "research", "survey",
 )
 
 

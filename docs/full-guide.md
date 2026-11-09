@@ -1572,7 +1572,7 @@ python main.py --debug
 | `POSITION_MAX_SINGLE_PCT` | 空 | 单只仓位上限（%）；留空 = 总仓位上限 ÷ 最多持股数 |
 | `POSITION_STOP_MODE` | `fixed` | `fixed` 固定比例止损；`nearer` 固定比例与技术支撑取较近者 |
 | `NEWS_INTEL_AUTO_FETCH_ENABLED` | `false` | 总开关：开启后（定时模式 `SCHEDULE_ENABLED=true` 或 `--schedule` 下）定时抓取 AKShare 资讯并分类，同时保留分析前的惰性刷新 rss / newsnow 资讯源；`NEWS_INTEL_RETENTION_DAYS` 仍只管理 rss / atom / newsnow 来源，AKShare 资讯按下面两项分级保留 |
-| `NEWS_POLL_INTERVAL_MINUTES` | `10` | 交易日 08:00–15:30（中国时间）同时取财联社电报和东方财富快讯的间隔（分钟），合并去重；新浪 / 富途 / 同花顺仅在其中一个失败时备用 |
+| `NEWS_POLL_INTERVAL_MINUTES` | `10` | 交易日 08:00–15:30（中国时间）同时取财联社电报和东方财富快讯的间隔（分钟），合并去重；新浪 / 富途 / 同花顺 / 华尔街见闻仅在其中一个失败时依次备用；AkShare 取财联社失败时同一轮改用财联社官方接口直连 |
 | `NEWS_POLL_OFFHOURS_INTERVAL_MINUTES` | `30` | 其他时段和非交易日的轮询间隔（分钟） |
 | `NEWS_DAILY_FETCH_TIME` | `08:05` | 每个交易日抓取自选股（`STOCK_LIST`）和当前持仓公告、东方财富财经早餐的时间（`HH:MM`，本机时区，建议在 08:15 前） |
 | `NEWS_AKSHARE_CLS_SYMBOL` | `全部` | 财联社电报取数范围：`全部`（默认，检测漏抓窗口）/ `重点`（只取最近 20 条中的 A/B 级，条数很少，不检测漏抓窗口） |

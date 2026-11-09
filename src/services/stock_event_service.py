@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Company events of A-shares: 业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研、
-券商研报（盈利预测与评级）、龙虎榜.
+券商研报（盈利预测与评级）、龙虎榜，以及打板和风险名单：开盘啦涨停 / 炸板 / 跌停、同花顺 / 东方财富热股榜、
+东方财富重点监控名单和严重异常波动.
 
 Source: Tushare (all permitted on this account, sampled 2026-11-09). Every kind except 质押 can be
 queried for the whole market by day, so one daily run stores the events of all stocks in about ten
@@ -9,6 +10,9 @@ calls (a first run backfills ``BACKFILL_DAYS``, 研报 ``RESEARCH_DAYS``); consu
 * screening — candidate context and fixed risk notes (``risk_notes``);
 * the next-day plan — risks of held / watched stocks;
 * ``GET /api/v1/stocks/{code}/events`` / ``/research`` / ``/capital`` — the web page and the assistant.
+
+The two 东方财富 risk lists are not Tushare: ``refresh_risk_lists`` reads them (two requests) and runs
+even without a Tushare token.
 
 When the table has nothing recent for a stock (the daily run never ran, or failed), ``events_for``
 fetches that stock alone (one call per kind; 龙虎榜 is only queryable by trade date, so it comes from
@@ -35,6 +39,10 @@ PLEDGE_LOOKBACK_FRIDAYS = 3
 CODE_REFRESH_HOURS = 24
 RESEARCH_DAYS = 90            # consensus window of broker forecasts
 DRAGON_TIGER_BACKFILL_DAYS = 10
+SENTIMENT_BACKFILL_DAYS = 5
+HOT_RANK_TOP_N = 100
+HOT_REASON_MAX_CHARS = 300
+PRICE_ANOMALY_RISK_DAYS = 10
 
 KIND_LABELS = {
     "forecast": "业绩预告",
@@ -46,7 +54,13 @@ KIND_LABELS = {
     "survey": "机构调研",
     "research": "券商研报",
     "dragon_tiger": "龙虎榜",
+    "limit_board": "涨停 / 炸板 / 跌停",
+    "hot_rank": "热股榜",
+    "risk_watch": "重点监控名单",
+    "price_anomaly": "严重异常波动",
 }
+# Kinds fetched per stock from Tushare (``fetch_code``); the others come from market-wide daily lists.
+CODE_FETCH_KINDS = ("forecast", "express", "holder_trade", "repurchase", "survey", "research", "share_float", "pledge")
 ALL_KINDS = tuple(KIND_LABELS)
 
 # Risk thresholds (deterministic; not left to the model)
@@ -116,6 +130,13 @@ _TOP_INST = _KindSpec(
     "top_inst", "trade_date,ts_code,exalter,side,buy,sell,net_buy,reason",
     10000, ("ts_code", "reason", "side", "exalter", "buy", "sell"), "trade_date",
 )
+_KPL = _KindSpec(
+    "kpl_list", "ts_code,name,trade_date,tag,lu_desc,theme,status,lu_time,open_time,pct_chg",
+    8000, ("ts_code", "tag"), "trade_date",
+)
+KPL_TAGS = ("涨停", "炸板", "跌停")
+_THS_HOT = _KindSpec("ths_hot", "trade_date,ts_code,ts_name,rank,rank_reason,concept", 2000, ("ts_code",), "trade_date")
+_DC_HOT = _KindSpec("dc_hot", "trade_date,ts_code,ts_name,rank", 2000, ("ts_code",), "trade_date")
 
 
 def _num(value: Any) -> Optional[float]:
@@ -177,10 +198,12 @@ def _hash(payload: Dict[str, Any]) -> str:
     return hashlib.sha1(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
-def _record(code: str, kind: str, event_date: date, title: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _record(
+    code: str, kind: str, event_date: date, title: str, payload: Dict[str, Any], *, source: str = "tushare",
+) -> Dict[str, Any]:
     clean = {k: v for k, v in payload.items() if v is not None and not (isinstance(v, float) and math.isnan(v))}
     return {"code": code, "kind": kind, "event_date": event_date, "title": title, "payload": clean,
-            "payload_hash": _hash(clean), "source": "tushare"}
+            "payload_hash": _hash(clean), "source": source}
 
 
 # ----------------------------------------------------------------------
@@ -393,6 +416,81 @@ def parse_dragon_tiger(list_rows: Iterable[Dict[str, Any]], inst_rows: Iterable[
     return out
 
 
+def parse_limit_board(rows: Iterable[Dict[str, Any]], day: date) -> List[Dict[str, Any]]:
+    """开盘啦 ``kpl_list``: one event per stock (a stock is in one of 涨停 / 炸板 / 跌停 on a day)."""
+    out, seen = [], set()
+    for row in rows:
+        code = _code(row.get("ts_code"))
+        tag = str(row.get("tag") or "").strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        status, reason, theme = (str(row.get(k) or "").strip() for k in ("status", "lu_desc", "theme"))
+        title = f"开盘啦{tag or '打板'}" + (f"（{status}）" if status else "")
+        if reason:
+            title += f"：{reason}"
+        if theme:
+            title += f"，题材 {theme}"
+        out.append(_record(code, "limit_board", _day(row.get("trade_date")) or day, title, {
+            "name": row.get("name"), "tag": tag or None, "status": status or None, "reason": reason or None,
+            "theme": theme or None, "lu_time": row.get("lu_time"), "open_time": row.get("open_time"),
+            "pct_chg": _num(row.get("pct_chg")),
+        }))
+    return out
+
+
+def parse_hot_rank(ths_rows: Iterable[Dict[str, Any]], dc_rows: Iterable[Dict[str, Any]], day: date) -> List[Dict[str, Any]]:
+    """同花顺热股榜 + 东方财富人气榜 of one day, merged per stock (top ``HOT_RANK_TOP_N`` of each)."""
+    merged: Dict[str, Dict[str, Any]] = {}
+    for source, rows in (("ths", ths_rows), ("dc", dc_rows)):
+        for row in rows:
+            code, rank = _code(row.get("ts_code")), _num(row.get("rank"))
+            if not code or rank is None or rank > HOT_RANK_TOP_N:
+                continue
+            entry = merged.setdefault(code, {"name": row.get("ts_name")})
+            if f"{source}_rank" in entry:
+                continue
+            entry[f"{source}_rank"] = int(rank)
+            if source == "ths":
+                reason = str(row.get("rank_reason") or "").strip()
+                entry["ths_reason"] = reason[:HOT_REASON_MAX_CHARS] or None
+                entry["concept"] = row.get("concept")
+    out = []
+    for code, payload in sorted(merged.items()):
+        parts = []
+        if payload.get("ths_rank"):
+            parts.append(f"同花顺热股第 {payload['ths_rank']} 名")
+        if payload.get("dc_rank"):
+            parts.append(f"东方财富人气榜第 {payload['dc_rank']} 名")
+        title = "，".join(parts)
+        if payload.get("ths_reason"):
+            title += f"（同花顺 AI 摘要：{payload['ths_reason'][:60]}）"
+        out.append(_record(code, "hot_rank", day, title, payload))
+    return out
+
+
+def parse_risk_watch(items: Iterable[Any]) -> List[Dict[str, Any]]:
+    """东方财富重点监控名单 (``sources.eastmoney_risk.MonitoredStock``)."""
+    return [_record(item.code, "risk_watch", item.start,
+                    f"东方财富重点监控名单（{item.start.isoformat()} 至 {item.end.isoformat()}）",
+                    {"name": item.name, "start": item.start.isoformat(), "end": item.end.isoformat()},
+                    source="eastmoney") for item in items]
+
+
+def parse_price_anomalies(items: Iterable[Any]) -> List[Dict[str, Any]]:
+    """东方财富严重异常波动 (``sources.eastmoney_risk.PriceAnomaly``)."""
+    out = []
+    for item in items:
+        title = "严重异常波动"
+        if item.days and item.deviation_pct is not None:
+            title += f"：{item.days} 个交易日累计偏离 {_fmt(item.deviation_pct)}%"
+        out.append(_record(item.code, "price_anomaly", item.day, title, {
+            "name": item.name, "deviation_pct": item.deviation_pct, "days": item.days,
+            "change_pct": item.change_pct, "rule": item.rule,
+        }, source="eastmoney"))
+    return out
+
+
 def _stats(values: List[float]) -> Optional[Dict[str, Any]]:
     if not values:
         return None
@@ -457,6 +555,12 @@ _PARSERS: Dict[str, Callable[[Iterable[Dict[str, Any]]], List[Dict[str, Any]]]] 
 # ----------------------------------------------------------------------
 # risk notes (pure)
 # ----------------------------------------------------------------------
+def watch_active(event: Dict[str, Any], as_of: date) -> bool:
+    payload = event.get("payload") or {}
+    start, end = _day(payload.get("start") or event.get("event_date")), _day(payload.get("end"))
+    return start is not None and end is not None and start <= as_of <= end
+
+
 def risk_notes_from(events: Sequence[Dict[str, Any]], as_of: date) -> List[str]:
     """Fixed-rule risks from stored events; Chinese one-liners for screening and the next-day plan."""
     notes: List[str] = []
@@ -481,6 +585,10 @@ def risk_notes_from(events: Sequence[Dict[str, Any]], as_of: date) -> List[str]:
             kind_text = str(payload.get("type") or "")
             if kind_text in BAD_FORECAST_TYPES:
                 notes.append(f"{day.isoformat()} 业绩预告{kind_text}")
+        elif kind == "risk_watch" and watch_active(event, as_of):
+            notes.append(f"在东方财富重点监控名单内（至 {payload.get('end')}），选股已排除")
+        elif kind == "price_anomaly" and as_of - timedelta(days=PRICE_ANOMALY_RISK_DAYS) <= day <= as_of:
+            notes.append(f"{day.isoformat()} {event.get('title') or '严重异常波动'}，按交易所规则可能停牌核查")
     # Only the latest pledge snapshot counts.
     return list(dict.fromkeys(notes))
 
@@ -564,6 +672,10 @@ class StockEventService:
         summary["kinds"]["pledge"] = self._refresh_pledges(today)
         summary["kinds"]["dragon_tiger"] = self._refresh_dragon_tiger(
             today, backfill_days=min(backfill_days, DRAGON_TIGER_BACKFILL_DAYS))
+        summary["kinds"]["limit_board"] = self._refresh_limit_board(
+            today, backfill_days=min(backfill_days, SENTIMENT_BACKFILL_DAYS))
+        summary["kinds"]["hot_rank"] = self._refresh_hot_rank(
+            today, backfill_days=min(backfill_days, SENTIMENT_BACKFILL_DAYS))
         try:
             summary["pruned"] = self.repo.prune(before=today - timedelta(days=RETENTION_DAYS))
         except Exception as exc:  # noqa: BLE001
@@ -605,30 +717,92 @@ class StockEventService:
             friday -= timedelta(days=7)
         return {"fetched": 0, "inserted": 0, "errors": errors}
 
-    def _refresh_dragon_tiger(self, today: date, *, backfill_days: int) -> Dict[str, Any]:
-        """龙虎榜 per trade date: ``top_list`` + ``top_inst`` (2 calls a day; Tushare publishes around 20:00)."""
-        done = self.repo.ingested_days("dragon_tiger", since=today - timedelta(days=backfill_days))
+    def _refresh_by_trade_date(
+        self, kind: str, today: date, *, backfill_days: int, fetch_day: Callable[[str, date], List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Market-wide lists published per trade date (weekdays), stored as one ingest row per day.
+
+        Empty = a holiday, or not published yet (Tushare publishes these lists in the evening): such days
+        and today are read again on the next run.
+        """
+        done = self.repo.ingested_days(kind, since=today - timedelta(days=backfill_days))
         days = [today - timedelta(days=offset) for offset in range(backfill_days, -1, -1)]
         todo = [d for d in days if d.weekday() < 5 and (d == today or done.get(d) != "ok")]
         inserted = fetched = 0
         errors: List[str] = []
         for day in todo:
-            stamp = day.strftime("%Y%m%d")
             try:
-                listed = self._query(_TOP_LIST, trade_date=stamp)
-                seats = self._query(_TOP_INST, trade_date=stamp) if listed else []
-                records = parse_dragon_tiger(listed, seats)
+                records = fetch_day(day.strftime("%Y%m%d"), day)
                 inserted += self.repo.upsert(records)
                 fetched += len(records)
-                # Empty = a holiday, or not published yet: such days and today are read again next run.
-                status = "ok" if listed and day != today else "partial"
-                self.repo.mark_ingested("dragon_tiger", day, rows=len(records), status=status)
+                status = "ok" if records and day != today else "partial"
+                self.repo.mark_ingested(kind, day, rows=len(records), status=status)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{day.isoformat()}: {exc}")
-                self.repo.mark_ingested("dragon_tiger", day, rows=0, status="failed", error=str(exc))
+                self.repo.mark_ingested(kind, day, rows=0, status="failed", error=str(exc))
                 if "无权限" in str(exc) or "未配置" in str(exc):
                     break
         return {"days": len(todo), "fetched": fetched, "inserted": inserted, "errors": errors[:5]}
+
+    def _refresh_dragon_tiger(self, today: date, *, backfill_days: int) -> Dict[str, Any]:
+        """龙虎榜: ``top_list`` + ``top_inst`` (2 calls a day; Tushare publishes around 20:00)."""
+
+        def fetch_day(stamp: str, day: date) -> List[Dict[str, Any]]:
+            listed = self._query(_TOP_LIST, trade_date=stamp)
+            return parse_dragon_tiger(listed, self._query(_TOP_INST, trade_date=stamp) if listed else [])
+
+        return self._refresh_by_trade_date("dragon_tiger", today, backfill_days=backfill_days, fetch_day=fetch_day)
+
+    def _refresh_limit_board(self, today: date, *, backfill_days: int) -> Dict[str, Any]:
+        """开盘啦涨停 / 炸板 / 跌停 (``kpl_list``, one call per tag)."""
+
+        def fetch_day(stamp: str, day: date) -> List[Dict[str, Any]]:
+            rows: List[Dict[str, Any]] = []
+            for tag in KPL_TAGS:
+                rows.extend({**row, "tag": row.get("tag") or tag}
+                            for row in self._query(_KPL, trade_date=stamp, tag=tag))
+            return parse_limit_board(rows, day)
+
+        return self._refresh_by_trade_date("limit_board", today, backfill_days=backfill_days, fetch_day=fetch_day)
+
+    def _refresh_hot_rank(self, today: date, *, backfill_days: int) -> Dict[str, Any]:
+        """同花顺热股榜 (``ths_hot``) + 东方财富人气榜 (``dc_hot``): the day's final snapshot (``is_new=Y``)."""
+
+        def fetch_day(stamp: str, day: date) -> List[Dict[str, Any]]:
+            ths = self._query(_THS_HOT, trade_date=stamp, market="热股", is_new="Y")
+            dc = self._query(_DC_HOT, trade_date=stamp, market="A股市场", hot_type="人气榜", is_new="Y")
+            return parse_hot_rank(ths, dc, day)
+
+        return self._refresh_by_trade_date("hot_rank", today, backfill_days=backfill_days, fetch_day=fetch_day)
+
+    # -- 东方财富风险名单 (no Tushare) --------------------------------------
+    def refresh_risk_lists(self, *, timeout_sec: float = 10.0) -> Dict[str, Any]:
+        """重点监控名单 + 严重异常波动, one request each; each list fails on its own."""
+        from src.services.sources import eastmoney_risk
+
+        today = self._today()
+        summary: Dict[str, Any] = {}
+        for kind, fetch, parse in (
+            ("risk_watch", eastmoney_risk.fetch_monitor, parse_risk_watch),
+            ("price_anomaly", eastmoney_risk.fetch_anomalies, parse_price_anomalies),
+        ):
+            try:
+                records = parse(fetch(timeout_sec=timeout_sec))
+                inserted = self.repo.upsert(records)
+                self.repo.mark_ingested(kind, today, rows=len(records), status="ok")
+                summary[kind] = {"status": "ok", "fetched": len(records), "inserted": inserted}
+            except Exception as exc:  # noqa: BLE001
+                self.repo.mark_ingested(kind, today, rows=0, status="failed", error=str(exc))
+                summary[kind] = {"status": "failed", "error": str(exc)[:200]}
+        statuses = {v["status"] for v in summary.values()}
+        summary["status"] = "ok" if statuses == {"ok"} else ("failed" if statuses == {"failed"} else "partial")
+        return summary
+
+    def watched_codes(self, *, as_of: Optional[date] = None) -> Dict[str, str]:
+        """Codes in an active 东方财富重点监控名单 window -> window end (stored list only, no request)."""
+        day = as_of or self._today()
+        events = self.repo.list_by_kind("risk_watch", since=day - timedelta(days=60), until=day)
+        return {e["code"]: str((e.get("payload") or {}).get("end") or "") for e in events if watch_active(e, day)}
 
     # -- one stock ------------------------------------------------------
     def fetch_code(self, code: str, *, days: int = BACKFILL_DAYS) -> Dict[str, Any]:
@@ -662,7 +836,8 @@ class StockEventService:
         yesterday = self._today() - timedelta(days=1)
         if self.repo.ingested_days("holder_trade", since=yesterday).get(yesterday) == "ok":
             return False
-        last = self.repo.latest_fetch_for_code(code)
+        # Market-wide lists (热股榜、风险名单…) also store rows for this code; only per-stock kinds count.
+        last = self.repo.latest_fetch_for_code(code, kinds=CODE_FETCH_KINDS)
         return last is None or datetime.now() - last > timedelta(hours=CODE_REFRESH_HOURS)
 
     def events_for(
@@ -692,7 +867,8 @@ class StockEventService:
     def risk_notes(self, code: str, *, fetch: bool = False) -> List[str]:
         """Fixed-rule risks of ``code`` from stored events (no network unless ``fetch``)."""
         try:
-            return self.events_for(code, kinds=("share_float", "holder_trade", "pledge", "forecast"),
+            return self.events_for(code, kinds=("share_float", "holder_trade", "pledge", "forecast", "risk_watch",
+                                                "price_anomaly"),
                                    days=BAD_FORECAST_DAYS, fetch=fetch)["risks"]
         except Exception as exc:  # noqa: BLE001 - risks are an add-on
             logger.debug("[公司事件] %s 风险读取失败: %s", code, exc)

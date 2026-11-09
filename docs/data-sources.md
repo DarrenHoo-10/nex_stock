@@ -32,6 +32,8 @@
 | [台湾三大法人](#52-台湾三大法人) | 否 | 台股 | 三大法人买卖超（仅数据层） | — |
 | [FXMacroData](#53-fxmacrodata) | 可选 `FXMACRODATA_API_KEY` | 宏观 / 外汇 | 助手与报告 Agent 的宏观工具 | — |
 | [新浪资金流](#57-新浪财经个股资金流无需配置) | 否 | A 股（沪深） | 个股资金流补充链的最后一个备用源、`/stocks/{code}/capital` 的主力资金 | —（不参与日线） |
+| [东方财富风险名单](#58-东方财富风险名单无需配置) | 否 | A 股 | 重点监控名单（选股排除）、严重异常波动（风险） | — |
+| [快讯备用源](#59-快讯备用源财联社直连华尔街见闻tushare-长篇新闻) | 否（长篇新闻需 Tushare） | A 股 | 财联社直连、华尔街见闻快讯、长篇新闻 | — |
 
 优先级数字越小越先尝试。
 
@@ -65,7 +67,7 @@ TUSHARE_TOKEN=你的token
 
 **确认它在工作**：启动日志出现 “检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升为最高”；未配置时日志是 “Tushare Token 未配置，此数据源不可用”。GitHub Actions 的每日任务日志里也会打印 Tushare Token 是否已配置。运行时优先级可在 [数据中心](data-center-diagnostics.md) 查看。
 
-**公司事件**：业绩预告 `forecast`、业绩快报 `express`、股东增减持 `stk_holdertrade`、回购 `repurchase`、限售解禁 `share_float`、股权质押 `pledge_stat`、机构调研 `stk_surv`、券商盈利预测 `report_rc`、龙虎榜 `top_list` + 席位 `top_inst` 由 `src/services/stock_event_service.py` 调用，存入 `stock_event` 表（研报为 `research`、龙虎榜为 `dragon_tiger`）。每个交易日的资讯任务（`NEWS_DAILY_FETCH_TIME`）按日取一次全市场（约 10 次请求；第一次补最近 30 天，研报补 90 天、龙虎榜补 10 天，约 250 次），没有 Token 时跳过；某只股票本地没有近期数据时，`GET /api/v1/stocks/{code}/events` 和选股会按需单独补取这只股票（每类 1 次）。龙虎榜只能按交易日取全市场，所以只来自每日入库；Tushare 约 20 点发布当天榜单，当天和取到空结果的交易日下次运行会再取一次。
+**公司事件**：业绩预告 `forecast`、业绩快报 `express`、股东增减持 `stk_holdertrade`、回购 `repurchase`、限售解禁 `share_float`、股权质押 `pledge_stat`、机构调研 `stk_surv`、券商盈利预测 `report_rc`、龙虎榜 `top_list` + 席位 `top_inst` 由 `src/services/stock_event_service.py` 调用，存入 `stock_event` 表（研报为 `research`、龙虎榜为 `dragon_tiger`）；打板和情绪数据也存在这里：开盘啦涨停 / 炸板 / 跌停 `kpl_list`（`limit_board`，含连板状态和涨停原因题材）、同花顺热股榜 `ths_hot` 与东方财富人气榜 `dc_hot`（合并为 `hot_rank`，各取前 100，同花顺的 `rank_reason` 是 AI 摘要，截取 300 字），每个交易日按交易日入库（补最近 5 天，每天 5 次请求）。每个交易日的资讯任务（`NEWS_DAILY_FETCH_TIME`）按日取一次全市场（约 10 次请求；第一次补最近 30 天，研报补 90 天、龙虎榜补 10 天，约 250 次），没有 Token 时跳过；某只股票本地没有近期数据时，`GET /api/v1/stocks/{code}/events` 和选股会按需单独补取这只股票（每类 1 次）。龙虎榜只能按交易日取全市场，所以只来自每日入库；Tushare 约 20 点发布当天榜单，当天和取到空结果的交易日下次运行会再取一次。
 
 **资金面**：两融 `margin_detail`（单只股票，近 20 个交易日）和北向 / 南向 `moneyflow_hsgt`（全市场，进程内缓存 1 小时）不入库，由 `src/services/capital_service.py` 在 `GET /api/v1/stocks/{code}/capital` 时按需读取。`moneyflow_hsgt` 单位为百万元；2024 年 8 月起交易所盘后只公布北向成交额，数值量级与成交额一致，不能当作净买入。这些接口在 15000 积分账号上已采样确认可用；公告 `anns_d`、互动问答 `irm_qa_*`、研报 `research_report`、短讯 `news`、竞价 `stk_auction` 需要单独购买，项目不使用。
 
@@ -269,6 +271,23 @@ Tushare 的 `irm_qa_sz` / `irm_qa_sh` 在本账号没有权限，问答直接读
 - `GET /api/v1/stocks/{code}/capital` 的 `fund_flow` 部分（近 20 个交易日）。
 
 设置 →「数据状态」里的「新浪财经（个股资金流备用）」显示本进程最近一次请求的结果（不额外发探测请求）。
+
+### 5.8 东方财富风险名单（无需配置）
+
+`src/services/sources/eastmoney_risk.py` 每个交易日的资讯任务各取一次（不需要 Tushare，经过 5.5 的统一限速）：
+
+- **重点监控名单**：`mobappconfig.securities.eastmoney.com/emcfg/stock_monitor.json`，一个文件就是全量，每只股票带约两周的有效期；名单里的基金会被丢掉。存为公司事件 `risk_watch`。**在有效期内的股票选股直接排除**（快照硬过滤之后、读本地表，记在结果的 `degradation` 里），次日计划和选股候选的风险里写「在东方财富重点监控名单内」。
+- **严重异常波动**：`dycalchis.eastmoney.com/price-anomaly/list`，必须带固定参数 `team=h5&product=EastMoney&client=WAP&version=9001&name=WAP&user=123`，否则返回 `unknow team`。存为 `price_anomaly`（累计偏离、天数、当日涨跌幅、规则编号），近 10 天内出现的写进风险。
+
+两个名单各自失败，不影响对方和资讯任务的其他部分。
+
+### 5.9 快讯备用源：财联社直连、华尔街见闻、Tushare 长篇新闻
+
+- **财联社直连**（`src/services/sources/cls_telegraph.py`）：AkShare 取财联社电报失败时，同一轮里改用官方 `v1/roll/get_roll_list`（签名 `md5(sha1(按键名排序的查询串))` 在本地算，不需要 key），仍记为 `cls` 来源，轮询结果里 `via: direct`；生成的去重键和 AkShare 那条一样，两种取法取到同一条不会重复入库。`NEWS_AKSHARE_CLS_SYMBOL=重点` 时只保留 A / B 级。
+- **华尔街见闻**（`src/services/sources/wscn_lives.py`）：A 股频道快讯，排在备用快讯顺序最后（新浪 → 富途 → 同花顺 → 华尔街见闻），AkShare 整体不可用时仍能取到。
+- **长篇新闻**：Tushare `major_news`（只取标题和链接），每天的资讯任务取最近 24 小时，存为 `item_kind=article`，不进快讯池（快讯摘要、缺口检测都不读它），按公告类的保留期（`NEWS_COMPANY_RETENTION_DAYS`）清理；助手的 `search_market_news` 会搜到它。没有 Token 时跳过。
+
+数据状态的资讯来源里新增「华尔街见闻快讯」「长篇新闻（Tushare）」两行。
 
 ## 6. 优先级与回退规则
 

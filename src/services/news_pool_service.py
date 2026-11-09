@@ -70,6 +70,21 @@ _MAX_CONSECUTIVE_CODE_FAILURES = 3
 _MARKET_MODE_MAX_DAYS = 3
 _NOTICE_MAX_LOOKBACK_DAYS = 5
 _QA_FIRST_LOOKBACK_DAYS = 30  # the platforms only keep about a month
+ARTICLE_LOOKBACK_HOURS = 24  # major_news window of the daily job (re-reads are de-duplicated by URL)
+
+
+def _query_major_news(start: datetime, end: datetime) -> List[Dict[str, Any]]:
+    """Tushare ``major_news`` (长篇新闻) between two China times; titles and links only."""
+    from data_provider.base import DataFetchError
+    from data_provider.tushare_fetcher import TushareFetcher
+    from src.services.stock_event_service import _KindSpec, query_rows
+
+    fetcher = TushareFetcher()
+    if not fetcher.is_available():
+        raise DataFetchError("Tushare 未配置（缺少 TUSHARE_TOKEN）")
+    spec = _KindSpec("major_news", "title,pub_time,src,url", 1000, ("title", "pub_time"), "start_date")
+    return query_rows(fetcher, spec, start_date=start.strftime("%Y-%m-%d %H:%M:%S"),
+                      end_date=end.strftime("%Y-%m-%d %H:%M:%S"))
 
 
 def _qa_record(item: Any) -> NewsRecord:
@@ -169,6 +184,8 @@ class NewsPoolService:
         holdings_provider: Callable[[], Sequence[Tuple[str, str]]] = _default_holdings,
         sleep_fn: Callable[[float], None] = time.sleep,
         events_runner: Optional[Callable[[], Dict[str, Any]]] = None,
+        risk_lists_runner: Optional[Callable[[], Dict[str, Any]]] = None,
+        articles_query: Optional[Callable[[datetime, datetime], List[Dict[str, Any]]]] = None,
     ) -> None:
         self.repo = repo or IntelligenceRepository()
         if config is None:
@@ -180,6 +197,8 @@ class NewsPoolService:
         self._holdings_provider = holdings_provider
         self._sleep = sleep_fn
         self._events_runner = events_runner
+        self._risk_lists_runner = risk_lists_runner
+        self._articles_query = articles_query
 
     # ------------------------------------------------------------------
     # cadence
@@ -229,6 +248,7 @@ class NewsPoolService:
         batches: Dict[str, List[NewsRecord]] = {}
 
         def run_source(key: str, *, fallback: bool = False) -> bool:
+            via: Optional[str] = None
             try:
                 records = ak_source.fetch_flash(key, timeout_sec=timeout, cls_symbol=cls_symbol)
             except NewsSourceBusy as exc:
@@ -237,10 +257,15 @@ class NewsPoolService:
             except Exception as exc:  # noqa: BLE001 - one source must never take the round down
                 error = _sanitize(exc)
                 logger.warning("[News] 来源 %s 取数失败: %s", key, error)
-                outcomes[key] = {"status": "failed", "error": error, "fallback": fallback}
-                return False
+                records = self._cls_direct(error, timeout, cls_symbol) if key == SOURCE_CLS else None
+                if records is None:
+                    outcomes[key] = {"status": "failed", "error": error, "fallback": fallback}
+                    return False
+                via = "direct"
             batches[key] = records
             outcomes[key] = {"status": "ok" if records else "empty", "count": len(records), "fallback": fallback}
+            if via:
+                outcomes[key]["via"] = via
             return True
 
         primary_ok = {key: run_source(key) for key in PRIMARY_FLASH_SOURCES}
@@ -285,6 +310,17 @@ class NewsPoolService:
             len(gap_info["gaps"]),
         )
         return result
+
+    @staticmethod
+    def _cls_direct(akshare_error: str, timeout: float, cls_symbol: str) -> Optional[List[NewsRecord]]:
+        """财联社 without AKShare (sources/cls_telegraph.py); None when that fails too."""
+        try:
+            records = ak_source.fetch_cls_direct(timeout_sec=timeout, cls_symbol=cls_symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[News] 财联社直连也失败（AKShare：%s）: %s", akshare_error, _sanitize(exc))
+            return None
+        logger.info("[News] AKShare 财联社失败，改用直连取到 %d 条", len(records))
+        return records
 
     def _gap_check_mode(self, key: str, cls_symbol: str) -> str:
         return "filtered" if key == SOURCE_CLS and cls_symbol != "全部" else "full"
@@ -398,6 +434,10 @@ class NewsPoolService:
                 "events": self._fetch_events(),
                 # Investor Q&A of watchlist + holdings (互动易 / 上证e互动); also separate.
                 "qa": self._fetch_qa(now),
+                # 东方财富重点监控名单 / 严重异常波动 (no Tushare needed); separate as well.
+                "risk_lists": self._fetch_risk_lists(),
+                # Tushare major_news of the last day as background articles; separate as well.
+                "articles": self._fetch_articles(now),
             }
             statuses = {part["status"] for part in (result["announcements"], result["morning_brief"])}
             result["status"] = (
@@ -422,6 +462,37 @@ class NewsPoolService:
         except Exception as exc:  # noqa: BLE001 - events must not break the news job
             logger.warning("[News] 公司事件取数失败: %s", exc)
             return {"status": "failed", "error": _sanitize(exc)}
+
+    def _fetch_risk_lists(self) -> Dict[str, Any]:
+        runner = self._risk_lists_runner
+        if runner is None:
+            from src.services.stock_event_service import StockEventService
+
+            runner = StockEventService().refresh_risk_lists
+        try:
+            return runner()
+        except Exception as exc:  # noqa: BLE001 - risk lists must not break the news job
+            logger.warning("[News] 东方财富风险名单取数失败: %s", exc)
+            return {"status": "failed", "error": _sanitize(exc)}
+
+    def _fetch_articles(self, now: datetime) -> Dict[str, Any]:
+        """Tushare ``major_news`` since the last stored article (at most ``ARTICLE_LOOKBACK_HOURS``)."""
+        if not str(getattr(self.config, "tushare_token", "") or "").strip() and self._articles_query is None:
+            return {"status": "skipped", "reason": "tushare_not_configured"}
+        start = now - timedelta(hours=ARTICLE_LOOKBACK_HOURS)
+        try:
+            rows = (self._articles_query or _query_major_news)(start, now)
+            records = ak_source.parse_major_news(rows)
+            stored = self.repo.upsert_news_records(
+                records, fetched_at=now, dedup_window_minutes=int(self.config.news_dedup_window_minutes)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[News] 长篇新闻取数失败: %s", exc)
+            self._save_daily_state(ak_source.SOURCE_MAJOR, now, status="failed", count=0, error=_sanitize(exc))
+            return {"status": "failed", "error": _sanitize(exc)}
+        status = "ok" if records else "empty"
+        self._save_daily_state(ak_source.SOURCE_MAJOR, now, status=status, count=len(records))
+        return {"status": status, "fetched": len(records), "inserted": len(stored["inserted"])}
 
     def _announcement_mode(self, code_count: int) -> str:
         mode = str(getattr(self.config, "news_announcement_mode", "auto") or "auto")
