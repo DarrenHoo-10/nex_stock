@@ -20,10 +20,11 @@ FastAPI 后端 + 全部定时任务跑在东京主机的**一个** Docker 容器
 本目录的 `docker-compose.yml` 只有一个服务，命令是：
 
 ```
-python main.py --serve --schedule --no-run-immediately --host 0.0.0.0 --port 8000
+python main.py --serve --require-serve --schedule --no-run-immediately --host 0.0.0.0 --port 8000
 ```
 
 - `--serve`：在后台线程启动 FastAPI（Web/API）。
+- `--require-serve`：Web/API 起不来时（端口被占用会先等最多 30 秒重试）进程以非零码退出，交给 `restart: unless-stopped` 重启；不加时 API 启动失败只记日志，调度继续跑。
 - `--schedule`：强制开启 Web/API 进程内的 runtime scheduler（`RuntimeSchedulerService`）。它和 `--schedule` 单独运行时是同一套任务：每日分析、17:00 板块流程、每周行业成分刷新、08:15 盘前版、资讯轮询与每日资讯抓取、事件提醒。
 - 飞书长连接由 `start_bot_stream_clients` 在 API 启动后启动**一次**（`FEISHU_STREAM_ENABLED=true` 时）。
 - `--no-run-immediately`：容器重启时不立即跑一轮全量分析。

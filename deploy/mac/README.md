@@ -9,7 +9,7 @@
                                                         └─ 每个请求带 user_session Cookie -> https://user.nexorai.com.cn/v1/session
 ```
 
-进程命令与东京容器相同：`python main.py --serve --schedule --no-run-immediately`。一个进程同时承载 Web/API 和全部调度任务；飞书长连接只启动一次（参数含义见 `deploy/tokyo/README.md`）。
+进程命令与东京容器相同：`python main.py --serve --require-serve --schedule --no-run-immediately`。`--require-serve` 让 Web/API 端口被占用时最多等 30 秒重试，仍起不来就退出，由 launchd（KeepAlive）重新拉起，不会留下一个只跑调度、没有 API 的进程。一个进程同时承载 Web/API 和全部调度任务；飞书长连接只启动一次（参数含义见 `deploy/tokyo/README.md`）。
 
 ## 为什么用原生进程，不用 Docker
 
@@ -77,14 +77,17 @@ grep -E "AUTH_MODE=user_center|runtime scheduler" "$R"/logs/launchd.out.log | ta
 
 ```bash
 tail -f "$R"/logs/launchd.out.log                                  # 进程日志；应用日志在 $R/logs/stock_analysis_*.log
-launchctl kickstart -k gui/$(id -u)/cn.nexorai.nex-stock           # 重启
+launchctl kill SIGTERM gui/$(id -u)/cn.nexorai.nex-stock          # 重启：旧进程退出后 KeepAlive 自动拉起新进程
+grep "FastAPI 服务已启动" "$R"/logs/stock_analysis_$(date +%Y%m%d).log | tail -1   # 确认新进程的 API 已起来
 launchctl bootout gui/$(id -u)/cn.nexorai.nex-stock                # 停止（重新启动用上面的 bootstrap）
 
 # 升级（只从 main）
 cd "$R/app" && git pull --ff-only
 "$R/venv/bin/python" -m pip install -r requirements.txt
-launchctl kickstart -k gui/$(id -u)/cn.nexorai.nex-stock
+launchctl kill SIGTERM gui/$(id -u)/cn.nexorai.nex-stock
 ```
+
+不要用 `launchctl kickstart -k` 重启：它可能在旧进程还占着 8000 端口时就启动新进程。没有 `--require-serve` 的旧版 plist 下，新进程会记录「启动 FastAPI 服务失败: FastAPI port is not available」后只跑调度和飞书，API 一直不可用；改了 plist 后要重新 `bootout` + `bootstrap` 一次才会生效。
 
 前端单独发布到首尔（`deploy/seoul/README.md`），Mac 进程不提供对外的前端。
 

@@ -1478,6 +1478,76 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(scheduled_call["background_tasks"], [])
         error_log.assert_called_once()
 
+    def _run_require_serve(self, start_side_effect, sleep_side_effect=None):
+        args = self._make_args(serve=True, require_serve=True, schedule=True, no_run_immediately=True,
+                               host="127.0.0.1", port=8000)
+        config = self._make_config(webui_enabled=False, schedule_enabled=False)
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main.start_api_server", side_effect=start_side_effect) as start_api, \
+             patch("main.start_bot_stream_clients") as start_bots, \
+             patch("main.run_full_analysis") as run_full_analysis, \
+             patch("main.time.sleep", side_effect=sleep_side_effect) as sleep, \
+             patch("src.scheduler.run_with_schedule") as run_with_schedule, \
+             patch("main.logger.error") as error_log:
+            exit_code = main.main()
+        return exit_code, start_api, start_bots, run_full_analysis, sleep, run_with_schedule, error_log
+
+    def test_require_serve_exits_instead_of_running_scheduler_only_when_port_stays_busy(self) -> None:
+        clock = iter(range(0, 1000))
+        with patch("main.time.time", side_effect=lambda: float(next(clock))):
+            exit_code, start_api, start_bots, run_full_analysis, sleep, run_with_schedule, error_log = \
+                self._run_require_serve(main.ApiPortUnavailableError("FastAPI port is not available: 127.0.0.1:8000"))
+
+        self.assertEqual(exit_code, 1)
+        self.assertGreater(start_api.call_count, 1)  # retried while the old process could still release it
+        sleep.assert_called_with(2.0)
+        start_bots.assert_not_called()
+        run_full_analysis.assert_not_called()
+        run_with_schedule.assert_not_called()
+        error_log.assert_called_once()
+
+    def test_require_serve_starts_once_the_previous_process_releases_the_port(self) -> None:
+        attempts = []
+
+        def busy_twice(host, port, config):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise main.ApiPortUnavailableError("FastAPI port is not available: 127.0.0.1:8000")
+
+        # Two retry waits, then the service's keep-alive loop is interrupted to end the test.
+        exit_code, start_api, start_bots, _analysis, sleep, _schedule, error_log = self._run_require_serve(
+            busy_twice, sleep_side_effect=[None, None, KeyboardInterrupt()],
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(sleep.call_args_list[:2], [unittest.mock.call(2.0), unittest.mock.call(2.0)])
+        start_bots.assert_called_once()
+        error_log.assert_not_called()
+
+    def test_require_serve_does_not_retry_other_startup_failures(self) -> None:
+        exit_code, start_api, start_bots, run_full_analysis, sleep, run_with_schedule, _ = \
+            self._run_require_serve(RuntimeError("lifespan bootstrap failed"))
+
+        self.assertEqual(exit_code, 1)
+        start_api.assert_called_once()
+        run_with_schedule.assert_not_called()
+
+    def test_start_api_server_reports_a_busy_port_as_its_own_error(self) -> None:
+        class BusySocket:
+            def bind(self, address):
+                raise OSError("address already in use")
+
+            def close(self):
+                pass
+
+        with patch("socket.socket", return_value=BusySocket()):
+            with self.assertRaises(main.ApiPortUnavailableError):
+                main.start_api_server("127.0.0.1", 8000, self._make_config(log_level="INFO"))
+
     def test_serve_with_enabled_schedule_uses_api_runtime_scheduler(self) -> None:
         from src.services.runtime_scheduler import (
             CLI_SCHEDULER_OWNER_ENV,
