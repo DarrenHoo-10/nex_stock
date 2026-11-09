@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 次日计划导航新增「当日复盘」，可按日期查看已生成的次日计划、大盘复盘和个股汇总日报。
+
 - [新功能] 新增宏观和指数数据：PMI、货币供应量、社会融资规模、LPR、主要指数估值（PE / PB）和指数成分权重（沪深300、中证500、中证1000、上证50、创业板指、科创50），来自 Tushare，每天随资讯任务刷新一次（新表 `macro_series`）；新增 `GET /api/v1/data/macro` 和 `GET /api/v1/data/indices/{code}/constituents`。
 - [改进] 选股取腾讯日线时在三个 K 线入口间轮换：某个入口返回空结果或请求失败时冷却 120 秒、改用下一个，减少单入口限流导致的日线缺失。
 - [新功能] 新增打板和风险名单：开盘啦涨停 / 炸板 / 跌停（Tushare `kpl_list`）、同花顺热股榜和东方财富人气榜（`ths_hot`、`dc_hot`）每日入库为公司事件 `limit_board`、`hot_rank`；东方财富重点监控名单和严重异常波动每天各取一次（`risk_watch`、`price_anomaly`），**在重点监控名单内的股票选股直接排除**，两者都写进次日计划和选股候选的风险。板块指标新增连板梯队、最高连板和晋级率（`market_daily` 新列，板块页接口 `market` 返回）。

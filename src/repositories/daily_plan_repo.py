@@ -128,6 +128,19 @@ class DailyPlanRepository:
             row = session.execute(select(DailyPlanRun).where(DailyPlanRun.run_id == run_id)).scalar_one_or_none()
             return self._run_dict(row) if row is not None else None
 
+    def closing_report_dates(self) -> List[date]:
+        with self.db.get_session() as session:
+            dates = select(DailyPlanRun.trade_date).where(DailyPlanRun.push_preview != "").distinct()
+            return list(session.scalars(dates))
+
+    def closing_report(self, trade_date: date) -> Optional[str]:
+        """A later retry without a report must not hide an earlier completed preview."""
+        with self.db.get_session() as session:
+            stmt = select(DailyPlanRun.push_preview).where(
+                DailyPlanRun.trade_date == trade_date, DailyPlanRun.push_preview != "",
+            ).order_by(DailyPlanRun.id.desc()).limit(1)
+            return session.scalar(stmt)
+
     def latest_run(self) -> Optional[Dict[str, Any]]:
         with self.db.get_session() as session:
             row = session.execute(select(DailyPlanRun).order_by(DailyPlanRun.id.desc()).limit(1)).scalar_one_or_none()

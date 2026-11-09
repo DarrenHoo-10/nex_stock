@@ -485,6 +485,7 @@ daily_stock_analysis/
 > - TickFlow 可通过申万一级行业标的池与全 A 股行情生成行业涨跌排行，并优先参与市场结构行业主线 fallback；概念题材排行仍由现有 AkShare / Tushare / Efinance 链路提供。
 > - TickFlow 官方 quickstart 提供了 `quotes.get(universes=["CN_Equity_A"])` 用法，但不同 API Key 不一定拥有对应权限；批量日 K、深度和财务等能力也按权限 fail-open。
 > - TickFlow 实际返回的 `change_pct` / `amplitude` 为比例值；系统已在接入层统一转换为百分比值，确保与现有数据源字段语义一致。
+> - 在主界面打开「当日复盘」，默认显示最新一期。日期选择器合并收盘计划的交易日与当前实例归档日报的文件日期。同一交易日多次运行时展示最近生成的计划正文，同时列出当日已有的大盘复盘和个股汇总。
 > - A 股大盘复盘报告采用盘后工作台式结构：固定包含盘面信号、指数明细、板块 Top 表、近三日市场线索、明日交易计划和风险提示；盘面信号以 `66/100（偏暖，可进攻）` 这类纯文本分数表达，避免色块进度条在不同终端显示不一致；近三日市场线索只列标题、来源和链接，不再展示搜索摘要片段；若部分数据源缺失，则保留可用区块并在对应位置降级展示。
 > - 字段契约：
 >   - `fundamental_context.belong_boards` = 个股关联板块列表；A 股从 AkShare 板块名单写入，美股/港股从 yfinance `info.sector` / `info.industry` 写入，无数据时为 `[]`；
