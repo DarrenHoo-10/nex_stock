@@ -13,7 +13,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>__HOME__/nex-stock/venv/bin/python</string><string>main.py</string>
-    <string>--serve</string><string>--schedule</string><string>--no-run-immediately</string>
+    <string>--serve</string><string>--require-serve</string><string>--schedule</string><string>--no-run-immediately</string>
     <string>--host</string><string>__ZT_IP__</string><string>--port</string><string>8000</string>
   </array>
   <key>EnvironmentVariables</key>

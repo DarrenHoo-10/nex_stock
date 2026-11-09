@@ -102,6 +102,11 @@ from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 
 logger = logging.getLogger(__name__)
+
+# --require-serve: how long a busy Web/API port is retried (a restarted service waits for the old process
+# to release it) before the process exits for its supervisor to restart.
+SERVE_BIND_RETRY_SECONDS = 30.0
+
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
 _LAST_ANALYSIS_FAILURE_REASON: Optional[str] = None
@@ -416,6 +421,16 @@ def parse_arguments() -> argparse.Namespace:
         '--serve-only',
         action='store_true',
         help='仅启动 FastAPI 后端服务，不自动执行分析'
+    )
+
+    parser.add_argument(
+        '--require-serve',
+        action='store_true',
+        help=(
+            '与 --serve 一起用于有守护进程的部署（launchd / systemd）：端口被占用时等待最多 '
+            f'{SERVE_BIND_RETRY_SECONDS:g} 秒重试，仍无法启动 Web/API 就以非零退出码结束，'
+            '交给守护进程重启；默认情况下 Web/API 启动失败只记录错误，调度和分析继续运行'
+        )
     )
 
     parser.add_argument(
@@ -1299,6 +1314,26 @@ def _run_analysis_with_runtime_scheduler_lock(
     return bool(lock_acquired and task_result["ok"])
 
 
+class ApiPortUnavailableError(RuntimeError):
+    """The Web/API port is still held by another process (e.g. the previous instance shutting down)."""
+
+
+def start_api_server_with_retry(
+    host: str, port: int, config: Config, *, wait_seconds: float = 0.0, interval: float = 2.0,
+) -> None:
+    """``start_api_server``, retrying only a busy port for up to ``wait_seconds``."""
+    deadline = time.time() + max(0.0, wait_seconds)
+    while True:
+        try:
+            start_api_server(host=host, port=port, config=config)
+            return
+        except ApiPortUnavailableError:
+            if time.time() + interval > deadline:
+                raise
+            logger.warning(f"FastAPI 端口 {host}:{port} 仍被占用，{interval:g} 秒后重试")
+            time.sleep(interval)
+
+
 def start_api_server(host: str, port: int, config: Config) -> None:
     """
     在后台线程启动 FastAPI 服务
@@ -1316,7 +1351,7 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     try:
         probe.bind((host, port))
     except OSError as exc:
-        raise RuntimeError(f"FastAPI port is not available: {host}:{port}") from exc
+        raise ApiPortUnavailableError(f"FastAPI port is not available: {host}:{port}") from exc
     finally:
         probe.close()
 
@@ -1725,12 +1760,18 @@ def main() -> int:
         os.environ[RUNTIME_SCHEDULER_ARGS_ENV] = json.dumps(runtime_scheduler_args)
         if not prepare_webui_frontend_assets():
             logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
+        require_serve = bool(getattr(args, "require_serve", False))
         try:
-            start_api_server(host=args.host, port=args.port, config=config)
+            start_api_server_with_retry(
+                args.host, args.port, config,
+                wait_seconds=SERVE_BIND_RETRY_SECONDS if require_serve else 0.0,
+            )
             bot_clients_started = True
         except Exception as e:
             logger.error(f"启动 FastAPI 服务失败: {e}")
-            if args.serve_only:
+            if args.serve_only or require_serve:
+                # A supervised service without its API must not linger as a scheduler-only process:
+                # exit so launchd / systemd restarts it once the port is free.
                 return 1
             start_serve = False
 

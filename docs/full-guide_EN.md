@@ -1559,6 +1559,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 |------|------|
 | `python main.py --serve` | Start API service + run full analysis once |
 | `python main.py --serve-only` | Start API service only; allow manual runs and restore enabled schedules without an immediate startup analysis |
+| `python main.py --serve --require-serve --schedule` | Long-running service under a supervisor (launchd, systemd, Docker restart policy): a busy API port is retried for up to 30 s, then the process exits non-zero for the supervisor to restart. Without `--require-serve`, an API startup failure under `--serve` is only logged and scheduling / analysis keep running |
 
 ### Features
 

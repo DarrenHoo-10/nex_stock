@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增 `--require-serve`：与 `--serve` 一起用于有守护进程的长期服务，Web/API 端口被占用时最多等 30 秒重试，仍起不来就以非零码退出，避免留下只跑调度、没有 API 的进程；Mac（launchd）与东京部署配置已加上该参数，Mac 重启方式改为 `launchctl kill SIGTERM`。不加时行为不变。
 - [改进] 飞书助手私聊改为话题模式：直接发给机器人的每条新消息会开一个话题回答并新建一个助手会话，话题内的后续消息都在同一个会话里；不同话题可并行回答，回复推送仍延续推送所在的会话。
 - [改进] 问股对话上下文自动压缩默认开启，触发点改为 Agent 模型上下文窗口的 80%（新增 `AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO`，默认 0.8；0 或窗口未知时沿用固定 `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS`）；摘要调用的超时随输入长度放宽。设 `AGENT_CONTEXT_COMPRESSION_ENABLED=false` 可恢复只带最近 20 条的旧行为。
 - [修复] 数据状态里只提供实时行情的数据源（如必盈）不再被误标为「不可用」：可用性探测改为按它实际提供的实时行情能力询问。

@@ -1726,6 +1726,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 |------|------|
 | `python main.py --serve` | 启动 API 服务 + 执行一次完整分析 |
 | `python main.py --serve-only` | 仅启动 API 服务；可手动触发分析，并恢复配置中已启用的定时任务，但启动时不立即分析 |
+| `python main.py --serve --require-serve --schedule` | 有守护进程（launchd、systemd、Docker restart 策略）的长期服务：API 端口被占用时最多等 30 秒重试，仍起不来就以非零码退出，交给守护进程重启。不加 `--require-serve` 时，`--serve` 的 API 启动失败只记录错误，调度和分析照常运行 |
 
 ### 功能特性
 
