@@ -1,7 +1,7 @@
 # 外部数据源借鉴方案（a-stock-data）
 
 - 日期：2026-11-09
-- 状态：方案稿，未实现（第 4 节「公告」的巨潮主来源已实现并合入 `main`）
+- 状态：第 1–5 期已实现并合入 `main`；第 6 期部分实现（腾讯多入口、宏观和指数已完成；通达信盘后包、日 K 复权统一暂缓，原因见第 10 节）；估值小工具（前向 PE、PEG）未做
 - 依据：[simonlin1212/a-stock-data](https://github.com/simonlin1212/a-stock-data) V3.10.4（Apache-2.0，87 个端点，下文「§x.y」指它的 `SKILL.md` 章节）；本仓库现有数据源盘点（第 1.2 节）；2026-11-09 对 Tushare 账号的权限采样（第 1.3 节）
 
 本文回答两个问题：a-stock-data 里哪些东西值得我们用，以及怎么接进现有系统。它是一个给 AI 用的取数手册（代码片段 + 实测踩坑），不是可安装的库，所以我们**只借鉴端点、参数和坑，不引入它的代码作为依赖**；需要的端点按本仓库的模块结构重写，并补测试。
@@ -281,9 +281,9 @@ a-stock-data 自身文档有几处前后矛盾，采纳时以实测为准：东�
 
 | 期 | 内容 | 涉及 | 验证 |
 | --- | --- | --- | --- |
-| 1 | 东方财富统一闸门（2.1）；代码规范化补漏和僵尸报价标记（2.3） | `data_provider/eastmoney_gate.py`、选股快照和热点、`normalize_stock_code`、`.env.example` | 闸门的并发 / 403 冷却测试；北交所旧代码、`sh000001` 歧义测试；选股回归 |
-| 2 | 公司事件（第 3 节）：`stock_event` 表、Tushare 主来源、每日任务、`/stocks/{code}/events`、选股和次日计划读取 | `src/services/stock_event_service.py`、`news_pool_service`、`screening_service`、`daily_plan_engine` | 每个 Tushare 接口一次采样存 fixture；选股「事件」不再依赖网页搜索的回归 |
-| 3 | 投资者问答（第 5 节）、深交所公告第三来源（第 4 节） | `src/services/sources/cninfo_irm.py`、`sse_e_interaction.py`、`szse_disclosure.py` | 三个接口各一次采样；沪深分流、相对时间换算、失败和空结果区分 |
+| 1（已完成） | 东方财富统一闸门（2.1）；代码规范化补漏和僵尸报价标记（2.3） | `data_provider/eastmoney_gate.py`、选股快照和热点、`normalize_stock_code`、`.env.example` | 闸门的并发 / 403 冷却测试；北交所旧代码、`sh000001` 歧义测试；选股回归 |
+| 2（已完成） | 公司事件（第 3 节）：`stock_event` 表、Tushare 主来源、每日任务、`/stocks/{code}/events`、选股和次日计划读取 | `src/services/stock_event_service.py`、`news_pool_service`、`screening_service`、`daily_plan_engine` | 每个 Tushare 接口一次采样存 fixture；选股「事件」不再依赖网页搜索的回归 |
+| 3（已完成） | 投资者问答（第 5 节）、深交所公告第三来源（第 4 节） | `src/services/sources/cninfo_irm.py`、`sse_e_interaction.py`、`szse_disclosure.py` | 三个接口各一次采样；沪深分流、相对时间换算、失败和空结果区分 |
 | 4（已完成） | 券商评级和一致预期（第 6 节）、资金面（第 9 节） | `stock_event` 新增 `research` / `dragon_tiger`、`/stocks/{code}/research`、`/stocks/{code}/capital`、`capital_service`、新浪资金流备用 | `top_list` / `top_inst` / `report_rc` / `margin_detail` / `moneyflow_hsgt` / 新浪各一次采样；`get_capital_flow` 回归 |
 | 5（已完成） | 打板和情绪（第 8 节）、快讯备用源（第 7 节） | `kpl_list` / 热榜入库、风险名单、财联社直连、华尔街见闻、`major_news` | 签名算法单测；风险名单排除选股的回归 |
 | 6（部分完成，见第 10、11 节） | 行情稳健性（第 10 节）、宏观和指数（第 11 节） | 通达信盘后包、复权统一、腾讯多入口、官方宏观 / 指数 | 盘后包解析用一次采样的 zip；复权前后均线一致性测试 |
