@@ -32,7 +32,11 @@
 提示：优先级数字越小越优先，同优先级按初始化顺序排列
 """
 
-from .base import BaseFetcher, DataFetcherManager
+from .eastmoney_gate import install as _install_eastmoney_gate
+
+_install_eastmoney_gate()  # every East Money request goes through one rate-limit gate
+
+from .base import BaseFetcher, DataFetcherManager  # noqa: E402
 from .efinance_fetcher import EfinanceFetcher
 from .tencent_fetcher import TencentFetcher
 from .akshare_fetcher import AkshareFetcher, is_hk_stock_code

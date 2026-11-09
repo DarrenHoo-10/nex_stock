@@ -44,6 +44,7 @@ from tenacity import (
 )
 
 from src.patches.eastmoney_patch import eastmoney_patch
+from . import eastmoney_gate
 from src.config import get_config
 from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
@@ -342,7 +343,33 @@ def _akshare_call_with_timeout(
     call_name: str = "akshare",
     **kwargs,
 ):
-    """Run an akshare call with a bounded wait time."""
+    """Run an akshare call with a bounded wait time.
+
+    The call runs in a child process, where the East Money gate of this process cannot see its
+    requests; an East Money function therefore holds this process's turn for its host while it runs.
+    """
+    host = _eastmoney_host_for(func)
+    if host is None:
+        return _akshare_call_in_process(func, *args, timeout=timeout, call_name=call_name, **kwargs)
+    with eastmoney_gate.GATE.slot(host):
+        return _akshare_call_in_process(func, *args, timeout=timeout, call_name=call_name, **kwargs)
+
+
+def _eastmoney_host_for(func) -> Optional[str]:
+    """East Money host an AkShare function talks to (``None`` for Sina / Tencent functions)."""
+    name = str(getattr(func, "__name__", "") or "")
+    if not (name.endswith("_em") or name == "stock_zh_a_hist"):
+        return None
+    return "push2his.eastmoney.com" if ("hist" in name or "daily" in name) else "push2.eastmoney.com"
+
+
+def _akshare_call_in_process(
+    func,
+    *args,
+    timeout: Optional[float] = None,
+    call_name: str = "akshare",
+    **kwargs,
+):
     wait_seconds = _AKSHARE_HISTORY_CALL_TIMEOUT if timeout is None else float(timeout)
 
     multiprocessing.freeze_support()

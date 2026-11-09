@@ -150,6 +150,9 @@ def _get_nid(user_agent):
 def eastmoney_patch():
     if _patch_sign.is_patched():
         return
+    # Wrap whatever is installed now (e.g. data_provider.eastmoney_gate), not the import-time
+    # original, so the rate-limit gate is never bypassed.
+    previous_request = requests.Session.request
 
     def patched_request(self, method, url, **kwargs):
         # 排除非目标域名
@@ -162,7 +165,7 @@ def eastmoney_patch():
             ]
         )
         if not is_target:
-            return original_request(self, method, url, **kwargs)
+            return previous_request(self, method, url, **kwargs)
         # 获取一个随机的 User-Agent
         user_agent = ua.random
         # 处理 Headers：确保不破坏业务代码传入的 headers
@@ -175,7 +178,7 @@ def eastmoney_patch():
         # 随机休眠，降低被封风险
         sleep_time = random.uniform(1, 4)
         time.sleep(sleep_time)
-        return original_request(self, method, url, **kwargs)
+        return previous_request(self, method, url, **kwargs)
 
     # 全局替换 Session 的 request 入口
     requests.Session.request = patched_request

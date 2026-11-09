@@ -249,3 +249,26 @@ class _ThreadlessTestClient:
 
 fastapi.testclient.TestClient = _ThreadlessTestClient
 starlette.testclient.TestClient = _ThreadlessTestClient
+
+
+# ---------------------------------------------------------------------------
+# East Money gate (data_provider/eastmoney_gate.py) is process-wide: no pacing in tests, and a
+# mocked 403 in one test must not leave a host cooling down for the next.
+# ---------------------------------------------------------------------------
+import os as _os
+
+import pytest as _pytest
+
+_os.environ.setdefault("EASTMONEY_MIN_INTERVAL_SEC", "0")
+
+
+@_pytest.fixture(autouse=True)
+def _reset_eastmoney_gate():
+    try:
+        from data_provider import eastmoney_gate
+    except Exception:  # noqa: BLE001 - modules that never import data_provider
+        yield
+        return
+    eastmoney_gate.GATE._states.clear()
+    yield
+    eastmoney_gate.GATE._states.clear()

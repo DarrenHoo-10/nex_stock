@@ -21,6 +21,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from data_provider import eastmoney_gate
 from src.services.screening.source_guard import call_with_timeout, parse_source_timeout_seconds
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,6 @@ _SOURCE_HEALTH_FAILURE_THRESHOLD = 3
 _SOURCE_HEALTH_COOLDOWN_SECONDS = 5 * 60
 _SNAPSHOT_CALL_TIMEOUT_SECONDS = 60.0
 _EM_SESSION: requests.Session | None = None
-_EM_LAST_REQUEST_AT = 0.0
 _EM_LOCK = threading.Lock()
 _SOURCE_HEALTH: dict[str, dict[str, object]] = {}
 _SOURCE_HEALTH_LOCK = threading.Lock()
@@ -530,18 +530,13 @@ def _eastmoney_get(url: str, **kwargs) -> requests.Response:
     session, a process-wide interval, and a little jitter follows the same
     anti-ban pattern used by a-stock-data's ``em_get`` helper.
     """
-    global _EM_LAST_REQUEST_AT, _EM_SESSION
+    global _EM_SESSION
     with _EM_LOCK:
         if _EM_SESSION is None:
             _EM_SESSION = _build_eastmoney_session()
-        elapsed = time.monotonic() - _EM_LAST_REQUEST_AT
-        interval = _eastmoney_request_interval_seconds()
-        if elapsed < interval:
-            time.sleep(interval - elapsed)
-        response = _EM_SESSION.get(url, **kwargs)
-        _EM_LAST_REQUEST_AT = time.monotonic()
-    response.raise_for_status()
-    return response
+    # The process-wide gate serialises per host and stops on 403; the screening-specific interval
+    # (SCREENING_EASTMONEY_MIN_INTERVAL_SEC / _JITTER_SEC) still applies to these requests.
+    return eastmoney_gate.get(url, session=_EM_SESSION, interval=_eastmoney_request_interval_seconds(), **kwargs)
 
 
 def _build_eastmoney_session() -> requests.Session:

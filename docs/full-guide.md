@@ -439,6 +439,8 @@ daily_stock_analysis/
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
 | `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。个股行情窗口双击日 K 查看历史交易日分时（`GET /api/v1/stocks/{code}/intraday`）也走必盈历史 5 分钟线，未配置时该功能提示需要配置必盈 licence（接口返回 503，`reason=biying_not_configured`）。 | - | 可选 |
 | `BIYING_TIMEOUT_SECONDS` | 必盈单次请求超时（秒） | `8` | 可选 |
+| `EASTMONEY_MIN_INTERVAL_SEC` | 东方财富统一限速：同一子域名两次请求的最小间隔（秒），另加 0.1–0.5 秒随机抖动；作用于本进程内所有东方财富请求，见 [数据源说明](data-sources.md) 5.5 | `1.0` | 可选 |
+| `EASTMONEY_BAN_COOLDOWN_MINUTES` | 东方财富某子域名返回 403 后暂停对它请求的分钟数，期间改用其他来源 | `30` | 可选 |
 | `INTRADAY_SNAPSHOT_TTL_SECONDS` | 助手盘中数据（全市场快照、个股报价、5 分钟 K 线）的内存缓存时效（秒）；仅提问时取，不做定时刷新，不写入 `stock_daily`。 | `60` | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填 `http://` 或 `https://` 开头的完整地址 | `http://api.tushare.pro` | 可选 |
 | `TICKFLOW_API_KEY` | TickFlow API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | - | 可选 |
