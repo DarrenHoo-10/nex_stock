@@ -113,6 +113,13 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         config_keys=("EASTMONEY_MIN_INTERVAL_SEC", "EASTMONEY_BAN_COOLDOWN_MINUTES"),
     ),
     _ProviderDefinition(
+        name="sina_fund_flow",
+        label="新浪财经（个股资金流备用）",
+        fetcher_name=None,
+        dataset_markets={},
+        builtin=True,
+    ),
+    _ProviderDefinition(
         name="tushare",
         label="Tushare",
         fetcher_name="TushareFetcher",
@@ -319,6 +326,9 @@ class DataCapabilityService:
             if definition.name == "eastmoney":
                 status, cooldown, gate_warnings = self._eastmoney_gate_status()
                 warnings.extend(gate_warnings)
+            elif definition.name == "sina_fund_flow":
+                status, source_warnings = self._sina_fund_flow_status()
+                warnings.extend(source_warnings)
             elif not configured and not definition.builtin:
                 status = "unconfigured"
             elif fetcher is None and enabled:
@@ -367,6 +377,22 @@ class DataCapabilityService:
         cooling = [row for row in rows if row["cooling_down"]]
         warnings = [f"cooldown:{row['host']} until {row['cooldown_until']}" for row in cooling]
         return ("partial" if cooling else "ok"), bool(cooling), warnings
+
+    @staticmethod
+    def _sina_fund_flow_status() -> tuple:
+        """(status, warnings) from the latest 新浪资金流 request of this process (no probe request)."""
+        try:
+            from src.services.sources import sina_fund_flow
+
+            last = sina_fund_flow.last_status()
+        except Exception as exc:  # noqa: BLE001 - diagnostics must fail open.
+            logger.debug("Sina fund-flow status unavailable: %s", exc)
+            last = {}
+        if not last:
+            return "unknown", ["runtime_probe_not_performed"]
+        if last.get("ok"):
+            return "ok", []
+        return "unavailable", [f"last_call_failed:{last.get('at')} {last.get('error')}"]
 
     @staticmethod
     def _provider_runtime_status(fetcher: Any, definition: Optional[_ProviderDefinition] = None) -> str:

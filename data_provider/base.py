@@ -4737,6 +4737,34 @@ class DataFetcherManager:
                 if isinstance(payload.get("errors"), list):
                     payload["errors"].append(f"{fetcher.name}: {sup_err}")
                 logger.warning("[资金流] %s 获取 %s 失败: %s", fetcher.name, stock_code, sup_err)
+        self._supplement_capital_flow_from_sina(stock_code, payload, remaining)
+
+    def _supplement_capital_flow_from_sina(self, stock_code: str, payload: Dict[str, Any], budget_seconds: float) -> None:
+        """最后一个备用源：新浪个股历史资金流（无需配置，只覆盖沪深股票），只用前面剩下的预算。"""
+        stock_flow = payload.get("stock_flow") or {}
+        if isinstance(stock_flow, dict) and any(v is not None for v in stock_flow.values()):
+            return
+        from src.services.sources import sina_fund_flow
+
+        if budget_seconds <= 0 or sina_fund_flow.symbol(str(stock_code)) is None:
+            return
+        supplemental, sup_err, sup_cost_ms = self._run_with_timeout(
+            lambda: sina_fund_flow.capital_flow(str(stock_code), timeout_sec=budget_seconds),
+            budget_seconds,
+            "capital_flow_supplement",
+            quarantine_key=("sina", "capital_flow"),
+        )
+        if isinstance(supplemental, dict) and supplemental.get("errors"):
+            payload.setdefault("errors", []).extend(supplemental["errors"])
+        if isinstance(supplemental, dict) and supplemental.get("stock_flow"):
+            payload["stock_flow"] = supplemental["stock_flow"]
+            payload.setdefault("source_chain", []).extend(supplemental.get("source_chain") or [])
+            logger.info("[资金流] %s 使用新浪补充个股资金流 (%dms)", stock_code, sup_cost_ms)
+            return
+        if sup_err:
+            if isinstance(payload.get("errors"), list):
+                payload["errors"].append(f"sina: {sup_err}")
+            logger.warning("[资金流] 新浪获取 %s 失败: %s", stock_code, sup_err)
 
     def _supplement_fundamental_bundle_from_fetchers(
         self,

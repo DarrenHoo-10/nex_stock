@@ -185,9 +185,10 @@ Tushare 的 `irm_qa_sh` / `irm_qa_sz` 没有权限，用两个官方平台直连
 
 ## 6. 券商评级和盈利预测（P1）
 
-- **主来源**：Tushare `report_rc`（已开通，采样返回了 2026-10-30 两家券商对特变电工的评级、目标价和 2026–2028 年 EPS 预测）。新表 `broker_forecast`（`code`、`report_date`、`org_name`、`report_title`、`rating`、`quarter`、`eps`、`np`、`pe`、`roe`、`max_price`、`min_price`），按代码按需取近 90 天，缓存 1 天。
+- **主来源**：Tushare `report_rc`（已开通，采样返回了 2026-10-30 两家券商对特变电工的评级、目标价和 2026–2028 年 EPS 预测）。
+- **实现（第 4 期）**：没有新建 `broker_forecast` 表，而是作为公司事件的一类（`stock_event.kind = research`，一份报告一条，各预测年度放在 `payload.forecasts`）：`report_rc` 可以按报告日取全市场，和其他事件一样随每日任务入库（第一次补 90 天），保留期、按需补取单只股票、选股读取都复用第 3 节的逻辑。
 - **一致预期**：本地按 `quarter` 汇总近 90 天各机构的 EPS 均值、最高、最低、机构数，代替 a-stock-data 的同花顺一致预期网页（§2.2，抓 HTML、GBK）。
-- **研报标题补充**：`report_rc` 只有点评类研报的预测，深度报告标题可从新浪研报列表补（§2.4，`vReport_List`）。坑：间隔 1 秒时第二次请求就返回 HTTP 200 的假「没有找到相关内容」页，必须间隔 6 秒以上；北交所要 `bj` 前缀。东方财富研报接口（§2.1）有评级和 PDF，但在东方财富风控范围内，作为可选。
+- **研报标题补充（暂缓）**：`report_rc` 只有点评类研报的预测，深度报告标题可从新浪研报列表补（§2.4，`vReport_List`）。第 4 期没有接：新浪要求请求间隔 6 秒以上，选股候选多时太慢，而 `report_rc` 已覆盖评级和预测；等助手确有需要时再按需接入。坑：间隔 1 秒时第二次请求就返回 HTTP 200 的假「没有找到相关内容」页，必须间隔 6 秒以上；北交所要 `bj` 前缀。东方财富研报接口（§2.1）有评级和 PDF，但在东方财富风控范围内，作为可选。
 - **接口**：`GET /api/v1/stocks/{code}/research?days=90`，返回评级分布、一致预期和最近研报标题。
 
 ## 7. 快讯与新闻（P2）
@@ -222,6 +223,8 @@ Tushare 的 `irm_qa_sh` / `irm_qa_sz` 没有权限，用两个官方平台直连
 | 两融 | Tushare `margin_detail` | 交易所官方（`margin_trading_backup`，上交所融券额可能为空，北交所没有） | 个股近 20 日融资余额变化，进入助手和选股上下文 |
 | 北向 | Tushare `moneyflow_hsgt`（日度汇总） | 港交所每日统计（§备用源） | 大盘复盘和盘前推送；个股北向持股自 2024-08 起已不按日披露，不做 |
 | 个股资金流 | 现有（AkShare，Tushare `moneyflow` 补） | 新浪 `MoneyFlow.ssl_qsfx_zjlrqs`（§备用源 `fund_flow_backup`） | 东方财富冷却时用新浪，补 5 日 / 10 日净额 |
+
+**第 4 期实现情况**：龙虎榜存为公司事件 `dragon_tiger`（每日按交易日 `top_list` + `top_inst` 两次请求，一只股票一天一条，主原因取第一个单日原因，席位按名称 + 买卖额去重），选股候选的「事件」会带出机构和沪深股通净额；分析流程里原有的 AkShare「是否上榜」块没有改。两融、北向不入库，只在 `GET /api/v1/stocks/{code}/capital` 时按需读取，还没有进入选股上下文和大盘复盘（每个候选一次请求，留待需要时再接）。新浪资金流已接为补充链最后一个备用源，并在数据状态里有一行。交易所官方龙虎榜 / 两融备用源没有接。
 
 ## 10. 行情与 K 线稳健性（P2）
 
@@ -269,7 +272,7 @@ a-stock-data 自身文档有几处前后矛盾，采纳时以实测为准：东�
 | 1 | 东方财富统一闸门（2.1）；代码规范化补漏和僵尸报价标记（2.3） | `data_provider/eastmoney_gate.py`、选股快照和热点、`normalize_stock_code`、`.env.example` | 闸门的并发 / 403 冷却测试；北交所旧代码、`sh000001` 歧义测试；选股回归 |
 | 2 | 公司事件（第 3 节）：`stock_event` 表、Tushare 主来源、每日任务、`/stocks/{code}/events`、选股和次日计划读取 | `src/services/stock_event_service.py`、`news_pool_service`、`screening_service`、`daily_plan_engine` | 每个 Tushare 接口一次采样存 fixture；选股「事件」不再依赖网页搜索的回归 |
 | 3 | 投资者问答（第 5 节）、深交所公告第三来源（第 4 节） | `src/services/sources/cninfo_irm.py`、`sse_e_interaction.py`、`szse_disclosure.py` | 三个接口各一次采样；沪深分流、相对时间换算、失败和空结果区分 |
-| 4 | 券商评级和一致预期（第 6 节）、资金面（第 9 节） | `broker_forecast` 表、`/stocks/{code}/research`、龙虎榜 / 两融 / 北向 | `top_inst`、`express` 采样；`get_capital_flow` 回归 |
+| 4（已完成） | 券商评级和一致预期（第 6 节）、资金面（第 9 节） | `stock_event` 新增 `research` / `dragon_tiger`、`/stocks/{code}/research`、`/stocks/{code}/capital`、`capital_service`、新浪资金流备用 | `top_list` / `top_inst` / `report_rc` / `margin_detail` / `moneyflow_hsgt` / 新浪各一次采样；`get_capital_flow` 回归 |
 | 5 | 打板和情绪（第 8 节）、快讯备用源（第 7 节） | `kpl_list` / 热榜入库、风险名单、财联社直连、华尔街见闻、`major_news` | 签名算法单测；风险名单排除选股的回归 |
 | 6 | 行情稳健性（第 10 节）、宏观和指数（第 11 节） | 通达信盘后包、复权统一、腾讯多入口、官方宏观 / 指数 | 盘后包解析用一次采样的 zip；复权前后均线一致性测试 |
 
