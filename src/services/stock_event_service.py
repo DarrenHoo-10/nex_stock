@@ -609,7 +609,9 @@ def query_rows(fetcher: Any, spec: _KindSpec, **params: Any) -> List[Dict[str, A
         logger.warning("[Tushare] %s 只取到部分数据: %s", spec.api, exc)
     if frame is None or getattr(frame, "empty", True):
         return []
-    return frame.where(frame.notna(), None).to_dict("records")
+    # object dtype first: on float / string columns pandas 3 turns the None back into NaN, which the
+    # parsers' ``str(value or "")`` would then write as the text "nan".
+    return frame.astype(object).where(frame.notna(), None).to_dict("records")
 
 
 class StockEventService:

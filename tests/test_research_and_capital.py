@@ -312,3 +312,22 @@ def test_research_and_capital_endpoints(db, monkeypatch):
         with pytest.raises(HTTPException) as exc:
             call()
         assert exc.value.status_code == 400
+
+
+def test_missing_tushare_fields_become_none_not_nan_text():
+    """pandas 3 keeps NaN on float / string columns through ``where(..., None)``; rows must carry None."""
+    import numpy as np
+
+    from src.services.stock_event_service import _DAY_KINDS, parse_holder_trades, query_rows
+
+    frame_rows = [dict(REPORT_RC[0], rating=np.nan, max_price=np.nan),
+                  {"ts_code": "600089.SH", "ann_date": "20261105", "holder_name": np.nan, "holder_type": np.nan,
+                   "in_de": "DE", "change_vol": 1.5e7, "change_ratio": np.nan, "avg_price": np.nan}]
+    fake = FakeTushare({"report_rc": [frame_rows[0]], "stk_holdertrade": [frame_rows[1]]})
+    research_rows = query_rows(fake, _DAY_KINDS["research"], report_date="20261030")
+    assert research_rows[0]["rating"] is None and research_rows[0]["max_price"] is None
+    event = parse_research(research_rows)[0]
+    assert "nan" not in event["title"] and event["payload"].get("rating") is None
+    assert research_summary([event], TODAY)["ratings"] == {}
+    holder = parse_holder_trades(query_rows(fake, _DAY_KINDS["holder_trade"], ann_date="20261105"))[0]
+    assert "nan" not in holder["title"] and holder["title"].startswith("股东减持")
