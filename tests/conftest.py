@@ -272,3 +272,13 @@ def _reset_eastmoney_gate():
     eastmoney_gate.GATE._states.clear()
     yield
     eastmoney_gate.GATE._states.clear()
+
+
+@_pytest.fixture(autouse=True)
+def _no_live_company_event_fetch(monkeypatch):
+    """Company events are fetched per stock from Tushare on demand; never from tests."""
+    try:
+        from src.services import stock_event_service
+    except Exception:  # noqa: BLE001
+        return
+    monkeypatch.setattr(stock_event_service.StockEventService, "_needs_code_fetch", lambda self, code: False)

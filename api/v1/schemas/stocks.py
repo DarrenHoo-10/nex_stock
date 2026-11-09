@@ -217,3 +217,26 @@ class StockProfileResponse(BaseModel):
     portfolio: StockProfilePortfolioBlock
     monitors: StockProfileMonitorBlock
     evidence_quality: StockProfileEvidenceQuality
+
+
+class StockEventItem(BaseModel):
+    """一条公司事件（业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研）。"""
+
+    kind: Literal["forecast", "express", "holder_trade", "repurchase", "share_float", "pledge", "survey"] = Field(
+        ..., description="事件类型"
+    )
+    kind_label: str = Field(..., description="事件类型中文名")
+    event_date: str = Field(..., description="公告日；解禁为解禁日（可能在未来）；质押为统计截止日")
+    title: str = Field(..., description="一句话中文摘要")
+    payload: Dict[str, object] = Field(default_factory=dict, description="Tushare 原始字段")
+    source: str = Field(..., description="数据来源（tushare）")
+
+
+class StockEventsResponse(BaseModel):
+    """个股公司事件列表和按固定规则算出的风险。"""
+
+    stock_code: str
+    as_of: str = Field(..., description="计算风险时的日期")
+    events: List[StockEventItem]
+    risks: List[str] = Field(default_factory=list, description="按固定规则得出的风险：近期解禁、大股东减持、高质押、业绩预告转差")
+    fetch: Dict[str, object] = Field(default_factory=dict, description="本次按需从 Tushare 补取时各类事件的结果（没有补取时为空）")

@@ -64,6 +64,8 @@ TUSHARE_TOKEN=你的token
 
 **确认它在工作**：启动日志出现 “检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升为最高”；未配置时日志是 “Tushare Token 未配置，此数据源不可用”。GitHub Actions 的每日任务日志里也会打印 Tushare Token 是否已配置。运行时优先级可在 [数据中心](data-center-diagnostics.md) 查看。
 
+**公司事件**：业绩预告 `forecast`、业绩快报 `express`、股东增减持 `stk_holdertrade`、回购 `repurchase`、限售解禁 `share_float`、股权质押 `pledge_stat`、机构调研 `stk_surv` 由 `src/services/stock_event_service.py` 调用，存入 `stock_event` 表。每个交易日的资讯任务（`NEWS_DAILY_FETCH_TIME`）按公告日取一次全市场（约 7 次请求；第一次补最近 30 天，约 150 次），没有 Token 时跳过；某只股票本地没有近期数据时，`GET /api/v1/stocks/{code}/events` 和选股会按需单独补取这只股票（每类 1 次）。这些接口在 15000 积分账号上已采样确认可用；公告 `anns_d`、互动问答 `irm_qa_*`、研报 `research_report`、短讯 `news`、竞价 `stk_auction` 需要单独购买，项目不使用。
+
 **相关**：股票列表导出脚本见 [Tushare 股票列表指南](TUSHARE_STOCK_LIST_GUIDE.md)。
 
 ### 2.2 必盈 API

@@ -25,6 +25,8 @@ from api.v1.schemas.stocks import (
     ExtractItem,
     IntradayBar,
     KLineData,
+    StockEventItem,
+    StockEventsResponse,
     StockHistoryResponse,
     StockIntradayResponse,
     StockProfileResponse,
@@ -621,6 +623,57 @@ INTRADAY_UNAVAILABLE_MESSAGES = {
     "no_bars": "数据源没有这一天的分时数据，可能当天停牌或不是交易日。",
     "source_failed": "分钟线数据源请求失败，请稍后重试；多次失败请检查数据源配置和网络。",
 }
+
+
+@router.get(
+    "/{stock_code}/events",
+    response_model=StockEventsResponse,
+    responses={
+        200: {"description": "公司事件和风险"},
+        400: {"description": "不是 A 股个股代码（指数代码、港美股等）", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取个股公司事件（业绩预告、增减持、回购、解禁、质押、调研）",
+    description=(
+        "返回最近 days 天的公司事件（解禁额外包含未来 30 天），以及按固定规则得出的风险："
+        "未来 30 天解禁占流通股 1% 以上、近 30 天单个股东减持占总股本 0.5% 以上、股权质押比例 50% 以上、"
+        "近 60 天业绩预告为预减 / 首亏 / 续亏 / 略减。数据来自 Tushare，每天全市场入库一次；"
+        "本地没有近期数据时会按需补取这只股票。kinds 用逗号分隔，可选 forecast, express, holder_trade, "
+        "repurchase, share_float, pledge, survey。"
+    ),
+)
+def get_stock_events(
+    stock_code: str,
+    kinds: Optional[str] = Query(None, description="逗号分隔的事件类型，留空返回全部"),
+    days: int = Query(30, ge=1, le=120, description="回看天数"),
+) -> StockEventsResponse:
+    from src.services.stock_code_guard import require_stock_code
+    from src.services.stock_event_service import KIND_LABELS, StockEventService
+
+    try:
+        code = require_stock_code(stock_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_stock_code", "message": str(exc)})
+    wanted = [k.strip() for k in (kinds or "").split(",") if k.strip()] or None
+    unknown = [k for k in (wanted or []) if k not in KIND_LABELS]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_kind", "message": f"未知事件类型：{', '.join(unknown)}"},
+        )
+    try:
+        result = StockEventService().events_for(code, kinds=wanted, days=days)
+    except Exception as e:
+        logger.error(f"获取公司事件失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取公司事件失败"})
+    return StockEventsResponse(
+        stock_code=code,
+        as_of=result["as_of"],
+        events=[StockEventItem(**{**event, "kind_label": KIND_LABELS[event["kind"]]})
+                for event in result["events"] if event["kind"] in KIND_LABELS],
+        risks=result["risks"],
+        fetch=result["fetch"],
+    )
 
 
 @router.get(
