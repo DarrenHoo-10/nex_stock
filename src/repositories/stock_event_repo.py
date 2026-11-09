@@ -63,10 +63,24 @@ class StockEventRepository:
             ).scalars().all()
             return [self._to_dict(row) for row in rows]
 
-    def latest_fetch_for_code(self, code: str) -> Optional[Any]:
+    def list_by_kind(self, kind: str, *, since: date, until: Optional[date] = None) -> List[Dict[str, Any]]:
+        """Events of one kind across all stocks (market-wide lists such as 重点监控名单)."""
+        conditions = [StockEvent.kind == kind, StockEvent.event_date >= since]
+        if until is not None:
+            conditions.append(StockEvent.event_date <= until)
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StockEvent).where(and_(*conditions)).order_by(desc(StockEvent.event_date), desc(StockEvent.id))
+            ).scalars().all()
+            return [self._to_dict(row) for row in rows]
+
+    def latest_fetch_for_code(self, code: str, *, kinds: Optional[Sequence[str]] = None) -> Optional[Any]:
+        conditions = [StockEvent.code == code]
+        if kinds:
+            conditions.append(StockEvent.kind.in_(list(kinds)))
         with self.db.get_session() as session:
             return session.execute(
-                select(StockEvent.fetched_at).where(StockEvent.code == code)
+                select(StockEvent.fetched_at).where(and_(*conditions))
                 .order_by(desc(StockEvent.fetched_at)).limit(1)
             ).scalar()
 

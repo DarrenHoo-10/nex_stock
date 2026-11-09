@@ -87,7 +87,7 @@
 | GET | `/plan/runs/{run_id}` | 指定运行详情：步骤（板块 / 选股 / 计划 / 换股 / 推送）、计数、失败项、飞书推送状态与预览 |
 | POST | `/plan/runs` | 手动运行，返回 202 与运行记录 |
 | GET | `/stocks/{code}/qa?days=30` | 个股已回复的投资者问答：深市来自巨潮互动易、沪市来自上证e互动（`platform`、`coverage`、`items: [{question, answer, asked_at, answered_at, platform}]`）；北交所返回空列表并说明原因 |
-| GET | `/stocks/{code}/events?kinds=&days=30` | 个股公司事件（业绩预告 / 快报、增减持、回购、解禁、质押、调研、券商研报 `research`、龙虎榜 `dragon_tiger`）与按固定规则算出的风险；只接受 A 股个股代码，指数代码返回 400 |
+| GET | `/stocks/{code}/events?kinds=&days=30` | 个股公司事件（业绩预告 / 快报、增减持、回购、解禁、质押、调研、券商研报 `research`、龙虎榜 `dragon_tiger`、开盘啦打板 `limit_board`、热股榜 `hot_rank`、东方财富重点监控名单 `risk_watch`、严重异常波动 `price_anomaly`）与按固定规则算出的风险；只接受 A 股个股代码，指数代码返回 400 |
 | GET | `/stocks/{code}/research?days=90` | 券商研报（Tushare `report_rc`）：每份报告的机构、评级、目标价、各年度 EPS / 净利润预测，以及每家机构只算最新一份的一致预期（`summary.consensus`，EPS 元、净利润亿元）和评级分布 |
 | GET | `/stocks/{code}/capital?days=20` | 资金面：两融（`margin`）、新浪主力资金（`fund_flow`）、近 30 天龙虎榜（`dragon_tiger`，含席位、机构和沪深股通净额）、全市场北向 / 南向（`northbound`，口径见 `note`）；每部分独立，某一来源失败时该部分为 `{status: failed, error}` |
 

@@ -1,0 +1,138 @@
+[
+ {
+  "MARKET": "B",
+  "STKNAME": "*ST康乐",
+  "VALIDATESTARTDATE": "2026-11-09",
+  "VALIDATEENDDATE": "2026-11-13",
+  "STKCODE": "920575"
+ },
+ {
+  "MARKET": "B",
+  "STKNAME": "*ST同辉",
+  "VALIDATESTARTDATE": "2026-11-09",
+  "VALIDATEENDDATE": "2026-11-13",
+  "STKCODE": "920090"
+ },
+ {
+  "MARKET": "B",
+  "STKNAME": "*ST田野",
+  "VALIDATESTARTDATE": "2026-11-09",
+  "VALIDATEENDDATE": "2026-11-13",
+  "STKCODE": "920023"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "纳斯达克",
+  "VALIDATESTARTDATE": "2026-11-09",
+  "VALIDATEENDDATE": "2026-11-20",
+  "STKCODE": "513300",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/2506"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "全球芯片",
+  "VALIDATESTARTDATE": "2026-11-09",
+  "VALIDATEENDDATE": "2026-11-20",
+  "STKCODE": "501225",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/3314"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "中韩芯片",
+  "VALIDATESTARTDATE": "2026-11-05",
+  "VALIDATEENDDATE": "2026-11-18",
+  "STKCODE": "513310",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/3001"
+ },
+ {
+  "MARKET": "0",
+  "STKNAME": "纳指科技",
+  "VALIDATESTARTDATE": "2026-11-04",
+  "VALIDATEENDDATE": "2026-11-17",
+  "STKCODE": "159509",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/3349"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "美国50",
+  "VALIDATESTARTDATE": "2026-11-03",
+  "VALIDATEENDDATE": "2026-11-16",
+  "STKCODE": "513850",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/3627"
+ },
+ {
+  "MARKET": "0",
+  "STKNAME": "海洋王",
+  "VALIDATESTARTDATE": "2026-11-02",
+  "VALIDATEENDDATE": "2026-11-13",
+  "STKCODE": "002724"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "天普股份",
+  "VALIDATESTARTDATE": "2026-10-30",
+  "VALIDATEENDDATE": "2026-11-12",
+  "STKCODE": "605255",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/3265"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "*ST正平",
+  "VALIDATESTARTDATE": "2026-10-30",
+  "VALIDATEENDDATE": "2026-11-12",
+  "STKCODE": "603843"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "新华传媒",
+  "VALIDATESTARTDATE": "2026-10-30",
+  "VALIDATEENDDATE": "2026-11-12",
+  "STKCODE": "600825"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "标普500",
+  "VALIDATESTARTDATE": "2026-10-29",
+  "VALIDATEENDDATE": "2026-11-11",
+  "STKCODE": "513500",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/2483"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "纳指基金",
+  "VALIDATESTARTDATE": "2026-10-29",
+  "VALIDATEENDDATE": "2026-11-11",
+  "STKCODE": "513390",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/2527"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "纳指100",
+  "VALIDATESTARTDATE": "2026-10-29",
+  "VALIDATEENDDATE": "2026-11-11",
+  "STKCODE": "513110",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/3611"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "纳指ETF",
+  "VALIDATESTARTDATE": "2026-10-29",
+  "VALIDATEENDDATE": "2026-11-11",
+  "STKCODE": "513100",
+  "LINK_URL": "https://wap.18.cn/app/detail/818/3503"
+ },
+ {
+  "MARKET": "1",
+  "STKNAME": "纳指指数",
+  "VALIDATESTARTDATE": "2026-10-27",
+  "VALIDATEENDDATE": "2026-11-09",
+  "STKCODE": "513870"
+ },
+ {
+  "MARKET": "0",
+  "STKNAME": "*ST萃华",
+  "VALIDATESTARTDATE": "2026-10-23",
+  "VALIDATEENDDATE": "2026-11-12",
+  "STKCODE": "002731"
+ }
+]

@@ -38,6 +38,12 @@ class MarketSummary(BaseModel):
     limit_up_count: Optional[int] = Field(None, description="涨停家数")
     limit_down_count: Optional[int] = Field(None, description="跌停家数")
     turnover_yi: Optional[float] = Field(None, description="两市成交额（亿元）")
+    break_rate_pct: Optional[float] = Field(None, description="炸板率 %（触及涨停后未封住的比例）")
+    max_consecutive: Optional[int] = Field(None, description="最高连板数")
+    promotion_rate_pct: Optional[float] = Field(None, description="晋级率 %：上一交易日涨停的股票今天继续涨停的比例")
+    ladder: Optional[Dict[str, Any]] = Field(
+        None, description="连板梯队：counts 为各连板高度的涨停家数；promotion 为上一交易日各高度的家数（prev）与晋级家数（promoted）",
+    )
     broad_rally: bool = Field(False, description="普涨保护是否生效")
     note: Optional[str] = Field(None, description="补充说明")
 

@@ -1,0 +1,86 @@
+[
+ {
+  "ts_code": "002088.SZ",
+  "name": "鲁阳节能",
+  "lu_desc": "锂电池",
+  "theme": "锂电池、储能",
+  "status": "6天5板"
+ },
+ {
+  "ts_code": "000525.SZ",
+  "name": "红太阳",
+  "lu_desc": "农业",
+  "theme": "农药、农业",
+  "status": "首板"
+ },
+ {
+  "ts_code": "300237.SZ",
+  "name": "美晨科技",
+  "lu_desc": "ST摘帽",
+  "theme": "汽车零部件、环保",
+  "status": "首板"
+ },
+ {
+  "ts_code": "600156.SH",
+  "name": "华升股份",
+  "lu_desc": "算力",
+  "theme": "算力、并购重组",
+  "status": "首板"
+ },
+ {
+  "ts_code": "002973.SZ",
+  "name": "侨银股份",
+  "lu_desc": "算力",
+  "theme": "算力、机器人概念",
+  "status": "首板"
+ },
+ {
+  "ts_code": "002929.SZ",
+  "name": "润建股份",
+  "lu_desc": "算力",
+  "theme": "算力、绿色电力",
+  "status": "5天3板"
+ },
+ {
+  "ts_code": "300686.SZ",
+  "name": "智动力",
+  "lu_desc": "端侧AI",
+  "theme": "端侧AI、折叠屏",
+  "status": "首板"
+ },
+ {
+  "ts_code": "600540.SH",
+  "name": "新赛股份",
+  "lu_desc": "农业",
+  "theme": "棉花、农业",
+  "status": "首板"
+ },
+ {
+  "ts_code": "002712.SZ",
+  "name": "思美传媒",
+  "lu_desc": "AI应用",
+  "theme": "AI视频、AI应用",
+  "status": "首板"
+ },
+ {
+  "ts_code": "001308.SZ",
+  "name": "康冠科技",
+  "lu_desc": "端侧AI",
+  "theme": "AI眼镜、端侧AI",
+  "status": "首板"
+ },
+ {
+  "ts_code": "002388.SZ",
+  "name": "新亚制程",
+  "lu_desc": "芯片",
+  "theme": "电子气体、化工",
+  "status": "3连板"
+ },
+ {
+  "ts_code": "601595.SH",
+  "name": "上海电影",
+  "lu_desc": "AI应用",
+  "theme": "AI视频、AI应用",
+  "status": "首板"
+ }
+]

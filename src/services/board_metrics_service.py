@@ -59,9 +59,53 @@ HISTORY_SESSIONS = 20
 NO_LIMIT_SESSIONS = {"main": 5, "gem": 5, "star": 5, "bse": 1}
 DEFAULT_NO_LIMIT_SESSIONS = 5
 UP_STATES = ("up", "one_word_up")
+LADDER_MIN_PREV = 5  # promotion rate needs at least this many limit-ups on the previous session
 DOWN_STATES = ("down", "one_word_down")
 BOARD_TYPES = ("industry", "concept")
 _CN_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def limit_ladder(
+    stocks: Sequence[Dict[str, Any]], previous: Optional[Sequence[Dict[str, Any]]],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """连板梯队 and 晋级率 of one session from ``market_stock_daily`` rows (non-ST, like ``limit_list_d``).
+
+    * ``max_consecutive`` — the highest ``consecutive_up`` among today's limit-ups;
+    * ``promotion_rate`` — % of the previous session's limit-ups that closed at limit-up again today
+      (None below ``LADDER_MIN_PREV`` of them);
+    * ``ladder`` (JSON) — ``counts``: limit-ups per streak height today; ``promotion``: per previous height,
+      ``prev`` limit-ups and how many were ``promoted``.
+    """
+    values: Dict[str, Any] = {"max_consecutive": None, "promotion_rate": None, "ladder": None}
+    if not any(r.get("limit_state") is not None for r in stocks):
+        return values, ["ladder_state_missing"]
+    flags: List[str] = []
+    today_up = {r["code"] for r in stocks if r.get("limit_state") in UP_STATES and not r.get("is_st")}
+    streaks = [int(r["consecutive_up"]) for r in stocks
+               if r["code"] in today_up and r.get("consecutive_up")]
+    if today_up and not streaks:
+        flags.append("consecutive_missing")
+    counts = Counter(streaks)
+    ladder: Dict[str, Any] = {"counts": {str(height): counts[height] for height in sorted(counts)}}
+    if streaks:
+        values["max_consecutive"] = max(streaks)
+    if previous is None:
+        flags.append("ladder_previous_missing")
+    else:
+        prev_up = [r for r in previous if r.get("limit_state") in UP_STATES and not r.get("is_st")]
+        by_height: Dict[int, Dict[str, int]] = {}
+        for row in prev_up:
+            entry = by_height.setdefault(int(row.get("consecutive_up") or 1), {"prev": 0, "promoted": 0})
+            entry["prev"] += 1
+            entry["promoted"] += 1 if row["code"] in today_up else 0
+        ladder["promotion"] = {str(height): by_height[height] for height in sorted(by_height)}
+        promoted = sum(entry["promoted"] for entry in by_height.values())
+        if len(prev_up) >= LADDER_MIN_PREV:
+            values["promotion_rate"] = promoted / len(prev_up) * 100.0
+        else:
+            flags.append("promotion_sample_low")
+    values["ladder"] = dumps_json(ladder)
+    return values, flags
 
 
 @dataclass
@@ -173,6 +217,11 @@ class BoardMetricsService:
 
         states = self._classify_stocks(day, stocks, axis, ingested_set)
         market_values, market_flags, market_quality = self._market_metrics(day, stocks, states, th, benchmark_ret)
+        previous = axis[1] if len(axis) > 1 and axis[1] in ingested_set else None
+        ladder_values, ladder_flags = limit_ladder(stocks, self.repo.load_stock_day(previous) if previous else None)
+        market_values.update(ladder_values)
+        # Kept apart from the market flags: a missing previous session is normal and must not degrade the run.
+        market_quality["ladder_flags"] = ladder_flags
         report.market_flags = market_flags
 
         members_map = self.repo.get_all_members_on(day)

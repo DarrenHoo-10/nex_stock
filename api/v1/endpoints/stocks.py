@@ -644,7 +644,9 @@ INTRADAY_UNAVAILABLE_MESSAGES = {
         "近 60 天业绩预告为预减 / 首亏 / 续亏 / 略减。数据来自 Tushare，每天全市场入库一次；"
         "本地没有近期数据时会按需补取这只股票（龙虎榜只能按交易日全市场取，只来自每日入库）。kinds 用逗号分隔，"
         "可选 forecast, express, holder_trade, repurchase, share_float, pledge, survey, research（券商研报）, "
-        "dragon_tiger（龙虎榜）。"
+        "dragon_tiger（龙虎榜）, limit_board（开盘啦涨停 / 炸板 / 跌停）, hot_rank（同花顺热股榜 / 东方财富人气榜，"
+        "含同花顺 AI 摘要）, risk_watch（东方财富重点监控名单）, price_anomaly（东方财富严重异常波动）。"
+        "后两类每天从东方财富取一次，在重点监控名单内的股票选股会直接排除。"
     ),
 )
 def get_stock_events(

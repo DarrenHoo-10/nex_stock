@@ -220,19 +220,24 @@ class StockProfileResponse(BaseModel):
 
 
 class StockEventItem(BaseModel):
-    """一条公司事件（业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研、券商研报、龙虎榜）。"""
+    """一条公司事件（业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研、券商研报、龙虎榜、
+    打板、热股榜、东方财富风险名单）。"""
 
     kind: Literal[
         "forecast", "express", "holder_trade", "repurchase", "share_float", "pledge", "survey", "research",
-        "dragon_tiger",
+        "dragon_tiger", "limit_board", "hot_rank", "risk_watch", "price_anomaly",
     ] = Field(..., description="事件类型")
     kind_label: str = Field(..., description="事件类型中文名")
     event_date: str = Field(
-        ..., description="公告日；解禁为解禁日（可能在未来）；质押为统计截止日；研报为报告日；龙虎榜为交易日"
+        ...,
+        description=(
+            "公告日；解禁为解禁日（可能在未来）；质押为统计截止日；研报为报告日；龙虎榜、打板、热股榜、异常波动为交易日；"
+            "重点监控名单为名单开始日（结束日在 payload.end）"
+        ),
     )
     title: str = Field(..., description="一句话中文摘要")
     payload: Dict[str, object] = Field(default_factory=dict, description="Tushare 原始字段")
-    source: str = Field(..., description="数据来源（tushare）")
+    source: str = Field(..., description="数据来源（tushare / eastmoney）")
 
 
 class StockEventsResponse(BaseModel):

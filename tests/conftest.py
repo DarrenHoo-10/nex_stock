@@ -282,6 +282,8 @@ def _no_live_company_event_fetch(monkeypatch):
     except Exception:  # noqa: BLE001
         return
     monkeypatch.setattr(stock_event_service.StockEventService, "_needs_code_fetch", lambda self, code: False)
+    # Screening reads the stored 重点监控名单; tests that need it restore the real method.
+    monkeypatch.setattr(stock_event_service.StockEventService, "watched_codes", lambda self, as_of=None: {})
 
 
 class _OfflineHttpForTests:
@@ -295,7 +297,9 @@ class _OfflineHttpForTests:
 def _offline_direct_http_sources(monkeypatch):
     """巨潮公告、互动易 / 上证e互动、深交所公告、新浪资金流 are direct HTTP sources: offline unless a test stubs them."""
     for module_name in ("src.services.news_cninfo_source", "src.services.sources.investor_qa",
-                        "src.services.sources.szse_disclosure", "src.services.sources.sina_fund_flow"):
+                        "src.services.sources.szse_disclosure", "src.services.sources.sina_fund_flow",
+                        "src.services.sources.eastmoney_risk", "src.services.sources.cls_telegraph",
+                        "src.services.sources.wscn_lives"):
         try:
             module = __import__(module_name, fromlist=["_session"])
         except Exception:  # noqa: BLE001

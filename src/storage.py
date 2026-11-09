@@ -1058,6 +1058,12 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+_MARKET_DAILY_LADDER_COLUMN_SQL: Dict[str, str] = {
+    "max_consecutive": "INTEGER",
+    "promotion_rate": "FLOAT",
+    "ladder": "TEXT",
+}
+
 _INTELLIGENCE_ITEM_NEWS_COLUMN_SQL: Dict[str, str] = {
     "item_kind": "VARCHAR(32)",
     "news_scope": "VARCHAR(16)",
@@ -1611,6 +1617,10 @@ class MarketDaily(Base):
     touched_up_count = Column(Integer)
     break_rate = Column(Float)
     all_a_ret = Column(Float)
+    # 连板梯队：最高连板数、昨日涨停今日继续涨停的比例（%）、各连板高度家数与晋级（JSON）
+    max_consecutive = Column(Integer)
+    promotion_rate = Column(Float)
+    ladder = Column(Text)
     quality = Column(Text)  # JSON：缺失或延迟的数据项
 
 
@@ -1937,6 +1947,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_stock_daily_canonical_id()
             self._ensure_intelligence_item_scope_values()
             self._ensure_intelligence_item_news_columns()
+            self._ensure_market_daily_ladder_columns()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
             self._ensure_chat_session_schema()
@@ -2788,6 +2799,31 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                         )
                         if delay > 0:
                             time.sleep(delay)
+                        continue
+                    raise
+
+    def _ensure_market_daily_ladder_columns(self) -> None:
+        """Additive migration: nullable 连板梯队 columns on ``market_daily``."""
+        table = MarketDaily.__tablename__
+        try:
+            existing = {col["name"] for col in inspect(self._engine).get_columns(table)}
+        except Exception as exc:
+            logger.warning("market_daily 连板列检查失败，已跳过: %s", exc)
+            return
+        for column, column_type in _MARKET_DAILY_LADDER_COLUMN_SQL.items():
+            if column in existing:
+                continue
+            for attempt in range(self._sqlite_write_retry_max + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_engine and self._is_sqlite_duplicate_column_error(exc, column):
+                        break
+                    if (self._is_sqlite_engine and self._is_sqlite_locked_error(exc)
+                            and attempt < self._sqlite_write_retry_max):
+                        time.sleep(self._sqlite_write_retry_base_delay * (2 ** attempt))
                         continue
                     raise
 

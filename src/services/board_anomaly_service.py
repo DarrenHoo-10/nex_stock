@@ -288,6 +288,7 @@ class BoardAnomalyService:
         summary: Dict[str, Any] = {
             "index_name": "中证全指", "index_change_pct": None, "up_count": None, "down_count": None,
             "limit_up_count": None, "limit_down_count": None, "turnover_yi": None, "broad_rally": False, "note": None,
+            "break_rate_pct": None, "max_consecutive": None, "promotion_rate_pct": None, "ladder": None,
         }
         if run is None:
             return summary
@@ -302,6 +303,10 @@ class BoardAnomalyService:
             limit_up_count=market.get("limit_up_count"),
             limit_down_count=market.get("limit_down_count"),
             turnover_yi=_round(None if market.get("total_amount") is None else market["total_amount"] / 1e8, 1),
+            break_rate_pct=_round(market.get("break_rate"), 1),
+            max_consecutive=market.get("max_consecutive"),
+            promotion_rate_pct=_round(market.get("promotion_rate"), 1),
+            ladder=market.get("ladder"),
         )
         values = (run.get("thresholds_snapshot") or {}).get("values") or load_current_thresholds()[0]
         all_a = market.get("all_a_ret")

@@ -201,6 +201,8 @@ Tushare 的 `irm_qa_sh` / `irm_qa_sz` 没有权限，用两个官方平台直连
 | 华尔街见闻（§5.4） | `GET https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=a-stock-channel&limit=100&cursor=` | 新的快讯来源，和东方财富不在同一风控面；`score=2` 是重要快讯 |
 | Tushare `major_news`（已开通） | 按时间段取长篇新闻（来源含财联社、华尔街见闻、同花顺、新浪等） | 长篇新闻，给助手和板块判定作背景；不进 3 天快讯池，单独保留 7 天 |
 
+**第 5 期实现情况**：三者都已接入。与原计划的差别：`major_news` 只取标题和链接，按公告类的保留期（`NEWS_COMPANY_RETENTION_DAYS`）清理，没有单独设 7 天；华尔街见闻排在备用快讯顺序最后，不改变新浪 / 富途 / 同花顺原有的顺序。
+
 接入资讯库：财联社直连作为 `cls` 来源的第二实现（同一个 `source_key`，先 AkShare 后直连，记录用的是哪个）；华尔街见闻作为新的 `wscn` 来源加入备用快讯顺序；`major_news` 作为新 `item_kind="article"`。三者都走现有去重（同源 URL、跨源近似标题）。
 
 ## 8. 打板和情绪（P1）
@@ -214,6 +216,8 @@ Tushare 的 `irm_qa_sh` / `irm_qa_sz` 没有权限，用两个官方平台直连
 | 连板梯队、晋级率、炸板率 | 本地计算：`limit_list_d` + `kpl_list` 的连板状态 | 写进 `market_daily`，板块页和盘前推送显示 |
 
 同花顺 `getharden` 涨停原因（§3.1）和东方财富涨停四池（§8.1）不接，Tushare 已覆盖；只在 Tushare 打板数据缺失时作为应急，暂不实现。
+
+**第 5 期实现情况**：`kpl_list`、`ths_hot` + `dc_hot` 存为公司事件 `limit_board`、`hot_rank`（每日按交易日入库，`/stocks/{code}/events` 和选股候选的「事件」可读）；两个东方财富风险名单存为 `risk_watch`、`price_anomaly`，重点监控名单内的股票选股直接排除，两者都进次日计划和选股的风险。连板梯队和晋级率在板块指标计算时用 `market_stock_daily` 的 `consecutive_up` 本地算（不需要新请求），写进 `market_daily` 新列 `max_consecutive`、`promotion_rate`、`ladder`，通过板块页接口的 `market` 返回（`break_rate_pct`、`max_consecutive`、`promotion_rate_pct`、`ladder`）。还没做：涨停原因题材进入板块判定的依据、板块页和盘前推送的界面展示（接口字段已就绪）。
 
 ## 9. 资金面（P1）
 
@@ -273,7 +277,7 @@ a-stock-data 自身文档有几处前后矛盾，采纳时以实测为准：东�
 | 2 | 公司事件（第 3 节）：`stock_event` 表、Tushare 主来源、每日任务、`/stocks/{code}/events`、选股和次日计划读取 | `src/services/stock_event_service.py`、`news_pool_service`、`screening_service`、`daily_plan_engine` | 每个 Tushare 接口一次采样存 fixture；选股「事件」不再依赖网页搜索的回归 |
 | 3 | 投资者问答（第 5 节）、深交所公告第三来源（第 4 节） | `src/services/sources/cninfo_irm.py`、`sse_e_interaction.py`、`szse_disclosure.py` | 三个接口各一次采样；沪深分流、相对时间换算、失败和空结果区分 |
 | 4（已完成） | 券商评级和一致预期（第 6 节）、资金面（第 9 节） | `stock_event` 新增 `research` / `dragon_tiger`、`/stocks/{code}/research`、`/stocks/{code}/capital`、`capital_service`、新浪资金流备用 | `top_list` / `top_inst` / `report_rc` / `margin_detail` / `moneyflow_hsgt` / 新浪各一次采样；`get_capital_flow` 回归 |
-| 5 | 打板和情绪（第 8 节）、快讯备用源（第 7 节） | `kpl_list` / 热榜入库、风险名单、财联社直连、华尔街见闻、`major_news` | 签名算法单测；风险名单排除选股的回归 |
+| 5（已完成） | 打板和情绪（第 8 节）、快讯备用源（第 7 节） | `kpl_list` / 热榜入库、风险名单、财联社直连、华尔街见闻、`major_news` | 签名算法单测；风险名单排除选股的回归 |
 | 6 | 行情稳健性（第 10 节）、宏观和指数（第 11 节） | 通达信盘后包、复权统一、腾讯多入口、官方宏观 / 指数 | 盘后包解析用一次采样的 zip；复权前后均线一致性测试 |
 
 每期都要：新配置项同步 `.env.example` 和文档，并登记到数据状态对应来源的 `config_keys`（设置 →「数据状态」可直接配置）；新来源在 `data_capability_service` 里有一行状态；`docs/data-sources.md` 加来源说明；`docs/CHANGELOG.md` 加一行。
