@@ -288,7 +288,8 @@ def test_announcements_for_a_small_watchlist_are_fetched_per_code_with_a_pause_b
     assert ann["mode"] == "by_code" and ann["codes"] == 3 and ann["api_calls"] == 6 and ann["inserted"] == 3
     assert ann["sources"]["cninfo"]["status"] == "failed" and ann["sources"]["notice"]["status"] == "ok"
     assert stub.calls.count("notice_code:600519") == 1 and not any(c.startswith("notice_day") for c in stub.calls)
-    assert len(sleeps) == 2 and all(s > 0 for s in sleeps)  # paced: no burst against the data centre
+    # paced: 2 pauses between the 3 announcement codes, 2 more between the 3 Q&A codes
+    assert len(sleeps) == 4 and all(s > 0 for s in sleeps)
     assert stub.notice_calls[0] == {"security": "300750", "begin": "2026-11-08", "end": "2026-11-09"}  # sorted, yesterday..today
     rows = [r for r in all_items(db) if r.item_kind == "announcement"]
     assert sorted(r.scope_value for r in rows) == ["300750", "600519", "601318"]

@@ -44,6 +44,7 @@ SOURCE_TYPE = "akshare"
 KIND_FLASH = "flash"
 KIND_ANNOUNCEMENT = "announcement"
 KIND_MORNING_BRIEF = "morning_brief"
+KIND_QA = "qa"  # investor Q&A (互动易 / 上证e互动), src/services/sources/investor_qa.py
 
 SOURCE_CLS = "cls"
 SOURCE_EM = "em"
@@ -51,6 +52,9 @@ SOURCE_SINA = "sina"
 SOURCE_FUTU = "futu"
 SOURCE_THS = "ths"
 SOURCE_NOTICE = "notice"
+SOURCE_SZSE = "szse"  # 深交所公告, third announcement source (src/services/sources/szse_disclosure.py)
+SOURCE_IRM = "irm"  # 巨潮互动易
+SOURCE_SSE_E = "sse_e"  # 上证e互动
 SOURCE_CNINFO = "cninfo"  # 巨潮资讯公告, fetched in news_cninfo_source (direct HTTP, not AKShare)
 SOURCE_CJZC = "cjzc"
 
@@ -65,6 +69,9 @@ SOURCE_LABELS: Dict[str, str] = {
     SOURCE_THS: "同花顺快讯",
     SOURCE_CNINFO: "巨潮资讯公告",
     SOURCE_NOTICE: "东方财富公告",
+    SOURCE_SZSE: "深交所公告",
+    SOURCE_IRM: "巨潮互动易",
+    SOURCE_SSE_E: "上证e互动",
     SOURCE_CJZC: "东方财富财经早餐",
 }
 

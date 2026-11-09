@@ -240,3 +240,24 @@ class StockEventsResponse(BaseModel):
     events: List[StockEventItem]
     risks: List[str] = Field(default_factory=list, description="按固定规则得出的风险：近期解禁、大股东减持、高质押、业绩预告转差")
     fetch: Dict[str, object] = Field(default_factory=dict, description="本次按需从 Tushare 补取时各类事件的结果（没有补取时为空）")
+
+
+class StockQaItem(BaseModel):
+    """一条已回复的投资者问答。"""
+
+    question: str
+    answer: str
+    asked_at: Optional[str] = Field(None, description="提问时间（北京时间）")
+    answered_at: Optional[str] = Field(None, description="回复时间（北京时间）")
+    platform: Literal["irm", "sse_e"] = Field(..., description="irm 巨潮互动易（深市）/ sse_e 上证e互动（沪市）")
+    platform_label: str
+
+
+class StockQaResponse(BaseModel):
+    """个股投资者问答（只含已回复）。"""
+
+    stock_code: str
+    platform: Optional[Literal["irm", "sse_e"]] = Field(None, description="该股所在的问答平台；北交所为空")
+    coverage: str = Field(..., description="覆盖说明")
+    items: List[StockQaItem]
+    fetch: Dict[str, object] = Field(default_factory=dict, description="本次是否从平台刷新及结果")

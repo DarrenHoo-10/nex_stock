@@ -5,7 +5,7 @@ Row shapes follow the Tushare samples taken on 2026-11-09 (stk_holdertrade / rep
 600089 / 002773) and the documented default fields for the others.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any, Dict, List
 
 import pandas as pd

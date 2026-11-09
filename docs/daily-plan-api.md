@@ -86,6 +86,7 @@
 | GET | `/plan/runs/latest` | `{"run": PlanRun \| null}` |
 | GET | `/plan/runs/{run_id}` | 指定运行详情：步骤（板块 / 选股 / 计划 / 换股 / 推送）、计数、失败项、飞书推送状态与预览 |
 | POST | `/plan/runs` | 手动运行，返回 202 与运行记录 |
+| GET | `/stocks/{code}/qa?days=30` | 个股已回复的投资者问答：深市来自巨潮互动易、沪市来自上证e互动（`platform`、`coverage`、`items: [{question, answer, asked_at, answered_at, platform}]`）；北交所返回空列表并说明原因 |
 | GET | `/stocks/{code}/events?kinds=&days=30` | 个股公司事件（业绩预告 / 快报、增减持、回购、解禁、质押、调研）与按固定规则算出的风险；只接受 A 股个股代码，指数代码返回 400 |
 
 字段的完整定义见 `api/v1/schemas/boards.py` 与 `api/v1/schemas/daily_plan.py`，Web 侧类型见 `apps/dsa-web/src/types/boards.ts` 与 `apps/dsa-web/src/types/dailyPlan.ts`。
