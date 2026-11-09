@@ -134,6 +134,7 @@ class NewsPoolService:
         is_trading_day: Callable[[date], bool] = _is_cn_trading_day,
         holdings_provider: Callable[[], Sequence[Tuple[str, str]]] = _default_holdings,
         sleep_fn: Callable[[float], None] = time.sleep,
+        events_runner: Optional[Callable[[], Dict[str, Any]]] = None,
     ) -> None:
         self.repo = repo or IntelligenceRepository()
         if config is None:
@@ -144,6 +145,7 @@ class NewsPoolService:
         self._is_trading_day = is_trading_day
         self._holdings_provider = holdings_provider
         self._sleep = sleep_fn
+        self._events_runner = events_runner
 
     # ------------------------------------------------------------------
     # cadence
@@ -358,6 +360,8 @@ class NewsPoolService:
                 "day": day.isoformat(),
                 "announcements": self._fetch_announcements(day, now),
                 "morning_brief": self._fetch_morning_brief(day, now),
+                # Company events of all stocks (Tushare); separate from the news status below.
+                "events": self._fetch_events(),
             }
             statuses = {part["status"] for part in (result["announcements"], result["morning_brief"])}
             result["status"] = (
@@ -367,6 +371,21 @@ class NewsPoolService:
             return result
         finally:
             _DAILY_LOCK.release()
+
+    def _fetch_events(self) -> Dict[str, Any]:
+        """Daily whole-market company events (src/services/stock_event_service.py); needs a Tushare token."""
+        runner = self._events_runner
+        if runner is None:
+            if not str(getattr(self.config, "tushare_token", "") or "").strip():
+                return {"status": "skipped", "reason": "tushare_not_configured"}
+            from src.services.stock_event_service import StockEventService
+
+            runner = StockEventService().run_daily
+        try:
+            return runner()
+        except Exception as exc:  # noqa: BLE001 - events must not break the news job
+            logger.warning("[News] 公司事件取数失败: %s", exc)
+            return {"status": "failed", "error": _sanitize(exc)}
 
     def _announcement_mode(self, code_count: int) -> str:
         mode = str(getattr(self.config, "news_announcement_mode", "auto") or "auto")

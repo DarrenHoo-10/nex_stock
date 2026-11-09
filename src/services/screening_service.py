@@ -1381,6 +1381,7 @@ class ScreeningService:
             "正在补充入选股票的新闻与事件",
         )
         selected, dsa_enrichment = _enrich_candidates_with_dsa(selected, candidate_context_cache=candidate_context_cache)
+        selected = _attach_event_risks(selected)
         selected = [
             _attach_candidate_explanations(
                 candidate,
@@ -3656,14 +3657,79 @@ def search_dsa_stock_news(stock_code: str, stock_name: str = "", max_results: in
 
 
 def search_dsa_stock_events(stock_code: str, stock_name: str = "", max_results: int = 3) -> Dict[str, Any]:
-    """Earnings, reduction and announcement context: stored announcements first, then event search."""
-    return _search_candidate_evidence(
+    """Earnings, reduction and announcement context.
+
+    Structured company events (``stock_event``: 解禁、增减持、业绩预告 …) first, then stored
+    announcements, then event search for what is still missing.
+    """
+    structured = _structured_stock_events(stock_code, limit=max(0, int(max_results)))
+    if len(structured) >= max_results:
+        return {"query": "", "provider": "stock_event", "success": True, "error": None,
+                "results": structured[:max_results]}
+    rest = _search_candidate_evidence(
         stock_code,
         stock_name,
-        max_results=max_results,
+        max_results=max_results - len(structured),
         pool_kinds=("announcement",),
         web_search=lambda service, code, name, _limit: service.search_stock_events(code, name),
     )
+    if not structured:
+        return rest
+    providers = "+".join(p for p in ("stock_event", rest.get("provider")) if p)
+    return dict(rest, results=structured + list(rest.get("results") or []), success=True, error=None,
+                provider=providers)
+
+
+# Risk-relevant kinds first: they matter most to a buy decision.
+_STRUCTURED_EVENT_ORDER = ("share_float", "holder_trade", "forecast", "express", "pledge", "repurchase", "survey")
+
+
+def _structured_stock_events(stock_code: str, *, limit: int) -> List[Dict[str, Any]]:
+    """Company events of one candidate as evidence items (best effort; empty when unavailable)."""
+    code = _env_text(stock_code)
+    if limit <= 0 or not re.fullmatch(r"\d{6}", code):
+        return []
+    try:
+        from src.services.stock_event_service import KIND_LABELS, StockEventService
+
+        events = StockEventService().events_for(code, days=60)["events"]
+    except Exception as exc:  # noqa: BLE001 - structured events are an add-on
+        logger.debug("company events unavailable for %s: %s", code, exc)
+        return []
+    order = {kind: index for index, kind in enumerate(_STRUCTURED_EVENT_ORDER)}
+    events = sorted(events, key=lambda e: (order.get(e["kind"], 99), str(e["event_date"])), reverse=False)
+    items = []
+    for event in events[:limit]:
+        items.append({
+            "title": f"{KIND_LABELS.get(event['kind'], event['kind'])}：{event['title']}",
+            "snippet": event["title"],
+            "url": "",
+            "source": "Tushare 公司事件",
+            "published_date": event["event_date"],
+            "retrieved_at": event.get("fetched_at"),
+        })
+    return items
+
+
+def _attach_event_risks(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fixed-rule company-event risks (unlocks, holder sales, pledges, bad forecasts) on every candidate."""
+    try:
+        from src.services.stock_event_service import StockEventService
+
+        service = StockEventService()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("company event risks unavailable: %s", exc)
+        return candidates
+    for candidate in candidates:
+        code = _env_text(candidate.get("code"))
+        if not re.fullmatch(r"\d{6}", code):
+            continue
+        notes = service.risk_notes(code)
+        if notes:
+            candidate["event_risks"] = notes
+            existing = candidate.get("risk_flags") if isinstance(candidate.get("risk_flags"), list) else []
+            candidate["risk_flags"] = list(dict.fromkeys([*existing, *notes]))
+    return candidates
 
 
 def _search_candidate_evidence(

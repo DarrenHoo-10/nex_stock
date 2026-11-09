@@ -1738,6 +1738,46 @@ class BoardRecommendation(Base):
     created_at = Column(DateTime, default=utc_naive_now, nullable=False)
 
 
+# === 公司事件（docs/design/a-stock-data-adoption.md 第 3 节，src/services/stock_event_service.py）===
+
+class StockEvent(Base):
+    """One company event (业绩预告 / 快报、增减持、回购、解禁、质押、机构调研) of one A-share."""
+
+    __tablename__ = 'stock_event'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, index=True)
+    kind = Column(String(24), nullable=False, index=True)
+    # 公告日；解禁为解禁日（可能是未来日期）；质押为统计截止日
+    event_date = Column(Date, nullable=False, index=True)
+    title = Column(String(300), nullable=False)
+    payload = Column(Text)  # original fields (JSON)
+    payload_hash = Column(String(40), nullable=False)
+    source = Column(String(16), nullable=False, default='tushare')
+    fetched_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('code', 'kind', 'event_date', 'payload_hash', name='uix_stock_event_identity'),
+        Index('ix_stock_event_code_kind_date', 'code', 'kind', 'event_date'),
+    )
+
+
+class StockEventIngest(Base):
+    """Which announcement days of which event kind have been stored for the whole market."""
+
+    __tablename__ = 'stock_event_ingest'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String(24), nullable=False)
+    ann_date = Column(Date, nullable=False)
+    rows = Column(Integer, nullable=False, default=0)
+    status = Column(String(16), nullable=False)  # ok / failed
+    error = Column(String(500))
+    fetched_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (UniqueConstraint('kind', 'ann_date', name='uix_stock_event_ingest_day'),)
+
+
 # === 次日计划（docs/daily-plan-api.md，src/services/daily_plan_service.py）===
 
 class DailyPlanAccount(Base):

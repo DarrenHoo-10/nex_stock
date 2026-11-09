@@ -86,8 +86,20 @@
 | GET | `/plan/runs/latest` | `{"run": PlanRun \| null}` |
 | GET | `/plan/runs/{run_id}` | 指定运行详情：步骤（板块 / 选股 / 计划 / 换股 / 推送）、计数、失败项、飞书推送状态与预览 |
 | POST | `/plan/runs` | 手动运行，返回 202 与运行记录 |
+| GET | `/stocks/{code}/events?kinds=&days=30` | 个股公司事件（业绩预告 / 快报、增减持、回购、解禁、质押、调研）与按固定规则算出的风险；只接受 A 股个股代码，指数代码返回 400 |
 
 字段的完整定义见 `api/v1/schemas/boards.py` 与 `api/v1/schemas/daily_plan.py`，Web 侧类型见 `apps/dsa-web/src/types/boards.ts` 与 `apps/dsa-web/src/types/dailyPlan.ts`。
+
+### 公司事件与计划风险
+
+`src/services/stock_event_service.py` 每天把全市场的公司事件存进 `stock_event`（Tushare，见 [数据源说明](data-sources.md) 2.1）。生成次日计划时，每只股票按固定规则读出风险，写进计划的 `risks`，同时作为「公司事件」一节写进给模型的提示词：
+
+- 未来 30 天解禁占流通股 1% 以上；
+- 近 30 天单个股东减持占总股本 0.5% 以上；
+- 最新一期股权质押比例 50% 以上；
+- 近 60 天业绩预告为预减、首亏、续亏或略减。
+
+生成计划时只读本地表，不发请求；本地没有数据（例如没有配置 Tushare）时这几条风险为空。
 
 ## Web 页面
 
