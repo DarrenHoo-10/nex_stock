@@ -220,13 +220,16 @@ class StockProfileResponse(BaseModel):
 
 
 class StockEventItem(BaseModel):
-    """一条公司事件（业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研）。"""
+    """一条公司事件（业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研、券商研报、龙虎榜）。"""
 
-    kind: Literal["forecast", "express", "holder_trade", "repurchase", "share_float", "pledge", "survey"] = Field(
-        ..., description="事件类型"
-    )
+    kind: Literal[
+        "forecast", "express", "holder_trade", "repurchase", "share_float", "pledge", "survey", "research",
+        "dragon_tiger",
+    ] = Field(..., description="事件类型")
     kind_label: str = Field(..., description="事件类型中文名")
-    event_date: str = Field(..., description="公告日；解禁为解禁日（可能在未来）；质押为统计截止日")
+    event_date: str = Field(
+        ..., description="公告日；解禁为解禁日（可能在未来）；质押为统计截止日；研报为报告日；龙虎榜为交易日"
+    )
     title: str = Field(..., description="一句话中文摘要")
     payload: Dict[str, object] = Field(default_factory=dict, description="Tushare 原始字段")
     source: str = Field(..., description="数据来源（tushare）")
@@ -240,6 +243,43 @@ class StockEventsResponse(BaseModel):
     events: List[StockEventItem]
     risks: List[str] = Field(default_factory=list, description="按固定规则得出的风险：近期解禁、大股东减持、高质押、业绩预告转差")
     fetch: Dict[str, object] = Field(default_factory=dict, description="本次按需从 Tushare 补取时各类事件的结果（没有补取时为空）")
+
+
+class StockResearchResponse(BaseModel):
+    """个股券商研报：每份报告的评级、目标价、盈利预测，以及按机构去重后的一致预期。"""
+
+    stock_code: str
+    as_of: str
+    summary: Dict[str, object] = Field(
+        default_factory=dict,
+        description=(
+            "一致预期：reports 报告数、institutions 机构数、ratings 评级分布、consensus 按预测年度的 EPS（元）和"
+            "净利润（net_profit_yi，亿元）的均值 / 中位数 / 最小 / 最大、target_price 目标价；每家机构只算最新一份"
+        ),
+    )
+    reports: List[StockEventItem] = Field(default_factory=list, description="研报列表（kind=research），新的在前")
+    fetch: Dict[str, object] = Field(default_factory=dict, description="本次按需从 Tushare 补取的结果（没有补取时为空）")
+
+
+class StockCapitalResponse(BaseModel):
+    """个股资金面：两融、主力资金、龙虎榜、北向。各部分独立，失败时该部分为 {status: failed, error}。"""
+
+    stock_code: str
+    as_of: str
+    margin: Dict[str, object] = Field(
+        default_factory=dict,
+        description="两融（Tushare margin_detail）：rows 每日融资余额 / 买入 / 偿还 / 融券余额（元），summary 为亿元汇总",
+    )
+    fund_flow: Dict[str, object] = Field(
+        default_factory=dict, description="主力资金（新浪个股历史资金流）：rows 每日主力净流入（元），summary 近 5 日合计（亿元）",
+    )
+    dragon_tiger: List[StockEventItem] = Field(
+        default_factory=list, description="近 30 天龙虎榜（每日入库，payload 含上榜原因、席位、机构和沪深股通净额）",
+    )
+    dragon_tiger_status: Dict[str, object] = Field(default_factory=dict)
+    northbound: Dict[str, object] = Field(
+        default_factory=dict, description="全市场北向 / 南向（Tushare moneyflow_hsgt，百万元），口径见 note",
+    )
 
 
 class StockQaItem(BaseModel):

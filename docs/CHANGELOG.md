@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增券商研报和资金面：券商盈利预测（Tushare `report_rc`）和龙虎榜（`top_list` + 席位 `top_inst`）作为公司事件 `research`、`dragon_tiger` 每日全市场入库；新增 `GET /api/v1/stocks/{code}/research`（评级分布、按机构去重的 EPS / 净利润一致预期、目标价）和 `GET /api/v1/stocks/{code}/capital`（两融、主力资金、龙虎榜席位、北向 / 南向）。选股候选的「事件」会带上龙虎榜机构净额和研报评级。新浪个股资金流作为个股资金流的最后一个备用源（东方财富冷却时补主力净流入和 5 / 10 日合计），数据状态新增「新浪财经（个股资金流备用）」一行。
 - [新功能] 新增投资者问答：深市公司读巨潮互动易、沪市公司读上证e互动，只存已回复的问答；每个交易日给自选股和持仓各取一次存进资讯库（`item_kind=qa`），选股候选的资料里会带上；新增 `GET /api/v1/stocks/{code}/qa`。深交所官方公告作为深市股票公告的第三个来源（巨潮、东方财富都失败时使用）。数据状态新增「深交所公告」「巨潮互动易」「上证e互动」三个来源。
 - [新功能] 新增公司事件：业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研（Tushare），每个交易日随资讯任务按公告日全市场入库（新表 `stock_event`、`stock_event_ingest`），本地没有时按需补取单只股票。新增 `GET /api/v1/stocks/{code}/events`。选股候选的「事件」改为先用这些结构化事件，入选股票的风险里加上近期解禁、大股东减持、高质押、业绩预告转差；次日计划的风险和模型提示词也写入这些事件。
 - [改进] 所有东方财富请求（AkShare、efinance、选股、热点、资讯库）改为经过统一限速：同一子域名一次一个请求、至少间隔 1 秒并加随机抖动；返回 403 后该子域名暂停 30 分钟、期间自动改用其他来源。设置 →「数据状态」新增「东方财富（统一限速）」一行，显示冷却状态，可修改 `EASTMONEY_MIN_INTERVAL_SEC`、`EASTMONEY_BAN_COOLDOWN_MINUTES`。

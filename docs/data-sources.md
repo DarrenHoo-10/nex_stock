@@ -31,6 +31,7 @@
 | [妙想 MX](#51-妙想东方财富-mx_api) | `MX_APIKEY` | A 股 | 东财接口受限时兜底筹码分布与个股资金流 | `MX_PRIORITY`，默认 6（不参与日线） |
 | [台湾三大法人](#52-台湾三大法人) | 否 | 台股 | 三大法人买卖超（仅数据层） | — |
 | [FXMacroData](#53-fxmacrodata) | 可选 `FXMACRODATA_API_KEY` | 宏观 / 外汇 | 助手与报告 Agent 的宏观工具 | — |
+| [新浪资金流](#57-新浪财经个股资金流无需配置) | 否 | A 股（沪深） | 个股资金流补充链的最后一个备用源、`/stocks/{code}/capital` 的主力资金 | —（不参与日线） |
 
 优先级数字越小越先尝试。
 
@@ -64,7 +65,9 @@ TUSHARE_TOKEN=你的token
 
 **确认它在工作**：启动日志出现 “检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升为最高”；未配置时日志是 “Tushare Token 未配置，此数据源不可用”。GitHub Actions 的每日任务日志里也会打印 Tushare Token 是否已配置。运行时优先级可在 [数据中心](data-center-diagnostics.md) 查看。
 
-**公司事件**：业绩预告 `forecast`、业绩快报 `express`、股东增减持 `stk_holdertrade`、回购 `repurchase`、限售解禁 `share_float`、股权质押 `pledge_stat`、机构调研 `stk_surv` 由 `src/services/stock_event_service.py` 调用，存入 `stock_event` 表。每个交易日的资讯任务（`NEWS_DAILY_FETCH_TIME`）按公告日取一次全市场（约 7 次请求；第一次补最近 30 天，约 150 次），没有 Token 时跳过；某只股票本地没有近期数据时，`GET /api/v1/stocks/{code}/events` 和选股会按需单独补取这只股票（每类 1 次）。这些接口在 15000 积分账号上已采样确认可用；公告 `anns_d`、互动问答 `irm_qa_*`、研报 `research_report`、短讯 `news`、竞价 `stk_auction` 需要单独购买，项目不使用。
+**公司事件**：业绩预告 `forecast`、业绩快报 `express`、股东增减持 `stk_holdertrade`、回购 `repurchase`、限售解禁 `share_float`、股权质押 `pledge_stat`、机构调研 `stk_surv`、券商盈利预测 `report_rc`、龙虎榜 `top_list` + 席位 `top_inst` 由 `src/services/stock_event_service.py` 调用，存入 `stock_event` 表（研报为 `research`、龙虎榜为 `dragon_tiger`）。每个交易日的资讯任务（`NEWS_DAILY_FETCH_TIME`）按日取一次全市场（约 10 次请求；第一次补最近 30 天，研报补 90 天、龙虎榜补 10 天，约 250 次），没有 Token 时跳过；某只股票本地没有近期数据时，`GET /api/v1/stocks/{code}/events` 和选股会按需单独补取这只股票（每类 1 次）。龙虎榜只能按交易日取全市场，所以只来自每日入库；Tushare 约 20 点发布当天榜单，当天和取到空结果的交易日下次运行会再取一次。
+
+**资金面**：两融 `margin_detail`（单只股票，近 20 个交易日）和北向 / 南向 `moneyflow_hsgt`（全市场，进程内缓存 1 小时）不入库，由 `src/services/capital_service.py` 在 `GET /api/v1/stocks/{code}/capital` 时按需读取。`moneyflow_hsgt` 单位为百万元；2024 年 8 月起交易所盘后只公布北向成交额，数值量级与成交额一致，不能当作净买入。这些接口在 15000 积分账号上已采样确认可用；公告 `anns_d`、互动问答 `irm_qa_*`、研报 `research_report`、短讯 `news`、竞价 `stk_auction` 需要单独购买，项目不使用。
 
 **相关**：股票列表导出脚本见 [Tushare 股票列表指南](TUSHARE_STOCK_LIST_GUIDE.md)。
 
@@ -257,6 +260,15 @@ Tushare 的 `irm_qa_sz` / `irm_qa_sh` 在本账号没有权限，问答直接读
 - 数据状态里分别显示「巨潮互动易」「上证e互动」两个来源的状态。
 
 **深交所公告**（`src/services/sources/szse_disclosure.py`）是深市股票公告的第三个来源：巨潮和东方财富都失败时才用，PDF 链接指向 `disc.static.szse.cn`。上交所没有可用的公开公告接口。
+
+### 5.7 新浪财经个股资金流（无需配置）
+
+`src/services/sources/sina_fund_flow.py` 直连新浪 `MoneyFlow.ssl_qsfx_zjlrqs`（个股历史资金流，只覆盖沪深股票），两个用途：
+
+- 个股资金流补充链的最后一个备用源：AkShare（东方财富）、Tushare `moneyflow`、妙想都没给出主力净流入时，用前面剩下的预算请求一次，补上当日主力净流入（`r0_net`，即新浪页面上的「主力净流入」）和 5 日 / 10 日合计，`source_chain` 记为 `sina:moneyflow:<日期>`。东方财富冷却（见 5.5）时主链路会立刻失败，预算基本都留给备用源。
+- `GET /api/v1/stocks/{code}/capital` 的 `fund_flow` 部分（近 20 个交易日）。
+
+设置 →「数据状态」里的「新浪财经（个股资金流备用）」显示本进程最近一次请求的结果（不额外发探测请求）。
 
 ## 6. 优先级与回退规则
 

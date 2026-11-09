@@ -3681,7 +3681,9 @@ def search_dsa_stock_events(stock_code: str, stock_name: str = "", max_results: 
 
 
 # Risk-relevant kinds first: they matter most to a buy decision.
-_STRUCTURED_EVENT_ORDER = ("share_float", "holder_trade", "forecast", "express", "pledge", "repurchase", "survey")
+_STRUCTURED_EVENT_ORDER = (
+    "share_float", "holder_trade", "forecast", "express", "pledge", "dragon_tiger", "repurchase", "research", "survey",
+)
 
 
 def _structured_stock_events(stock_code: str, *, limit: int) -> List[Dict[str, Any]]:

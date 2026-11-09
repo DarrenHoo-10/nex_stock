@@ -27,6 +27,8 @@ from api.v1.schemas.stocks import (
     KLineData,
     StockEventItem,
     StockEventsResponse,
+    StockCapitalResponse,
+    StockResearchResponse,
     StockQaItem,
     StockQaResponse,
     StockHistoryResponse,
@@ -640,8 +642,9 @@ INTRADAY_UNAVAILABLE_MESSAGES = {
         "返回最近 days 天的公司事件（解禁额外包含未来 30 天），以及按固定规则得出的风险："
         "未来 30 天解禁占流通股 1% 以上、近 30 天单个股东减持占总股本 0.5% 以上、股权质押比例 50% 以上、"
         "近 60 天业绩预告为预减 / 首亏 / 续亏 / 略减。数据来自 Tushare，每天全市场入库一次；"
-        "本地没有近期数据时会按需补取这只股票。kinds 用逗号分隔，可选 forecast, express, holder_trade, "
-        "repurchase, share_float, pledge, survey。"
+        "本地没有近期数据时会按需补取这只股票（龙虎榜只能按交易日全市场取，只来自每日入库）。kinds 用逗号分隔，"
+        "可选 forecast, express, holder_trade, repurchase, share_float, pledge, survey, research（券商研报）, "
+        "dragon_tiger（龙虎榜）。"
     ),
 )
 def get_stock_events(
@@ -676,6 +679,84 @@ def get_stock_events(
         risks=result["risks"],
         fetch=result["fetch"],
     )
+
+
+def _require_a_share(stock_code: str) -> str:
+    from src.services.stock_code_guard import require_stock_code
+
+    try:
+        return require_stock_code(stock_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_stock_code", "message": str(exc)})
+
+
+@router.get(
+    "/{stock_code}/research",
+    response_model=StockResearchResponse,
+    responses={
+        200: {"description": "券商研报和一致预期"},
+        400: {"description": "不是 A 股个股代码", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取个股券商研报与一致预期",
+    description=(
+        "Tushare report_rc（券商盈利预测）：每份报告的机构、标题、评级、目标价、各预测年度的 EPS / 净利润。"
+        "summary 是最近 days 天内每家机构最新一份报告的一致预期（EPS 元、净利润亿元）和评级分布。"
+        "研报每天随公司事件全市场入库；本地没有近期数据时按需补取这只股票。研报正文不提供。"
+    ),
+)
+def get_stock_research(
+    stock_code: str,
+    days: int = Query(90, ge=7, le=120, description="回看天数"),
+) -> StockResearchResponse:
+    from src.services.stock_event_service import KIND_LABELS, StockEventService, research_summary
+
+    code = _require_a_share(stock_code)
+    try:
+        service = StockEventService()
+        result = service.events_for(code, kinds=("research",), days=days)
+    except Exception as e:
+        logger.error(f"获取券商研报失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取券商研报失败"})
+    reports = sorted(result["events"], key=lambda e: str(e["event_date"]), reverse=True)
+    as_of = result["as_of"]
+    from datetime import date as _date
+
+    return StockResearchResponse(
+        stock_code=code, as_of=as_of,
+        summary=research_summary(reports, _date.fromisoformat(as_of), days=days),
+        reports=[StockEventItem(**{**event, "kind_label": KIND_LABELS["research"]}) for event in reports],
+        fetch=result["fetch"],
+    )
+
+
+@router.get(
+    "/{stock_code}/capital",
+    response_model=StockCapitalResponse,
+    responses={
+        200: {"description": "个股资金面"},
+        400: {"description": "不是 A 股个股代码", "model": ErrorResponse},
+    },
+    summary="获取个股资金面（两融、主力资金、龙虎榜、北向）",
+    description=(
+        "两融来自 Tushare margin_detail（近 days 个交易日），主力资金来自新浪个股历史资金流，龙虎榜来自每日入库的"
+        "公司事件（近 30 天），北向 / 南向为全市场数据（Tushare moneyflow_hsgt，进程内缓存 1 小时；"
+        "2024 年 8 月起只有成交额口径，见 northbound.note）。每部分独立获取，某一来源失败时该部分返回 "
+        "{status: failed, error}，其余照常返回。"
+    ),
+)
+def get_stock_capital(
+    stock_code: str,
+    days: int = Query(20, ge=5, le=60, description="两融回看交易日数"),
+) -> StockCapitalResponse:
+    from src.services.capital_service import CapitalService
+    from src.services.stock_event_service import KIND_LABELS
+
+    code = _require_a_share(stock_code)
+    result = CapitalService().overview(code, days=days)
+    result["dragon_tiger"] = [StockEventItem(**{**event, "kind_label": KIND_LABELS["dragon_tiger"]})
+                              for event in result["dragon_tiger"]]
+    return StockCapitalResponse(**result)
 
 
 _QA_REFRESH_HOURS = 6

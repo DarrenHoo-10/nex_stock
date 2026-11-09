@@ -8,7 +8,6 @@ with investor names replaced.
 import json
 from datetime import date, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 

@@ -293,9 +293,9 @@ class _OfflineHttpForTests:
 
 @_pytest.fixture(autouse=True)
 def _offline_direct_http_sources(monkeypatch):
-    """巨潮公告、互动易 / 上证e互动、深交所公告 are direct HTTP sources: offline unless a test stubs them."""
+    """巨潮公告、互动易 / 上证e互动、深交所公告、新浪资金流 are direct HTTP sources: offline unless a test stubs them."""
     for module_name in ("src.services.news_cninfo_source", "src.services.sources.investor_qa",
-                        "src.services.sources.szse_disclosure"):
+                        "src.services.sources.szse_disclosure", "src.services.sources.sina_fund_flow"):
         try:
             module = __import__(module_name, fromlist=["_session"])
         except Exception:  # noqa: BLE001

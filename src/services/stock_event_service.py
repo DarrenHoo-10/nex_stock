@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Company events of A-shares: 业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研.
+"""Company events of A-shares: 业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研、
+券商研报（盈利预测与评级）、龙虎榜.
 
 Source: Tushare (all permitted on this account, sampled 2026-11-09). Every kind except 质押 can be
-queried for the whole market by announcement day, so one daily run stores the events of all stocks in
-about seven calls (a first run backfills ``BACKFILL_DAYS``); consumers then read ``stock_event``:
+queried for the whole market by day, so one daily run stores the events of all stocks in about ten
+calls (a first run backfills ``BACKFILL_DAYS``, 研报 ``RESEARCH_DAYS``); consumers then read ``stock_event``:
 
 * screening — candidate context and fixed risk notes (``risk_notes``);
 * the next-day plan — risks of held / watched stocks;
-* ``GET /api/v1/stocks/{code}/events`` — the web page and the assistant.
+* ``GET /api/v1/stocks/{code}/events`` / ``/research`` / ``/capital`` — the web page and the assistant.
 
 When the table has nothing recent for a stock (the daily run never ran, or failed), ``events_for``
-fetches that stock alone (one call per kind). See docs/design/a-stock-data-adoption.md section 3.
+fetches that stock alone (one call per kind; 龙虎榜 is only queryable by trade date, so it comes from
+the daily run alone). See docs/design/a-stock-data-adoption.md section 3.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ RETENTION_DAYS = 120
 PLEDGE_MIN_RATIO = 10.0  # only stocks with at least this pledge ratio are stored
 PLEDGE_LOOKBACK_FRIDAYS = 3
 CODE_REFRESH_HOURS = 24
+RESEARCH_DAYS = 90            # consensus window of broker forecasts
+DRAGON_TIGER_BACKFILL_DAYS = 10
 
 KIND_LABELS = {
     "forecast": "业绩预告",
@@ -40,6 +44,8 @@ KIND_LABELS = {
     "share_float": "限售解禁",
     "pledge": "股权质押",
     "survey": "机构调研",
+    "research": "券商研报",
+    "dragon_tiger": "龙虎榜",
 }
 ALL_KINDS = tuple(KIND_LABELS)
 
@@ -60,6 +66,7 @@ class _KindSpec:
     page_cap: int
     key_cols: Tuple[str, ...]
     date_param: str  # market-wide query parameter for one day
+    backfill_days: Optional[int] = None  # first-run window when it differs from BACKFILL_DAYS
 
 
 _DAY_KINDS: Dict[str, _KindSpec] = {
@@ -86,6 +93,12 @@ _DAY_KINDS: Dict[str, _KindSpec] = {
         "stk_surv", "ts_code,name,surv_date,fund_visitors,rece_place,rece_mode,rece_org,org_type",
         400, ("ts_code", "surv_date", "rece_org"), "trade_date",
     ),
+    "research": _KindSpec(
+        "report_rc",
+        "ts_code,name,report_date,report_title,report_type,classify,org_name,author_name,quarter,op_rt,np,eps,pe,"
+        "roe,rating,max_price,min_price",
+        3000, ("ts_code", "report_date", "org_name", "report_title", "quarter"), "report_date", RESEARCH_DAYS,
+    ),
 }
 _SHARE_FLOAT = _KindSpec(
     "share_float", "ts_code,ann_date,float_date,float_share,float_ratio,holder_name,share_type",
@@ -94,6 +107,14 @@ _SHARE_FLOAT = _KindSpec(
 _PLEDGE = _KindSpec(
     "pledge_stat", "ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio",
     3000, ("ts_code", "end_date"), "end_date",
+)
+_TOP_LIST = _KindSpec(
+    "top_list", "trade_date,ts_code,name,close,pct_change,turnover_rate,amount,l_buy,l_sell,net_amount,reason",
+    3000, ("ts_code", "reason"), "trade_date",
+)
+_TOP_INST = _KindSpec(
+    "top_inst", "trade_date,ts_code,exalter,side,buy,sell,net_buy,reason",
+    10000, ("ts_code", "reason", "side", "exalter", "buy", "sell"), "trade_date",
 )
 
 
@@ -134,6 +155,14 @@ def _fmt(value: Optional[float], digits: int = 2) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
+
+def _money(yuan: Optional[float]) -> str:
+    if yuan is None:
+        return "-"
+    if abs(yuan) >= 1e8:
+        return f"{_fmt(yuan / 1e8)} 亿元"
+    return f"{_fmt(yuan / 1e4, 0)} 万元"
 
 
 def _period(value: Any) -> str:
@@ -269,6 +298,150 @@ def parse_pledges(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def parse_research(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One event per broker report; Tushare returns one row per forecast year (``quarter``)."""
+    grouped: Dict[Tuple[str, date, str, str], List[Dict[str, Any]]] = {}
+    for row in rows:
+        code, day = _code(row.get("ts_code")), _day(row.get("report_date"))
+        org, title = str(row.get("org_name") or "").strip(), str(row.get("report_title") or "").strip()
+        if code and day is not None and org:
+            grouped.setdefault((code, day, org, title), []).append(dict(row))
+    out = []
+    for (code, day, org, title), items in sorted(grouped.items()):
+        first = items[0]
+        forecasts = []
+        for item in sorted(items, key=lambda r: str(r.get("quarter") or "")):
+            entry = {"quarter": str(item.get("quarter") or ""), "eps": _num(item.get("eps")),
+                     "np": _num(item.get("np")), "op_rt": _num(item.get("op_rt")),
+                     "pe": _num(item.get("pe")), "roe": _num(item.get("roe"))}
+            if entry["quarter"] and any(entry[k] is not None for k in ("eps", "np", "op_rt")):
+                forecasts.append({k: v for k, v in entry.items() if v is not None})
+        rating = str(first.get("rating") or "").strip()
+        high, low = _num(first.get("max_price")), _num(first.get("min_price"))
+        parts = [f"{org}《{title or '研报'}》"]
+        if rating:
+            parts.append(f"评级{rating}")
+        if high is not None:
+            if low is not None and low != high:
+                parts.append(f"目标价 {_fmt(low)}~{_fmt(high)} 元")
+            else:
+                parts.append(f"目标价 {_fmt(high)} 元")
+        nearest = forecasts[0] if forecasts else None
+        if nearest and nearest.get("eps") is not None:
+            parts.append(f"{nearest['quarter'][:4]} 年 EPS {_fmt(nearest['eps'])}")
+        out.append(_record(code, "research", day, "，".join(parts), {
+            "org": org, "title": title, "authors": first.get("author_name"), "report_type": first.get("report_type"),
+            "classify": first.get("classify"), "rating": rating or None, "max_price": high, "min_price": low,
+            "forecasts": forecasts,
+        }))
+    return out
+
+
+_MULTI_DAY_PREFIX = "连续"  # 「连续三个交易日…」accumulates three sessions; single-day reasons describe this one
+
+
+def parse_dragon_tiger(list_rows: Iterable[Dict[str, Any]], inst_rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One event per stock and trade date.
+
+    ``top_list`` has one row per listing reason, ``top_inst`` one row per seat, side and reason; the same seat
+    repeats across reasons and on both sides. The primary reason is the first single-day one (its amounts are
+    that day's); seats of that reason are kept once each (same seat = same name, buy and sell, so several
+    「机构专用」 seats stay separate).
+    """
+    by_stock: Dict[Tuple[str, date], List[Dict[str, Any]]] = {}
+    for row in list_rows:
+        code, day = _code(row.get("ts_code")), _day(row.get("trade_date"))
+        if code and day is not None:
+            by_stock.setdefault((code, day), []).append(dict(row))
+    seats_by: Dict[Tuple[str, date, str], List[Dict[str, Any]]] = {}
+    for row in inst_rows:
+        code, day = _code(row.get("ts_code")), _day(row.get("trade_date"))
+        if code and day is not None:
+            seats_by.setdefault((code, day, str(row.get("reason") or "").strip()), []).append(dict(row))
+    out = []
+    for (code, day), rows in sorted(by_stock.items()):
+        reasons = list(dict.fromkeys(str(r.get("reason") or "").strip() for r in rows if r.get("reason")))
+        primary = next((r for r in rows if not str(r.get("reason") or "").startswith(_MULTI_DAY_PREFIX)), rows[0])
+        reason = str(primary.get("reason") or "").strip()
+        seats, seen = [], set()
+        for seat in seats_by.get((code, day, reason), []):
+            name = str(seat.get("exalter") or "").strip()
+            buy, sell, net = _num(seat.get("buy")), _num(seat.get("sell")), _num(seat.get("net_buy"))
+            key = (name, buy, sell)
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            seats.append({"name": name, "buy": buy, "sell": sell,
+                          "net": net if net is not None else (buy or 0.0) - (sell or 0.0)})
+        seats.sort(key=lambda item: -abs(item["net"] or 0.0))
+        inst = [item["net"] for item in seats if "机构专用" in item["name"]]
+        connect = [item["net"] for item in seats if "股通专用" in item["name"]]
+        net_amount = _num(primary.get("net_amount"))
+        title = f"龙虎榜（{reason or '上榜'}）：净买入 {_money(net_amount)}"
+        if inst:
+            title += f"，机构净{'买入' if sum(inst) >= 0 else '卖出'} {_money(abs(sum(inst)))}（{len(inst)} 席）"
+        if connect:
+            title += f"，沪深股通净{'买入' if sum(connect) >= 0 else '卖出'} {_money(abs(sum(connect)))}"
+        out.append(_record(code, "dragon_tiger", day, title, {
+            "name": primary.get("name"), "close": _num(primary.get("close")),
+            "pct_change": _num(primary.get("pct_change")), "turnover_rate": _num(primary.get("turnover_rate")),
+            "amount": _num(primary.get("amount")), "l_buy": _num(primary.get("l_buy")),
+            "l_sell": _num(primary.get("l_sell")), "net_amount": net_amount, "reason": reason, "reasons": reasons,
+            "institution_net": sum(inst) if inst else None, "connect_net": sum(connect) if connect else None,
+            "seats": seats[:10],
+        }))
+    return out
+
+
+def _stats(values: List[float]) -> Optional[Dict[str, Any]]:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    return {"avg": round(sum(values) / len(values), 4), "median": round(median, 4),
+            "min": ordered[0], "max": ordered[-1], "count": len(values)}
+
+
+def research_summary(events: Sequence[Dict[str, Any]], as_of: date, *, days: int = RESEARCH_DAYS) -> Dict[str, Any]:
+    """Consensus of broker reports within ``days``: each institution's latest report counts once.
+
+    ``net_profit_yi`` is in 亿元 (``report_rc`` reports 万元).
+    """
+    since = as_of - timedelta(days=days)
+    reports = [e for e in events if e.get("kind") == "research" and (_day(e.get("event_date")) or date.min) >= since]
+    latest: Dict[str, Dict[str, Any]] = {}
+    for event in sorted(reports, key=lambda e: str(e.get("event_date"))):
+        org = str((event.get("payload") or {}).get("org") or "")
+        if org:
+            latest[org] = event
+    ratings: Dict[str, int] = {}
+    per_quarter: Dict[str, Dict[str, List[float]]] = {}
+    targets: List[float] = []
+    for event in latest.values():
+        payload = event.get("payload") or {}
+        if payload.get("rating"):
+            ratings[payload["rating"]] = ratings.get(payload["rating"], 0) + 1
+        if _num(payload.get("max_price")) is not None:
+            targets.append(float(payload["max_price"]))
+        for item in payload.get("forecasts") or []:
+            bucket = per_quarter.setdefault(str(item.get("quarter")), {"eps": [], "np": []})
+            for key in ("eps", "np"):
+                if _num(item.get(key)) is not None:
+                    bucket[key].append(float(item[key]))
+    consensus = []
+    for quarter in sorted(per_quarter):
+        profit = _stats([v / 1e4 for v in per_quarter[quarter]["np"]])
+        if profit:
+            profit = {k: (round(v, 2) if k != "count" else v) for k, v in profit.items()}
+        consensus.append({"quarter": quarter, "eps": _stats(per_quarter[quarter]["eps"]), "net_profit_yi": profit})
+    return {
+        "window_days": days, "reports": len(reports), "institutions": len(latest),
+        "ratings": dict(sorted(ratings.items(), key=lambda kv: -kv[1])),
+        "consensus": consensus, "target_price": _stats(targets),
+    }
+
+
 _PARSERS: Dict[str, Callable[[Iterable[Dict[str, Any]]], List[Dict[str, Any]]]] = {
     "forecast": parse_forecast,
     "express": parse_express,
@@ -277,6 +450,7 @@ _PARSERS: Dict[str, Callable[[Iterable[Dict[str, Any]]], List[Dict[str, Any]]]] 
     "survey": parse_surveys,
     "share_float": parse_share_floats,
     "pledge": parse_pledges,
+    "research": parse_research,
 }
 
 
@@ -314,6 +488,22 @@ def risk_notes_from(events: Sequence[Dict[str, Any]], as_of: date) -> List[str]:
 # ----------------------------------------------------------------------
 # service
 # ----------------------------------------------------------------------
+def query_rows(fetcher: Any, spec: _KindSpec, **params: Any) -> List[Dict[str, Any]]:
+    """One Tushare interface as plain dict rows (keeps the partial rows when paging stopped early)."""
+    from data_provider.tushare_market_data import IncompleteMarketDataError
+
+    try:
+        frame = fetcher._market_query_paged(
+            spec.api, page_cap=spec.page_cap, key_cols=list(spec.key_cols), fields=spec.fields, **params,
+        )
+    except IncompleteMarketDataError as exc:
+        frame = exc.partial
+        logger.warning("[Tushare] %s 只取到部分数据: %s", spec.api, exc)
+    if frame is None or getattr(frame, "empty", True):
+        return []
+    return frame.where(frame.notna(), None).to_dict("records")
+
+
 class StockEventService:
     def __init__(self, repo: Any = None, fetcher: Any = None, *, today: Callable[[], date] = None) -> None:
         self._repo = repo
@@ -342,18 +532,7 @@ class StockEventService:
 
     # -- Tushare -------------------------------------------------------
     def _query(self, spec: _KindSpec, **params: Any) -> List[Dict[str, Any]]:
-        from data_provider.tushare_market_data import IncompleteMarketDataError
-
-        try:
-            frame = self.fetcher._market_query_paged(
-                spec.api, page_cap=spec.page_cap, key_cols=list(spec.key_cols), fields=spec.fields, **params,
-            )
-        except IncompleteMarketDataError as exc:
-            frame = exc.partial
-            logger.warning("[公司事件] %s 只取到部分数据: %s", spec.api, exc)
-        if frame is None or getattr(frame, "empty", True):
-            return []
-        return frame.where(frame.notna(), None).to_dict("records")
+        return query_rows(self.fetcher, spec, **params)
 
     # -- daily whole-market ingest --------------------------------------
     def run_daily(self, *, backfill_days: int = BACKFILL_DAYS) -> Dict[str, Any]:
@@ -361,8 +540,9 @@ class StockEventService:
         today = self._today()
         summary: Dict[str, Any] = {"day": today.isoformat(), "kinds": {}}
         for kind, spec in _DAY_KINDS.items():
-            done = self.repo.ingested_days(kind, since=today - timedelta(days=backfill_days))
-            days = [today - timedelta(days=offset) for offset in range(backfill_days, -1, -1)]
+            window = max(backfill_days, spec.backfill_days or 0)
+            done = self.repo.ingested_days(kind, since=today - timedelta(days=window))
+            days = [today - timedelta(days=offset) for offset in range(window, -1, -1)]
             todo = [d for d in days if d == today or done.get(d) != "ok"]
             inserted = fetched = 0
             errors: List[str] = []
@@ -382,6 +562,8 @@ class StockEventService:
             summary["kinds"][kind] = {"days": len(todo), "fetched": fetched, "inserted": inserted, "errors": errors[:5]}
         summary["kinds"]["share_float"] = self._refresh_share_floats(today)
         summary["kinds"]["pledge"] = self._refresh_pledges(today)
+        summary["kinds"]["dragon_tiger"] = self._refresh_dragon_tiger(
+            today, backfill_days=min(backfill_days, DRAGON_TIGER_BACKFILL_DAYS))
         try:
             summary["pruned"] = self.repo.prune(before=today - timedelta(days=RETENTION_DAYS))
         except Exception as exc:  # noqa: BLE001
@@ -422,6 +604,31 @@ class StockEventService:
                 return {"end_date": friday.isoformat(), "fetched": len(records), "inserted": inserted, "errors": []}
             friday -= timedelta(days=7)
         return {"fetched": 0, "inserted": 0, "errors": errors}
+
+    def _refresh_dragon_tiger(self, today: date, *, backfill_days: int) -> Dict[str, Any]:
+        """龙虎榜 per trade date: ``top_list`` + ``top_inst`` (2 calls a day; Tushare publishes around 20:00)."""
+        done = self.repo.ingested_days("dragon_tiger", since=today - timedelta(days=backfill_days))
+        days = [today - timedelta(days=offset) for offset in range(backfill_days, -1, -1)]
+        todo = [d for d in days if d.weekday() < 5 and (d == today or done.get(d) != "ok")]
+        inserted = fetched = 0
+        errors: List[str] = []
+        for day in todo:
+            stamp = day.strftime("%Y%m%d")
+            try:
+                listed = self._query(_TOP_LIST, trade_date=stamp)
+                seats = self._query(_TOP_INST, trade_date=stamp) if listed else []
+                records = parse_dragon_tiger(listed, seats)
+                inserted += self.repo.upsert(records)
+                fetched += len(records)
+                # Empty = a holiday, or not published yet: such days and today are read again next run.
+                status = "ok" if listed and day != today else "partial"
+                self.repo.mark_ingested("dragon_tiger", day, rows=len(records), status=status)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{day.isoformat()}: {exc}")
+                self.repo.mark_ingested("dragon_tiger", day, rows=0, status="failed", error=str(exc))
+                if "无权限" in str(exc) or "未配置" in str(exc):
+                    break
+        return {"days": len(todo), "fetched": fetched, "inserted": inserted, "errors": errors[:5]}
 
     # -- one stock ------------------------------------------------------
     def fetch_code(self, code: str, *, days: int = BACKFILL_DAYS) -> Dict[str, Any]:
