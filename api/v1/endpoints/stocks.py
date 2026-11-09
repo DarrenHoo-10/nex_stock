@@ -27,6 +27,8 @@ from api.v1.schemas.stocks import (
     KLineData,
     StockEventItem,
     StockEventsResponse,
+    StockQaItem,
+    StockQaResponse,
     StockHistoryResponse,
     StockIntradayResponse,
     StockProfileResponse,
@@ -674,6 +676,80 @@ def get_stock_events(
         risks=result["risks"],
         fetch=result["fetch"],
     )
+
+
+_QA_REFRESH_HOURS = 6
+
+
+@router.get(
+    "/{stock_code}/qa",
+    response_model=StockQaResponse,
+    responses={
+        200: {"description": "已回复的投资者问答"},
+        400: {"description": "不是 A 股个股代码", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取个股投资者问答（互动易 / 上证e互动）",
+    description=(
+        "深市公司来自巨潮互动易，沪市公司来自上证e互动，只返回已回复的问答，按回复时间倒序。"
+        "问答存进资讯库（item_kind=qa）；本地近 6 小时没有取过这只股票时，会先从平台刷新一次。"
+        "两个平台只保留约近 1 个月，北交所公司两个平台都没有。"
+    ),
+)
+def get_stock_qa(
+    stock_code: str,
+    days: int = Query(30, ge=1, le=60, description="回看天数"),
+) -> StockQaResponse:
+    import json as _json
+    from datetime import timedelta as _timedelta
+
+    from src.repositories.intelligence_repo import IntelligenceRepository
+    from src.services.news_pool_service import NewsPoolService, china_now
+    from src.services.sources.investor_qa import route
+    from src.services.stock_code_guard import require_stock_code
+
+    try:
+        code = require_stock_code(stock_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_stock_code", "message": str(exc)})
+    platform = route(code)
+    labels = {"irm": "巨潮互动易", "sse_e": "上证e互动"}
+    if platform is None:
+        return StockQaResponse(stock_code=code, platform=None, items=[],
+                               coverage="北交所公司不在互动易和上证e互动上，没有问答数据")
+    coverage = f"{labels[platform]}，只含已回复的问答，平台只保留约近 1 个月"
+    try:
+        repo = IntelligenceRepository()
+        now = china_now()
+        since = now - _timedelta(days=days)
+
+        def stored():
+            return repo.list_stock_news(code=code, since=since, kinds=("qa",), limit=100)
+
+        rows = stored()
+        fetched_at = max((row.fetched_at for row in rows if row.fetched_at), default=None)
+        fetch: dict = {}
+        if fetched_at is None or now - fetched_at > _timedelta(hours=_QA_REFRESH_HOURS):
+            fetch = NewsPoolService(repo).fetch_qa_for_codes([code], now=now, since=since)
+            rows = stored()
+    except Exception as e:
+        logger.error(f"获取投资者问答失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取投资者问答失败"})
+    items = []
+    for row in rows:
+        try:
+            payload = _json.loads(row.raw_payload) if row.raw_payload else {}
+        except (TypeError, ValueError):
+            payload = {}
+        question, answer = payload.get("question"), payload.get("answer")
+        if not question or not answer:
+            continue
+        items.append(StockQaItem(
+            question=question, answer=answer, asked_at=(payload.get("asked_at") or "")[:16].replace("T", " ") or None,
+            answered_at=row.published_at.strftime("%Y-%m-%d %H:%M") if row.published_at else None,
+            platform=payload.get("platform") or platform, platform_label=labels[payload.get("platform") or platform],
+        ))
+    return StockQaResponse(stock_code=code, platform=platform, coverage=coverage, items=items, fetch=fetch)
 
 
 @router.get(

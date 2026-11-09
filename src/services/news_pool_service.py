@@ -39,6 +39,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 from src.repositories.intelligence_repo import IntelligenceRepository
 from src.services import news_akshare_source as ak_source
 from src.services import news_cninfo_source as cninfo_source
+from src.services.sources import investor_qa as qa_source
+from src.services.sources import szse_disclosure as szse_source
 from src.services.news_akshare_source import (
     CN_TZ,
     FALLBACK_FLASH_SOURCES,
@@ -46,7 +48,12 @@ from src.services.news_akshare_source import (
     SOURCE_CJZC,
     SOURCE_CLS,
     SOURCE_CNINFO,
+    SOURCE_IRM,
     SOURCE_NOTICE,
+    SOURCE_SSE_E,
+    SOURCE_SZSE,
+    KIND_QA,
+    NO_URL_PREFIX,
     NewsRecord,
     NewsSourceBusy,
     normalize_a_share_code,
@@ -62,6 +69,33 @@ _MARKET_DAY_PAUSE_SEC = 1.0
 _MAX_CONSECUTIVE_CODE_FAILURES = 3
 _MARKET_MODE_MAX_DAYS = 3
 _NOTICE_MAX_LOOKBACK_DAYS = 5
+_QA_FIRST_LOOKBACK_DAYS = 30  # the platforms only keep about a month
+
+
+def _qa_record(item: Any) -> NewsRecord:
+    question = item.question.strip()
+    return NewsRecord(
+        title=f"{item.name or item.code}：{question[:80]}",
+        summary=f"问：{question}\n答：{item.answer.strip()}"[:2000],
+        url=f"{NO_URL_PREFIX}{item.platform}:{item.item_id}",
+        published_at=item.answered_at or item.asked_at,
+        source_key=item.platform,
+        kind=KIND_QA,
+        scope_type="symbol",
+        scope_value=item.code,
+        stock_codes=[item.code],
+        raw_payload={"asked_at": item.asked_at.isoformat() if item.asked_at else None, "platform": item.platform,
+                     "question": question, "answer": item.answer.strip()},
+    )
+
+
+def _szse_record(item: Any) -> NewsRecord:
+    title = item.title if not item.name or item.title.startswith(item.name) else f"{item.name}：{item.title}"
+    return NewsRecord(
+        title=title[:300], summary=f"{item.name}（{item.code}）公告，来源：深交所", url=item.url[:1000],
+        published_at=item.published_at, source_key=SOURCE_SZSE, kind="announcement", scope_type="symbol",
+        scope_value=item.code, stock_codes=[item.code], raw_payload={"name": item.name},
+    )
 
 _POLL_LOCK = threading.Lock()
 _DAILY_LOCK = threading.Lock()
@@ -362,6 +396,8 @@ class NewsPoolService:
                 "morning_brief": self._fetch_morning_brief(day, now),
                 # Company events of all stocks (Tushare); separate from the news status below.
                 "events": self._fetch_events(),
+                # Investor Q&A of watchlist + holdings (互动易 / 上证e互动); also separate.
+                "qa": self._fetch_qa(now),
             }
             statuses = {part["status"] for part in (result["announcements"], result["morning_brief"])}
             result["status"] = (
@@ -421,7 +457,9 @@ class NewsPoolService:
 
         records: List[NewsRecord] = []
         errors: List[str] = []  # codes / days no source could cover
-        tallies: Dict[str, _SourceTally] = {SOURCE_CNINFO: _SourceTally(), SOURCE_NOTICE: _SourceTally()}
+        tallies: Dict[str, _SourceTally] = {
+            SOURCE_CNINFO: _SourceTally(), SOURCE_NOTICE: _SourceTally(), SOURCE_SZSE: _SourceTally(),
+        }
 
         def per_code(fallback_to_em: bool) -> None:
             consecutive = 0
@@ -464,7 +502,7 @@ class NewsPoolService:
         stored = self.repo.upsert_news_records(
             records, fetched_at=now, dedup_window_minutes=int(self.config.news_dedup_window_minutes)
         )
-        covered = tallies[SOURCE_CNINFO].successes + tallies[SOURCE_NOTICE].successes
+        covered = sum(tally.successes for tally in tallies.values())
         if errors and not covered:
             status = "failed"
         elif errors:
@@ -490,7 +528,7 @@ class NewsPoolService:
         self, code: str, begin: date, day: date, timeout: float, tallies: Dict[str, "_SourceTally"],
         *, fallback_to_em: bool,
     ) -> Optional[List[NewsRecord]]:
-        """Announcements of one code from 巨潮, else 东方财富; ``None`` when every source failed."""
+        """Announcements of one code from 巨潮, else 东方财富, else 深交所 (深市 only); ``None`` when all failed."""
         try:
             got = cninfo_source.fetch_notices_by_code(code, begin, day, timeout_sec=timeout)
         except Exception as exc:  # noqa: BLE001
@@ -505,9 +543,90 @@ class NewsPoolService:
             got = ak_source.fetch_notices_by_code(code, begin, day, timeout_sec=timeout)
         except Exception as exc:  # noqa: BLE001
             tallies[SOURCE_NOTICE].fail(f"{code}: {_sanitize(exc)}")
+        else:
+            tallies[SOURCE_NOTICE].ok(len(got))
+            return got
+        if not szse_source.covers(code):
             return None
-        tallies[SOURCE_NOTICE].ok(len(got))
+        try:
+            items = ak_source.call_with_timeout(
+                SOURCE_SZSE, lambda: szse_source.fetch_by_code(code, begin, day, timeout_sec=timeout), timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            tallies[SOURCE_SZSE].fail(f"{code}: {_sanitize(exc)}")
+            return None
+        got = [_szse_record(item) for item in items]
+        tallies[SOURCE_SZSE].ok(len(got))
         return got
+
+    # ------------------------------------------------------------------
+    # investor Q&A (互动易 / 上证e互动)
+    # ------------------------------------------------------------------
+    def _qa_since(self, now: datetime) -> datetime:
+        successes = []
+        for key in (SOURCE_IRM, SOURCE_SSE_E):
+            state = self.repo.get_fetch_state(key)
+            if state and state.get("last_success_at"):
+                successes.append(state["last_success_at"])
+        since = max(successes) - timedelta(days=1) if successes else now - timedelta(days=_QA_FIRST_LOOKBACK_DAYS)
+        return max(since, now - timedelta(days=_QA_FIRST_LOOKBACK_DAYS))
+
+    def fetch_qa_for_codes(self, codes: Sequence[str], *, now: datetime, since: datetime) -> Dict[str, Any]:
+        """Answered Q&A of ``codes`` from their platform, stored in the pool; one tally per platform."""
+        timeout = float(self.config.news_fetch_timeout_sec)
+        tallies: Dict[str, _SourceTally] = {SOURCE_IRM: _SourceTally(), SOURCE_SSE_E: _SourceTally()}
+        records: List[NewsRecord] = []
+        skipped: List[str] = []
+        for index, code in enumerate(codes):
+            platform = qa_source.route(code)
+            if platform is None:
+                skipped.append(code)
+                continue
+            if index:
+                self._sleep(_BY_CODE_PAUSE_SEC)
+            try:
+                items = ak_source.call_with_timeout(
+                    platform, lambda: qa_source.fetch_answered(code, since=since, timeout_sec=timeout), timeout * 3,
+                )
+            except Exception as exc:  # noqa: BLE001
+                tallies[platform].fail(f"{code}: {_sanitize(exc)}")
+                continue
+            tallies[platform].ok(len(items))
+            records.extend(_qa_record(item) for item in items)
+        stored = self.repo.upsert_news_records(
+            records, fetched_at=now, dedup_window_minutes=int(self.config.news_dedup_window_minutes)
+        )
+        for key, tally in tallies.items():
+            if tally.attempted:
+                source_status = tally.status()
+                self._save_daily_state(key, now, status=source_status, count=tally.count,
+                                       error="; ".join(tally.errors)[:500] if tally.errors else None,
+                                       success=source_status in ("ok", "empty"))
+        attempted = [k for k, tally in tallies.items() if tally.attempted]
+        failed = [k for k in attempted if tallies[k].status() == "failed"]
+        if not attempted:
+            status = "empty"
+        elif len(failed) == len(attempted):
+            status = "failed"
+        elif any(tallies[k].errors for k in attempted):
+            status = "partial"
+        else:
+            status = "ok"
+        return {
+            "status": status, "codes": len(codes), "since": since.isoformat(timespec="minutes"),
+            "fetched": len(records), "inserted": len(stored["inserted"]), "skipped": skipped,
+            "sources": {key: tally.summary() for key, tally in tallies.items() if tally.attempted},
+        }
+
+    def _fetch_qa(self, now: datetime) -> Dict[str, Any]:
+        codes = self.wanted_codes()
+        if not codes:
+            return {"status": "empty", "reason": "no_codes", "codes": 0}
+        try:
+            return self.fetch_qa_for_codes(codes, now=now, since=self._qa_since(now))
+        except Exception as exc:  # noqa: BLE001 - Q&A must not break the news job
+            logger.warning("[News] 投资者问答取数失败: %s", exc)
+            return {"status": "failed", "error": _sanitize(exc)}
 
     def _fetch_morning_brief(self, day: date, now: datetime) -> Dict[str, Any]:
         timeout = float(self.config.news_fetch_timeout_sec)

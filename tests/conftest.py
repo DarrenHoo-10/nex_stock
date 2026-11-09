@@ -282,3 +282,22 @@ def _no_live_company_event_fetch(monkeypatch):
     except Exception:  # noqa: BLE001
         return
     monkeypatch.setattr(stock_event_service.StockEventService, "_needs_code_fetch", lambda self, code: False)
+
+
+class _OfflineHttpForTests:
+    def get(self, *args, **kwargs):
+        raise ConnectionError("network disabled in tests")
+
+    post = get
+
+
+@_pytest.fixture(autouse=True)
+def _offline_direct_http_sources(monkeypatch):
+    """巨潮公告、互动易 / 上证e互动、深交所公告 are direct HTTP sources: offline unless a test stubs them."""
+    for module_name in ("src.services.news_cninfo_source", "src.services.sources.investor_qa",
+                        "src.services.sources.szse_disclosure"):
+        try:
+            module = __import__(module_name, fromlist=["_session"])
+        except Exception:  # noqa: BLE001
+            continue
+        monkeypatch.setattr(module, "_session", lambda: _OfflineHttpForTests())

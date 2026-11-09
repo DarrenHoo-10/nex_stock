@@ -202,6 +202,13 @@ class _StubCninfoHttp:
         return _StubResponse(outcome)
 
 
+class _OfflineHttp:
+    def get(self, *args, **kwargs):
+        raise ConnectionError("network disabled in tests")
+
+    post = get
+
+
 def cninfo_fixture(name: str = "his_announcement_600089.json") -> Dict[str, Any]:
     """Real 巨潮 query response (trimmed), sampled once on 2026-11-09."""
     return json.loads((CNINFO_FIXTURES / name).read_text(encoding="utf-8"))
@@ -211,6 +218,12 @@ def install_stub(monkeypatch: Any, stub: Optional[StubAkshare] = None) -> StubAk
     stub = stub or StubAkshare()
     monkeypatch.setattr(ak_source, "_akshare", lambda: stub)
     monkeypatch.setattr(cninfo_source, "_session", lambda: stub.http)
+    # Q&A and 深交所 sources: never reach the network; tests that need data stub the fetch functions.
+    from src.services.sources import investor_qa, szse_disclosure
+
+    monkeypatch.setattr(investor_qa, "_session", lambda: _OfflineHttp())
+    monkeypatch.setattr(szse_disclosure, "_session", lambda: _OfflineHttp())
+    investor_qa.reset_caches_for_tests()
     ak_source.reset_inflight_for_tests()
     cninfo_source.reset_cache_for_tests()
     return stub
