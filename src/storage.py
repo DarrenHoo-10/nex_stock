@@ -1772,6 +1772,18 @@ class StockEvent(Base):
     )
 
 
+class MacroSeries(Base):
+    """宏观和指数数据（src/services/macro_service.py）：每个序列、每个期间一行，数值为 JSON。"""
+
+    __tablename__ = 'macro_series'
+
+    series = Column(String(48), primary_key=True)  # pmi / money / social_financing / lpr / index_valuation / index_weight:<code>
+    period = Column(String(16), primary_key=True)  # YYYYMM 或 YYYYMMDD
+    value = Column(Text, nullable=False, default='{}')
+    source = Column(String(16), nullable=False, default='tushare')
+    fetched_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
 class StockEventIngest(Base):
     """Which announcement days of which event kind have been stored for the whole market."""
 

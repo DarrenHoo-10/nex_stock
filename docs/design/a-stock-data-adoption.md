@@ -237,6 +237,12 @@ Tushare 的 `irm_qa_sh` / `irm_qa_sz` 没有权限，用两个官方平台直连
 3. **选股日线的腾讯多入口轮换**（§1.2）：腾讯 K 线有三个入口（`web.ifzq.gtimg.cn`、`proxy.finance.qq.com/ifzqgtimg`、`ifzq.gtimg.cn`），各自限流，单入口约 600 次后开始返回空 JSON。`screening/daily.py` 的腾讯直连改为空结果时冷却该入口 120 秒、换下一个。
 4. **不做**：逐笔成交（§1.4）和 1 分钟线。当前用户以日线波段为主，没有使用场景。
 
+**第 6 期实现情况**：
+
+- 第 3 条（腾讯多入口轮换）已完成。
+- 第 1 条（通达信盘后包）**暂缓**：2026-11-09 采样的 `g4day/20261106.zip` 里是 `sh/sz/bj*.md1` 与 `*.cod` 文件（上海一份约 14 MB），不是文档里说的 `.day` 日线格式，格式没有公开说明。在没有参照解析结果可核对时写解析器，价格解析错会悄悄写进板块指标，风险大于收益；等找到可靠的格式说明或参考实现再接。
+- 第 2 条（复权口径统一）**暂缓**：日线历史是逐日累积存进 `stock_daily` 的（每次只刷新约最近 30 天），而前复权价格每次除权后都会整体变化，所以把 Tushare 改成前复权会让库里旧的不复权行和新的前复权行在接缝处跳变，比现在更糟。正确的做法是库里统一存不复权价格加 `adj_factor`、读取时再复权，这要改存储和所有读取方，超出本方案范围，单独立项。选股 `screening/daily.py` 的日线不入库，已经统一为前复权，不受影响。
+
 ## 11. 宏观、指数、日历（P3）
 
 | 数据 | 来源（a-stock-data） | 用途 |
@@ -250,6 +256,8 @@ Tushare 的 `irm_qa_sh` / `irm_qa_sz` 没有权限，用两个官方平台直连
 | 交易日历 | §12.4 深交所 `monthList` | 和现有 `exchange_calendars`、Tushare `trade_cal` 交叉核对，发现节假日调整 |
 
 这一组每天或每月取一次，结果存表，助手通过接口读取。Tushare 也有 `cn_pmi`、`cn_m`、`shibor_lpr`、`index_weight`，接入前各采样一次，能用就优先用 Tushare。
+
+**第 6 期实现情况**：`cn_pmi`、`cn_m`、`sf_month`、`shibor_lpr`、`index_dailybasic`、`index_weight` 都已采样确认可用，全部改用 Tushare，存进 `macro_series` 表，每天随资讯任务刷新，接口 `GET /api/v1/data/macro`、`GET /api/v1/data/indices/{code}/constituents`。没有接的：中债收益率曲线、回购定盘利率（Tushare 没有对应接口，官方来源需要按 360 天切片抓取，等有使用场景再接）、交易日历交叉核对；指数成分还没有接进选股范围（如「只看中证 1000 成分」），大盘复盘也还没读宏观数据。
 
 ## 12. 不采纳
 
@@ -278,7 +286,7 @@ a-stock-data 自身文档有几处前后矛盾，采纳时以实测为准：东�
 | 3 | 投资者问答（第 5 节）、深交所公告第三来源（第 4 节） | `src/services/sources/cninfo_irm.py`、`sse_e_interaction.py`、`szse_disclosure.py` | 三个接口各一次采样；沪深分流、相对时间换算、失败和空结果区分 |
 | 4（已完成） | 券商评级和一致预期（第 6 节）、资金面（第 9 节） | `stock_event` 新增 `research` / `dragon_tiger`、`/stocks/{code}/research`、`/stocks/{code}/capital`、`capital_service`、新浪资金流备用 | `top_list` / `top_inst` / `report_rc` / `margin_detail` / `moneyflow_hsgt` / 新浪各一次采样；`get_capital_flow` 回归 |
 | 5（已完成） | 打板和情绪（第 8 节）、快讯备用源（第 7 节） | `kpl_list` / 热榜入库、风险名单、财联社直连、华尔街见闻、`major_news` | 签名算法单测；风险名单排除选股的回归 |
-| 6 | 行情稳健性（第 10 节）、宏观和指数（第 11 节） | 通达信盘后包、复权统一、腾讯多入口、官方宏观 / 指数 | 盘后包解析用一次采样的 zip；复权前后均线一致性测试 |
+| 6（部分完成，见第 10、11 节） | 行情稳健性（第 10 节）、宏观和指数（第 11 节） | 通达信盘后包、复权统一、腾讯多入口、官方宏观 / 指数 | 盘后包解析用一次采样的 zip；复权前后均线一致性测试 |
 
 每期都要：新配置项同步 `.env.example` 和文档，并登记到数据状态对应来源的 `config_keys`（设置 →「数据状态」可直接配置）；新来源在 `data_capability_service` 里有一行状态；`docs/data-sources.md` 加来源说明；`docs/CHANGELOG.md` 加一行。
 

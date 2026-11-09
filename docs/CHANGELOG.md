@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增宏观和指数数据：PMI、货币供应量、社会融资规模、LPR、主要指数估值（PE / PB）和指数成分权重（沪深300、中证500、中证1000、上证50、创业板指、科创50），来自 Tushare，每天随资讯任务刷新一次（新表 `macro_series`）；新增 `GET /api/v1/data/macro` 和 `GET /api/v1/data/indices/{code}/constituents`。
+- [改进] 选股取腾讯日线时在三个 K 线入口间轮换：某个入口返回空结果或请求失败时冷却 120 秒、改用下一个，减少单入口限流导致的日线缺失。
 - [新功能] 新增打板和风险名单：开盘啦涨停 / 炸板 / 跌停（Tushare `kpl_list`）、同花顺热股榜和东方财富人气榜（`ths_hot`、`dc_hot`）每日入库为公司事件 `limit_board`、`hot_rank`；东方财富重点监控名单和严重异常波动每天各取一次（`risk_watch`、`price_anomaly`），**在重点监控名单内的股票选股直接排除**，两者都写进次日计划和选股候选的风险。板块指标新增连板梯队、最高连板和晋级率（`market_daily` 新列，板块页接口 `market` 返回）。
 - [改进] 快讯新增备用源：AkShare 取财联社失败时改用财联社官方接口直连（同一条不会重复入库）；华尔街见闻 A 股快讯排在备用快讯最后；Tushare 长篇新闻 `major_news` 每天取一次存进资讯库（`item_kind=article`），助手的题材新闻搜索可以搜到。数据状态新增「华尔街见闻快讯」「长篇新闻（Tushare）」两行。
 - [新功能] 新增券商研报和资金面：券商盈利预测（Tushare `report_rc`）和龙虎榜（`top_list` + 席位 `top_inst`）作为公司事件 `research`、`dragon_tiger` 每日全市场入库；新增 `GET /api/v1/stocks/{code}/research`（评级分布、按机构去重的 EPS / 净利润一致预期、目标价）和 `GET /api/v1/stocks/{code}/capital`（两融、主力资金、龙虎榜席位、北向 / 南向）。选股候选的「事件」会带上龙虎榜机构净额和研报评级。新浪个股资金流作为个股资金流的最后一个备用源（东方财富冷却时补主力净流入和 5 / 10 日合计），数据状态新增「新浪财经（个股资金流备用）」一行。
