@@ -665,6 +665,37 @@ def _fetch_daily_akshare(code: str, *, lookback_days: int) -> pd.DataFrame:
     return df.tail(max(lookback_days, 30)).copy()
 
 
+# Tencent serves the same K-line API on three hosts, each rate-limited on its own: after roughly 600 calls a
+# host starts answering with an empty payload. Such a host cools down and the next one is used.
+TENCENT_KLINE_URLS = (
+    "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+    "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get",
+    "https://ifzq.gtimg.cn/appstock/app/fqkline/get",
+)
+TENCENT_HOST_COOLDOWN_SECONDS = 120.0
+_tencent_cooldown_until: dict[str, float] = {}
+_tencent_cooldown_lock = threading.Lock()
+
+
+def _tencent_urls_in_order(now: float) -> list[str]:
+    """Hosts not cooling down, in fixed order; when all are cooling, the one that recovers first."""
+    with _tencent_cooldown_lock:
+        ready = [url for url in TENCENT_KLINE_URLS if _tencent_cooldown_until.get(url, 0.0) <= now]
+        if ready:
+            return ready
+        return [min(TENCENT_KLINE_URLS, key=lambda url: _tencent_cooldown_until.get(url, 0.0))]
+
+
+def _cool_tencent_host(url: str, now: float) -> None:
+    with _tencent_cooldown_lock:
+        _tencent_cooldown_until[url] = now + TENCENT_HOST_COOLDOWN_SECONDS
+
+
+def reset_tencent_hosts_for_tests() -> None:
+    with _tencent_cooldown_lock:
+        _tencent_cooldown_until.clear()
+
+
 def _fetch_daily_tencent(code: str, *, lookback_days: int) -> pd.DataFrame:
     """Fetch forward-adjusted daily history from Tencent's direct HTTP API.
 
@@ -677,21 +708,34 @@ def _fetch_daily_tencent(code: str, *, lookback_days: int) -> pd.DataFrame:
     """
     symbol = _to_tencent_code(code)
     count = max(int(lookback_days), 30)
-    response = requests.get(
-        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
-        params={"param": f"{symbol},day,,,{count},qfq"},
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=10,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, dict) or payload.get("code") not in (0, "0", None):
-        message = payload.get("msg") if isinstance(payload, dict) else payload
-        raise RuntimeError(f"tencent daily API error for {code}: {message}")
-    data = payload.get("data") if isinstance(payload, dict) else None
-    stock_data = data.get(symbol) if isinstance(data, dict) else None
+    stock_data = None
+    last_error: Exception | None = None
+    for url in _tencent_urls_in_order(time.monotonic()):
+        try:
+            response = requests.get(
+                url,
+                params={"param": f"{symbol},day,,,{count},qfq"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+            _cool_tencent_host(url, time.monotonic())
+            continue
+        if isinstance(payload, dict) and payload.get("code") not in (0, "0", None):
+            raise RuntimeError(f"tencent daily API error for {code}: {payload.get('msg')}")
+        data = payload.get("data") if isinstance(payload, dict) else None
+        stock_data = data.get(symbol) if isinstance(data, dict) else None
+        if isinstance(stock_data, dict):
+            break
+        # Empty payload: this host is rate-limited; cool it down and ask the next one.
+        last_error = RuntimeError(f"tencent daily history missing payload for {code} ({url.split('/')[2]})")
+        _cool_tencent_host(url, time.monotonic())
+        stock_data = None
     if not isinstance(stock_data, dict):
-        raise RuntimeError(f"tencent daily history missing payload for {code}")
+        raise RuntimeError(f"tencent daily history missing payload for {code}: {last_error}")
     rows = stock_data.get("qfqday") or stock_data.get("day") or []
     if not isinstance(rows, list) or not rows:
         raise RuntimeError(f"tencent daily history empty for {code}")

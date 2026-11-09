@@ -185,6 +185,7 @@ class NewsPoolService:
         sleep_fn: Callable[[float], None] = time.sleep,
         events_runner: Optional[Callable[[], Dict[str, Any]]] = None,
         risk_lists_runner: Optional[Callable[[], Dict[str, Any]]] = None,
+        macro_runner: Optional[Callable[[], Dict[str, Any]]] = None,
         articles_query: Optional[Callable[[datetime, datetime], List[Dict[str, Any]]]] = None,
     ) -> None:
         self.repo = repo or IntelligenceRepository()
@@ -198,6 +199,7 @@ class NewsPoolService:
         self._sleep = sleep_fn
         self._events_runner = events_runner
         self._risk_lists_runner = risk_lists_runner
+        self._macro_runner = macro_runner
         self._articles_query = articles_query
 
     # ------------------------------------------------------------------
@@ -438,6 +440,8 @@ class NewsPoolService:
                 "risk_lists": self._fetch_risk_lists(),
                 # Tushare major_news of the last day as background articles; separate as well.
                 "articles": self._fetch_articles(now),
+                # PMI / 货币 / 社融 / LPR / 指数估值和成分 (Tushare; each series at most once in 20 h).
+                "macro": self._fetch_macro(),
             }
             statuses = {part["status"] for part in (result["announcements"], result["morning_brief"])}
             result["status"] = (
@@ -473,6 +477,20 @@ class NewsPoolService:
             return runner()
         except Exception as exc:  # noqa: BLE001 - risk lists must not break the news job
             logger.warning("[News] 东方财富风险名单取数失败: %s", exc)
+            return {"status": "failed", "error": _sanitize(exc)}
+
+    def _fetch_macro(self) -> Dict[str, Any]:
+        runner = self._macro_runner
+        if runner is None:
+            if not str(getattr(self.config, "tushare_token", "") or "").strip():
+                return {"status": "skipped", "reason": "tushare_not_configured"}
+            from src.services.macro_service import MacroService
+
+            runner = MacroService().refresh
+        try:
+            return runner()
+        except Exception as exc:  # noqa: BLE001 - macro data must not break the news job
+            logger.warning("[News] 宏观和指数数据取数失败: %s", exc)
             return {"status": "failed", "error": _sanitize(exc)}
 
     def _fetch_articles(self, now: datetime) -> Dict[str, Any]:

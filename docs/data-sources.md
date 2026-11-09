@@ -71,6 +71,8 @@ TUSHARE_TOKEN=你的token
 
 **资金面**：两融 `margin_detail`（单只股票，近 20 个交易日）和北向 / 南向 `moneyflow_hsgt`（全市场，进程内缓存 1 小时）不入库，由 `src/services/capital_service.py` 在 `GET /api/v1/stocks/{code}/capital` 时按需读取。`moneyflow_hsgt` 单位为百万元；2024 年 8 月起交易所盘后只公布北向成交额，数值量级与成交额一致，不能当作净买入。这些接口在 15000 积分账号上已采样确认可用；公告 `anns_d`、互动问答 `irm_qa_*`、研报 `research_report`、短讯 `news`、竞价 `stk_auction` 需要单独购买，项目不使用。
 
+**宏观和指数**：PMI `cn_pmi`、货币供应量 `cn_m`、社会融资规模 `sf_month`、LPR `shibor_lpr`、主要指数估值 `index_dailybasic`（PE / PE TTM / PB）、指数成分和权重 `index_weight`（沪深300、中证500、中证1000、上证50、创业板指、科创50 的月度快照）由 `src/services/macro_service.py` 调用，存入 `macro_series` 表。每天的资讯任务刷新一次（每个序列 20 小时内不重复取，约 15 次请求），没有 Token 时跳过；`GET /api/v1/data/macro` 和 `GET /api/v1/data/indices/{code}/constituents` 只读本地表。这几个接口在本账号已采样确认可用，所以没有用 a-stock-data 列出的统计局 / 人民银行 / 中证官网网页。
+
 **相关**：股票列表导出脚本见 [Tushare 股票列表指南](TUSHARE_STOCK_LIST_GUIDE.md)。
 
 ### 2.2 必盈 API
@@ -166,6 +168,8 @@ PYTDX_PORT=7709
 ### 3.6 Tencent（腾讯财经）
 
 默认优先级 5，普通 A 股日线的最终兜底；同时是**已登记指数固定链的第一位**。实时行情里的 `tencent` 有量比 / 换手率 / PE / PB，单股查询稳定，是免费实时源的推荐首选。
+
+选股的日线直连（`src/services/screening/daily.py`）在腾讯的三个 K 线入口间轮换：`web.ifzq.gtimg.cn`、`proxy.finance.qq.com/ifzqgtimg`、`ifzq.gtimg.cn` 各自限流，单个入口约 600 次后开始返回空结果；某个入口返回空结果或请求失败时冷却 120 秒，改用下一个。
 
 ## 4. 港股与美股渠道
 
