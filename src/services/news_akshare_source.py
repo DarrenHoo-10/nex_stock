@@ -46,6 +46,11 @@ KIND_ANNOUNCEMENT = "announcement"
 KIND_MORNING_BRIEF = "morning_brief"
 KIND_QA = "qa"  # investor Q&A (互动易 / 上证e互动), src/services/sources/investor_qa.py
 KIND_ARTICLE = "article"  # long news (Tushare major_news): background, not part of the flash pool
+# Kinds the pool fetches only because some user follows the code (``NewsPoolService.wanted_codes``): announcements
+# (巨潮 / 深交所 / 东方财富 per code) and investor Q&A. Everything else (flashes, morning brief, long news) is
+# whole-market. Showing a per-code row to a user who does not follow that code would reveal who does
+# (docs/design/multi-user.md section 23.5).
+PER_CODE_KINDS = frozenset({KIND_ANNOUNCEMENT, KIND_QA})
 
 SOURCE_CLS = "cls"
 SOURCE_EM = "em"

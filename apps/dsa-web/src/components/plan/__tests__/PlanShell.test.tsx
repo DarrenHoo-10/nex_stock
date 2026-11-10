@@ -140,7 +140,7 @@ describe('PlanShell in a multi-user deployment', () => {
     expect(screen.getByTestId('current-user-badge')).toHaveTextContent('Alice');
     expect(screen.getByTestId('current-user-badge')).toHaveTextContent('普通用户');
     // 选股 (screening run) is administrator-only; settings become the personal settings.
-    expect(hrefs()).toEqual(['/boards', '/mine', '/assistant', '/settings/personal']);
+    expect(hrefs()).toEqual(['/boards', '/mine', '/closing-analysis', '/assistant', '/settings/personal']);
     await screen.findByText('还没有运行记录');
   });
 
@@ -149,7 +149,7 @@ describe('PlanShell in a multi-user deployment', () => {
     renderAs(adminUser);
 
     expect(screen.getByTestId('current-user-badge')).toHaveTextContent('管理员');
-    expect(hrefs()).toEqual(['/boards', '/picks', '/mine', '/assistant', '/preferences']);
+    expect(hrefs()).toEqual(['/boards', '/picks', '/mine', '/closing-analysis', '/assistant', '/preferences']);
     await screen.findByText('还没有运行记录');
   });
 });

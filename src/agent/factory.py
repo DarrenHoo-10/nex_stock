@@ -459,8 +459,8 @@ _CHAT_REGISTRY_CACHE: Optional[tuple] = None  # (base registry, chat registry)
 def get_chat_tool_registry(config=None):
     """Tools of the Agent Chat assistant: every shared tool plus the API tools.
 
-    ``read_api_doc`` / ``call_api`` (``src/agent/tools/api_tools.py``) give the assistant the user's
-    full reach over ``/api/v1``. They are deliberately not in the shared registry, so report
+    ``read_api_doc`` / ``call_api`` (``src/agent/tools/api_tools.py``) give the assistant the reach of the
+    session owner (``user_scoped``) over ``/api/v1``. They are deliberately not in the shared registry, so report
     analysis, scheduled runs and the multi-agent specialists never get write access to the API.
     """
     global _CHAT_REGISTRY_CACHE

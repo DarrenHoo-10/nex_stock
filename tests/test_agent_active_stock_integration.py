@@ -1198,6 +1198,7 @@ def test_actual_chat_api_clarification_accepts_without_analysis_or_compression(a
     client, requests, config = actual_chat_api
     config.agent_context_compression_enabled = True
     config.agent_context_compression_trigger_tokens = 1
+    config.agent_context_compression_trigger_ratio = 0  # fixed trigger only: a known model window would apply the default ratio
     def forbidden(*_args, **_kwargs):
         pytest.fail("fixed clarification entered analysis preparation or a model")
     monkeypatch.setattr(chat_context, "_generate_summary", forbidden)
@@ -2403,6 +2404,9 @@ def test_legacy_prepare_deletion_during_compression_cannot_rebind_request(db, ch
     config.agent_arch = arch
     config.agent_context_compression_enabled = True
     config.agent_context_compression_trigger_tokens = 1
+    # Use the fixed trigger only: a known model context window (real LiteLLM model info loaded by an
+    # earlier test) would otherwise make the default ratio trigger win and skip compression.
+    config.agent_context_compression_trigger_ratio = 0
     config.agent_context_protected_turns = 1
     service = AgentChatSessionService(db)
     sid = "legacy-summary"

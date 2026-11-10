@@ -282,6 +282,16 @@ def test_capital_overview_sections_fail_independently(db, monkeypatch):
 # ----------------------------------------------------------------------
 # API
 # ----------------------------------------------------------------------
+
+
+def _primary():
+    """The acting user the open stock routes receive for the primary user (CLI / local mode)."""
+    from api.deps import CurrentUser
+    from src.config import get_primary_user_id
+
+    uid = get_primary_user_id()
+    return CurrentUser(user_id=uid, handle=uid, display_name=uid, role="admin", is_admin=True)
+
 def test_research_and_capital_endpoints(db, monkeypatch):
     from fastapi import HTTPException
 
@@ -297,18 +307,18 @@ def test_research_and_capital_endpoints(db, monkeypatch):
                         lambda self, repo_=None, fetcher=None, **k: real_init(self, repo, fake, today=lambda: TODAY))
     monkeypatch.setattr(sina_fund_flow, "fetch", lambda *a, **k: [])
 
-    research = stocks.get_stock_research("600089", days=90)
+    research = stocks.get_stock_research("600089", days=90, user=_primary())
     assert research.summary["institutions"] == 2 and len(research.reports) == 2
     assert research.reports[0].kind_label == "券商研报" and research.reports[0].payload["forecasts"]
 
-    capital = stocks.get_stock_capital("002086", days=20)
+    capital = stocks.get_stock_capital("002086", days=20, user=_primary())
     assert capital.margin["status"] == "empty" and capital.fund_flow["status"] == "empty"
     assert capital.dragon_tiger[0].kind == "dragon_tiger" and capital.dragon_tiger[0].kind_label == "龙虎榜"
 
-    events = stocks.get_stock_events("002086", kinds="dragon_tiger", days=30)
+    events = stocks.get_stock_events("002086", kinds="dragon_tiger", days=30, user=_primary())
     assert [e.kind for e in events.events] == ["dragon_tiger"]
-    for call in (lambda: stocks.get_stock_research("sh000001", days=90),
-                 lambda: stocks.get_stock_capital("sh000001", days=20)):
+    for call in (lambda: stocks.get_stock_research("sh000001", days=90, user=_primary()),
+                 lambda: stocks.get_stock_capital("sh000001", days=20, user=_primary())):
         with pytest.raises(HTTPException) as exc:
             call()
         assert exc.value.status_code == 400

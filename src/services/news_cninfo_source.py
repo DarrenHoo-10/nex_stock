@@ -45,6 +45,7 @@ PDF_BASE_URL = "https://static.cninfo.com.cn/"
 PAGE_SIZE = 30
 MAX_PAGES = 3  # 90 announcements per code and window is far beyond any daily window
 ORGID_CACHE_SECONDS = 24 * 3600
+ORGID_FAILURE_RETRY_SECONDS = 300  # a failed map load is not retried on every code / request
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
     "Referer": "https://www.cninfo.com.cn/new/disclosure",
@@ -54,7 +55,7 @@ _HEADERS = {
 _HIGHLIGHT_RE = re.compile(r"</?em>", re.IGNORECASE)
 
 _orgid_lock = threading.Lock()
-_orgid_cache: Dict[str, Any] = {"loaded_at": 0.0, "map": {}}
+_orgid_cache: Dict[str, Any] = {"loaded_at": 0.0, "map": {}, "failed_at": None}
 
 
 def _session() -> Any:
@@ -68,6 +69,7 @@ def reset_cache_for_tests() -> None:
     with _orgid_lock:
         _orgid_cache["loaded_at"] = 0.0
         _orgid_cache["map"] = {}
+        _orgid_cache["failed_at"] = None
 
 
 def _pattern_org_id(code: str) -> str:
@@ -88,11 +90,17 @@ def parse_orgid_map(payload: Any) -> Dict[str, str]:
 
 
 def orgid_map(*, timeout_sec: float, now: Callable[[], float] = time.monotonic) -> Dict[str, str]:
-    """code -> orgId of all A shares, loaded at most once a day (old map kept when a reload fails)."""
+    """code -> orgId of all A shares, loaded at most once a day (old map kept when a reload fails).
+
+    A failed (or empty) load is remembered for ``ORGID_FAILURE_RETRY_SECONDS``: until then callers get the old map
+    (or ``{}`` and the code pattern) without another request, so an unreachable site is not hit once per code.
+    """
     with _orgid_lock:
         fresh = _orgid_cache["map"] and now() - _orgid_cache["loaded_at"] < ORGID_CACHE_SECONDS
         mapping: Dict[str, str] = _orgid_cache["map"]
-    if fresh:
+        failed_at = _orgid_cache.get("failed_at")
+        backing_off = failed_at is not None and now() - failed_at < ORGID_FAILURE_RETRY_SECONDS
+    if fresh or backing_off:
         return mapping
     try:
         response = _session().get(ORGID_MAP_URL, headers=_HEADERS, timeout=timeout_sec)
@@ -102,9 +110,13 @@ def orgid_map(*, timeout_sec: float, now: Callable[[], float] = time.monotonic) 
             with _orgid_lock:
                 _orgid_cache["map"] = loaded
                 _orgid_cache["loaded_at"] = now()
+                _orgid_cache["failed_at"] = None
             return loaded
+        logger.warning("[News] 巨潮 orgId 映射表为空，沿用%s", "缓存" if mapping else "代码规则")
     except Exception as exc:  # noqa: BLE001 - keep the old map / the pattern
         logger.warning("[News] 巨潮 orgId 映射表获取失败，沿用%s: %s", "缓存" if mapping else "代码规则", exc)
+    with _orgid_lock:
+        _orgid_cache["failed_at"] = now()
     return mapping
 
 

@@ -196,8 +196,18 @@ class IntelligenceRepository:
         published_days: Optional[int] = None,
         page: int = 1,
         page_size: int = 50,
+        restrict_kinds: Optional[Sequence[str]] = None,
+        allowed_scope_values: Optional[Iterable[str]] = None,
     ) -> Tuple[List[IntelligenceItem], int]:
+        """``restrict_kinds`` + ``allowed_scope_values``: rows of those kinds are only returned for the listed
+        scope values (a non-primary viewer's own codes); every other kind is unaffected."""
         conditions = []
+        if restrict_kinds:
+            conditions.append(or_(
+                IntelligenceItem.item_kind.is_(None),
+                IntelligenceItem.item_kind.notin_(list(restrict_kinds)),
+                IntelligenceItem.scope_value.in_(list(allowed_scope_values or [])),
+            ))
         if scope_type:
             conditions.append(IntelligenceItem.scope_type == scope_type)
         if scope_value:

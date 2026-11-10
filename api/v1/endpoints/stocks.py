@@ -53,6 +53,7 @@ from src.services.import_parser import (
     parse_import_from_bytes,
     parse_import_from_text,
 )
+from src.services.on_demand_fetch import OnDemandFetchLimited
 from src.services.stock_code_guard import LegacyBseCodeError, resolve_bse_code
 from src.services.stock_service import StockService
 from src.services.stock_profile_service import InvalidStockProfileCode, StockProfileService
@@ -632,6 +633,7 @@ def get_stock_events(
     stock_code: str,
     kinds: Optional[str] = Query(None, description="逗号分隔的事件类型，留空返回全部"),
     days: int = Query(30, ge=1, le=120, description="回看天数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockEventsResponse:
     from src.services.stock_code_guard import require_stock_code
     from src.services.stock_event_service import KIND_LABELS, StockEventService
@@ -648,7 +650,7 @@ def get_stock_events(
             detail={"error": "invalid_kind", "message": f"未知事件类型：{', '.join(unknown)}"},
         )
     try:
-        result = StockEventService().events_for(code, kinds=wanted, days=days)
+        result = StockEventService(**_on_demand_kwargs(user)).events_for(code, kinds=wanted, days=days)
     except Exception as e:
         logger.error(f"获取公司事件失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取公司事件失败"})
@@ -659,6 +661,23 @@ def get_stock_events(
                 for event in result["events"] if event["kind"] in KIND_LABELS],
         risks=result["risks"],
         fetch=result["fetch"],
+    )
+
+
+def _on_demand_kwargs(user: CurrentUser) -> dict:
+    """Constructor kwargs of the services that fetch from external sources on demand.
+
+    The primary user is passed nothing (unlimited, system credentials: exactly as before multi-user); anyone else
+    is named so their own data-source token is used when set and their fetches are rate limited
+    (``src/services/on_demand_fetch.py``).
+    """
+    return {} if user.user_id == get_primary_user_id() else {"user_id": user.user_id}
+
+
+def _on_demand_limited(exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail={"error": "rate_limited", "message": "按需取数次数已达每小时上限，请稍后再试"},
     )
 
 
@@ -689,12 +708,13 @@ def _require_a_share(stock_code: str) -> str:
 def get_stock_research(
     stock_code: str,
     days: int = Query(90, ge=7, le=120, description="回看天数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockResearchResponse:
     from src.services.stock_event_service import KIND_LABELS, StockEventService, research_summary
 
     code = _require_a_share(stock_code)
     try:
-        service = StockEventService()
+        service = StockEventService(**_on_demand_kwargs(user))
         result = service.events_for(code, kinds=("research",), days=days)
     except Exception as e:
         logger.error(f"获取券商研报失败: {e}", exc_info=True)
@@ -729,18 +749,20 @@ def get_stock_research(
 def get_stock_capital(
     stock_code: str,
     days: int = Query(20, ge=5, le=60, description="两融回看交易日数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockCapitalResponse:
     from src.services.capital_service import CapitalService
     from src.services.stock_event_service import KIND_LABELS
 
     code = _require_a_share(stock_code)
-    result = CapitalService().overview(code, days=days)
+    result = CapitalService(**_on_demand_kwargs(user)).overview(code, days=days)
     result["dragon_tiger"] = [StockEventItem(**{**event, "kind_label": KIND_LABELS["dragon_tiger"]})
                               for event in result["dragon_tiger"]]
     return StockCapitalResponse(**result)
 
 
 _QA_REFRESH_HOURS = 6
+_QA_FAILURE_RETRY_SECONDS = 600
 
 
 @router.get(
@@ -761,12 +783,16 @@ _QA_REFRESH_HOURS = 6
 def get_stock_qa(
     stock_code: str,
     days: int = Query(30, ge=1, le=60, description="回看天数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockQaResponse:
     import json as _json
     from datetime import timedelta as _timedelta
 
     from src.repositories.intelligence_repo import IntelligenceRepository
+    from src.services.news_akshare_source import normalize_a_share_code
+    from src.services.news_digest_service import viewer_announcement_codes
     from src.services.news_pool_service import NewsPoolService, china_now
+    from src.services.on_demand_fetch import allow_on_demand_fetch, checked_recently, mark_checked
     from src.services.sources.investor_qa import route
     from src.services.stock_code_guard import require_stock_code
 
@@ -788,12 +814,25 @@ def get_stock_qa(
         def stored():
             return repo.list_stock_news(code=code, since=since, kinds=("qa",), limit=100)
 
-        rows = stored()
-        fetched_at = max((row.fetched_at for row in rows if row.fetched_at), default=None)
+        # The pool holds Q&A fetched because some user follows the code. The primary user and a user who follows the
+        # code see the pool as is (the system job keeps it fresh). For anyone else, whether rows are already stored
+        # or fresh would reveal who follows the code, so their view depends on their own fetch only: nothing stored
+        # is shown or counted as fresh until they have refreshed this code themselves (marker per viewer).
+        own_codes = viewer_announcement_codes(user.user_id)
+        shared_view = own_codes is None or normalize_a_share_code(code) in own_codes
+        marker = f"qa:{code}" if shared_view else f"qa:{user.user_id}:{code}"
+        rows = stored() if shared_view or checked_recently(marker) else []
+        fetched_at = max((row.fetched_at for row in rows if row.fetched_at), default=None) if shared_view else None
         fetch: dict = {}
-        if fetched_at is None or now - fetched_at > _timedelta(hours=_QA_REFRESH_HOURS):
-            fetch = NewsPoolService(repo).fetch_qa_for_codes([code], now=now, since=since)
-            rows = stored()
+        # A stock without any answered Q&A has no ``fetched_at`` either, so "checked" is remembered separately.
+        stale = fetched_at is None or now - fetched_at > _timedelta(hours=_QA_REFRESH_HOURS)
+        if stale and not checked_recently(marker):
+            if not allow_on_demand_fetch(_on_demand_kwargs(user).get("user_id")):
+                fetch = {"status": "rate_limited", "error": "按需取数次数已达上限，先显示已存储的数据"}
+            else:
+                fetch = NewsPoolService(repo).fetch_qa_for_codes([code], now=now, since=since)
+                mark_checked(marker, _QA_REFRESH_HOURS * 3600 if fetch.get("status") != "failed" else _QA_FAILURE_RETRY_SECONDS)
+                rows = stored()
     except Exception as e:
         logger.error(f"获取投资者问答失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取投资者问答失败"})
@@ -817,9 +856,13 @@ def get_stock_qa(
 @router.get("/{stock_code}/opening-auction", response_model=OpeningAuctionResponse)
 def get_opening_auction(
     stock_code: str, date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> OpeningAuctionResponse:
     try:
-        result = get_intraday_snapshot_service().get_opening_auction(stock_code, date)
+        # The primary user may use the system's ashareapi key; everyone else gets the free sources only.
+        result = get_intraday_snapshot_service().get_opening_auction(stock_code, date, **_on_demand_kwargs(user))
+    except OnDemandFetchLimited as exc:
+        raise _on_demand_limited(exc)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="股票代码或交易日期无效") from exc
     return OpeningAuctionResponse(**result)
@@ -849,9 +892,12 @@ def get_opening_auction(
 def get_stock_intraday(
     stock_code: str,
     date: str = Query(..., description="交易日 YYYY-MM-DD", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockIntradayResponse:
     try:
-        result = get_intraday_snapshot_service().get_session_bars(stock_code, date)
+        result = get_intraday_snapshot_service().get_session_bars(stock_code, date, **_on_demand_kwargs(user))
+    except OnDemandFetchLimited as exc:
+        raise _on_demand_limited(exc)
     except ValueError as e:
         raise HTTPException(
             status_code=422,

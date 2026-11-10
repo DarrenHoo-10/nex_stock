@@ -4,8 +4,10 @@
 Tools:
 - read_api_doc: the live OpenAPI document of ``/api/v1`` in three levels — the group directory,
   the endpoints of one group, the full contract of one endpoint.
-- call_api: call any ``/api/v1`` endpoint in-process (``api/internal_client.py``), with the same
-  reach as the logged-in user. Only routes that cannot work in-process are excluded.
+- call_api: call a ``/api/v1`` endpoint in-process (``api/internal_client.py``), acting as the owner of the
+  chat session and nobody else (both tools are ``user_scoped``: the registry hands them the session owner).
+  Routes that cannot work in-process, credentials / process settings and (for non-administrators) every
+  ``require_admin`` route are out of reach; ``read_api_doc`` does not show what the user cannot call.
 
 The document is generated from the routes on every process start, so it cannot drift from the code.
 """
@@ -28,7 +30,7 @@ _SCHEMA_MAX_DEPTH = 4
 _RESULT_MAX_CHARS = 30000
 
 API_DOC_GUIDE = (
-    "后端所有接口都对你开放，和用户在网页上能做的事一样。接口文档按层查看：\n"
+    "后端接口按当前用户的权限对你开放，和这个用户在网页上能做的事一样（系统设置、个人密钥与推送渠道、管理员接口除外）。接口文档按层查看：\n"
     "1. read_api_doc() 看分组目录；\n"
     "2. read_api_doc(group=\"DailyPlan\") 看一个分组里的接口；\n"
     "3. read_api_doc(endpoint=\"GET /api/v1/plan/account\") 看一个接口的参数、请求体和返回结构；\n"
@@ -46,11 +48,16 @@ def _spec() -> Dict[str, Any]:
     return get_openapi_spec()
 
 
-def _operations(spec: Dict[str, Any]) -> List[Tuple[str, str, Dict[str, Any]]]:
+def _operations(spec: Dict[str, Any], user: Any) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """Operations ``user`` may see: credentials / process settings and (for non-administrators) admin routes are left out."""
+    from api.internal_client import blocked_prefix_reason, hidden_from
+
     ops = []
     for path, items in spec.get("paths", {}).items():
+        if blocked_prefix_reason(path):
+            continue
         for method, op in items.items():
-            if method.upper() in _METHODS and isinstance(op, dict):
+            if method.upper() in _METHODS and isinstance(op, dict) and not hidden_from(method, path, user):
                 ops.append((method.upper(), path, op))
     return ops
 
@@ -60,21 +67,21 @@ def _group_of(op: Dict[str, Any]) -> str:
     return str(tags[0]) if tags else "Other"
 
 
-def _excluded(method: str, path: str) -> Optional[str]:
-    from api.internal_client import EXCLUDED_ROUTES
+def _excluded(method: str, path: str, user: Any) -> Optional[str]:
+    from api.internal_client import template_reason
 
-    return EXCLUDED_ROUTES.get((method, path))
+    return template_reason(method, path, user)
 
 
-def _endpoint_line(method: str, path: str, op: Dict[str, Any]) -> str:
+def _endpoint_line(method: str, path: str, op: Dict[str, Any], user: Any) -> str:
     line = f"{method} {path} — {op.get('summary') or op.get('operationId') or ''}".rstrip(" —")
-    reason = _excluded(method, path)
+    reason = _excluded(method, path, user)
     return f"{line}（不可调用：{reason}）" if reason else line
 
 
-def _directory(spec: Dict[str, Any]) -> Dict[str, Any]:
+def _directory(spec: Dict[str, Any], user: Any) -> Dict[str, Any]:
     groups: Dict[str, List[str]] = {}
-    for method, path, op in _operations(spec):
+    for method, path, op in _operations(spec, user):
         groups.setdefault(_group_of(op), []).append(op.get("summary") or f"{method} {path}")
     return {
         "guide": API_DOC_GUIDE,
@@ -85,15 +92,15 @@ def _directory(spec: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _group(spec: Dict[str, Any], group: str) -> Dict[str, Any]:
+def _group(spec: Dict[str, Any], group: str, user: Any) -> Dict[str, Any]:
     wanted = group.strip().casefold()
     lines = [
-        _endpoint_line(method, path, op) for method, path, op in _operations(spec)
+        _endpoint_line(method, path, op, user) for method, path, op in _operations(spec, user)
         if _group_of(op).casefold() == wanted or path.casefold().startswith(wanted)
         or path.casefold().startswith("/api/v1" + wanted)
     ]
     if not lines:
-        names = sorted({_group_of(op) for _m, _p, op in _operations(spec)})
+        names = sorted({_group_of(op) for _m, _p, op in _operations(spec, user)})
         return {"error": f"没有分组 {group}", "groups": names}
     return {"group": group, "endpoints": lines,
             "next": "用 read_api_doc(endpoint=\"METHOD /api/v1/...\") 看某个接口的参数和返回结构"}
@@ -157,14 +164,18 @@ def _parse_endpoint(endpoint: str) -> Tuple[Optional[str], str]:
     return None, text
 
 
-def _endpoint(spec: Dict[str, Any], endpoint: str) -> Dict[str, Any]:
-    from api.internal_client import match_any_method
+def _endpoint(spec: Dict[str, Any], endpoint: str, user: Any) -> Dict[str, Any]:
+    from api.internal_client import CallRefused, match_any_method, safe_route_path
 
     method, path = _parse_endpoint(endpoint)
     path = _normalize_path(path).split("?", 1)[0]
+    try:
+        path = safe_route_path(path)
+    except CallRefused as exc:
+        return {"error": exc.message, "next": "先用 read_api_doc() 看分组目录"}
     wanted = {(m, t) for m, t in match_any_method(path) if method is None or m == method}
     candidates = [
-        (m, p, op) for m, p, op in _operations(spec)
+        (m, p, op) for m, p, op in _operations(spec, user)
         if (p == path and (method is None or m == method)) or (m, p) in wanted
     ]
     # A literal route (e.g. /plan/runs/latest) wins over a parameterised one for the same request.
@@ -174,12 +185,12 @@ def _endpoint(spec: Dict[str, Any], endpoint: str) -> Dict[str, Any]:
         return {"error": f"没有接口 {endpoint}", "next": "先用 read_api_doc() 看分组目录"}
     if len(candidates) > 1:
         return {"error": "这个路径有多个方法，请写成 \"METHOD /api/v1/...\"",
-                "endpoints": [_endpoint_line(m, p, op) for m, p, op in candidates]}
+                "endpoints": [_endpoint_line(m, p, op, user) for m, p, op in candidates]}
     method, path, op = candidates[0]
     detail: Dict[str, Any] = {"endpoint": f"{method} {path}", "summary": op.get("summary")}
     if op.get("description"):
         detail["description"] = str(op["description"]).strip()[:_DOC_DESCRIPTION_CHARS]
-    reason = _excluded(method, path)
+    reason = _excluded(method, path, user)
     if reason:
         detail["callable"] = False
         detail["reason"] = reason
@@ -221,17 +232,24 @@ def _limit(payload: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
     return {"truncated": True, "text": text[:max_chars]}
 
 
-def _handle_read_api_doc(group: str = "", endpoint: str = "") -> dict:
+def _handle_read_api_doc(group: str = "", endpoint: str = "", user_id: Optional[str] = None) -> dict:
+    """``user_id``: the session owner (registry-supplied); the document only shows what that user may call."""
+    from api.internal_client import ActingUserRequired, acting_user
+
+    try:
+        user = acting_user(user_id)
+    except ActingUserRequired as exc:
+        return {"error": str(exc)}
     try:
         spec = _spec()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[read_api_doc] OpenAPI unavailable: %s", exc, exc_info=True)
         return {"error": f"接口文档生成失败：{exc}"}
     if endpoint and endpoint.strip():
-        return _limit(_endpoint(spec, endpoint), _DOC_MAX_CHARS)
+        return _limit(_endpoint(spec, endpoint, user), _DOC_MAX_CHARS)
     if group and group.strip():
-        return _limit(_group(spec, group), _DOC_MAX_CHARS)
-    return _limit(_directory(spec), _DOC_MAX_CHARS)
+        return _limit(_group(spec, group, user), _DOC_MAX_CHARS)
+    return _limit(_directory(spec, user), _DOC_MAX_CHARS)
 
 
 # ------------------------------------------------------------------
@@ -247,16 +265,13 @@ def _normalize_path(path: str) -> str:
     return text
 
 
-def _template_for(method: str, path: str) -> Optional[str]:
-    from api.internal_client import match_route
-
-    return match_route(method, path)
-
-
-def _handle_call_api(method: str, path: str, query: Optional[dict] = None, body: Optional[dict] = None) -> dict:
+def _handle_call_api(
+    method: str, path: str, query: Optional[dict] = None, body: Optional[dict] = None, user_id: Optional[str] = None,
+) -> dict:
+    """``user_id``: the session owner (registry-supplied, never model input). The call acts as exactly that user."""
     from urllib.parse import parse_qsl
 
-    from api.internal_client import call, excluded_reason
+    from api.internal_client import ActingUserRequired, CallRefused, acting_user, authorize, call
 
     verb = str(method or "").strip().upper()
     if verb not in _METHODS:
@@ -272,15 +287,17 @@ def _handle_call_api(method: str, path: str, query: Optional[dict] = None, body:
     if body is not None and not isinstance(body, (dict, list)):
         return {"error": "body 必须是 JSON 对象"}
 
-    template = _template_for(verb, route_path)
-    if template is None:
-        return {"error": f"没有接口 {verb} {route_path}", "next": "先用 read_api_doc() 查接口目录"}
-    reason = excluded_reason(verb, route_path)
-    if reason:
-        return {"error": f"{verb} {template} 不能由助手调用：{reason}"}
+    try:
+        route_path, template = authorize(verb, route_path, acting_user(user_id))
+    except ActingUserRequired as exc:
+        return {"error": str(exc)}
+    except CallRefused as exc:
+        if exc.code == "no_route":
+            return {"error": f"没有接口 {verb} {route_path}", "next": "先用 read_api_doc() 查接口目录"}
+        return {"error": exc.message}
 
     try:
-        status, content_type, text = call(verb, route_path, params=params, body=body)
+        status, content_type, text = call(verb, route_path, user_id=user_id, params=params, body=body)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[call_api] %s %s failed: %s", verb, route_path, exc, exc_info=True)
         return {"error": f"调用失败：{exc}"}
@@ -309,9 +326,9 @@ read_api_doc_tool = ToolDefinition(
     description=(
         "Read the backend API document (all /api/v1 endpoints: daily plan, holdings & account, watchlist, "
         "boards, screening, analysis & reports, history, alerts, portfolio, backtest, intelligence, notes, "
-        "system config, ...). Progressive: no arguments -> group directory; group='DailyPlan' -> that "
-        "group's endpoints; endpoint='GET /api/v1/plan/account' -> parameters, request body and response "
-        "shape. Read before call_api."
+        "...) that the current user may call. Progressive: no arguments -> group directory; "
+        "group='DailyPlan' -> that group's endpoints; endpoint='GET /api/v1/plan/account' -> parameters, "
+        "request body and response shape. Read before call_api."
     ),
     parameters=[
         ToolParameter(name="group", type="string", description="Group name from the directory, or a path prefix like '/plan'",
@@ -322,14 +339,17 @@ read_api_doc_tool = ToolDefinition(
     handler=_handle_read_api_doc,
     category="data",
     policy=ToolPolicy.declared(read_only=True, side_effects=[], permissions=["api_doc:read"]),
+    user_scoped=True,  # the document shows what the session owner may call
 )
 
 call_api_tool = ToolDefinition(
     name="call_api",
     description=(
-        "Call any backend /api/v1 endpoint with the user's full permissions (reads and writes, e.g. "
-        "update holdings, add to watchlist, start a screening or analysis). Check the endpoint with "
-        "read_api_doc first. Path parameters go in the path; query is an object of query parameters; "
+        "Call a backend /api/v1 endpoint as the current user, with exactly that user's permissions (reads and "
+        "writes, e.g. update holdings, add to watchlist, start a screening or analysis). System settings, "
+        "personal secrets and push channels are not available, and administrator-only endpoints only "
+        "to administrators. Check the endpoint with read_api_doc first. Path parameters go in the path "
+        "(plain segments only: no '..', no %-encoding); query is an object of query parameters; "
         "body is the JSON request body. Before a write the user did not ask for, say what you will change."
     ),
     parameters=[
@@ -341,6 +361,7 @@ call_api_tool = ToolDefinition(
     handler=_handle_call_api,
     category="action",
     policy=ToolPolicy.declared(read_only=False, side_effects=["api_call"], permissions=["api:all"]),
+    user_scoped=True,  # acts as the session owner; the registry supplies user_id, model-supplied values are discarded
 )
 
 ALL_API_TOOLS = [read_api_doc_tool, call_api_tool]

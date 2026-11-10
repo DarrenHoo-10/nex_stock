@@ -1320,6 +1320,7 @@ class Config:
     user_push_max_workers: int = 4  # Personal alert pushes sent at once (bounded pool; one push per user in flight)
     user_chat_send_max_per_hour: int = 30  # /agent/chat/send relays per non-primary user and hour
     user_alert_push_max_per_hour: int = 60  # Personal alert pushes per non-primary user and hour
+    user_ondemand_fetch_max_per_hour: int = 60  # On-demand external fetches (stock events / capital / Q&A / auction) per non-primary user and hour
 
     # === 通知配置（可同时配置多个，全部推送）===
     
@@ -2607,6 +2608,13 @@ class Config:
                 env.get('USER_ALERT_PUSH_MAX_PER_HOUR'),
                 60,
                 field_name='USER_ALERT_PUSH_MAX_PER_HOUR',
+                minimum=1,
+                maximum=10000,
+            ),
+            user_ondemand_fetch_max_per_hour=parse_env_int(
+                env.get('USER_ONDEMAND_FETCH_MAX_PER_HOUR'),
+                60,
+                field_name='USER_ONDEMAND_FETCH_MAX_PER_HOUR',
                 minimum=1,
                 maximum=10000,
             ),

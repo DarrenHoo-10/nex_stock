@@ -93,6 +93,8 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "USER_PUSH_MAX_WORKERS",
     "USER_CHAT_SEND_MAX_PER_HOUR",
     "USER_ALERT_PUSH_MAX_PER_HOUR",
+    # Per-user cap on external fetches an open stock-detail route may trigger (shared Tushare quota): edited in .env.
+    "USER_ONDEMAND_FETCH_MAX_PER_HOUR",
     # Optional FXMacroData authorization is read from the process environment
     # when a tool runs; it is not a Web settings or model-input field.
     "FXMACRODATA_API_KEY",
@@ -5225,7 +5227,7 @@ _USER_SCOPE_KEYS = frozenset({
     "AGENT_ORCHESTRATOR_MODE", "AGENT_RISK_OVERRIDE", "AGENT_DEEP_RESEARCH_BUDGET",
     "AGENT_SKILL_AUTOWEIGHT", "AGENT_SKILL_ROUTING", "AGENT_CONTEXT_COMPRESSION_ENABLED",
     "AGENT_CONTEXT_COMPRESSION_PROFILE", "AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS",
-    "AGENT_CONTEXT_PROTECTED_TURNS", "AGENT_MEMORY_ENABLED", "ASSISTANT_RECALL_PROVIDER",
+    "AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO", "AGENT_CONTEXT_PROTECTED_TURNS", "AGENT_MEMORY_ENABLED", "ASSISTANT_RECALL_PROVIDER",
     "ASSISTANT_RECALL_MASK_AMOUNTS", "ASSISTANT_NOTE_DAILY_PROPOSAL_LIMIT",
     "ASSISTANT_NOTE_INJECT_MAX_CHARS", "HINDSIGHT_BASE_URL", "HINDSIGHT_API_KEY", "HINDSIGHT_BANK_ID",
     # Notification channel credentials (not bot apps)
@@ -5480,6 +5482,12 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "examples": [
             "BIYING_LICENCE=your_biying_licence",
         ],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+        "warning_codes": ["secret_value"],
+    },
+    "ASHARE_API_KEY": {
+        "help_key": "settings.data_source.realtime_quotes",
+        "examples": ["ASHARE_API_KEY=your_ashareapi_key"],
         "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
         "warning_codes": ["secret_value"],
     },

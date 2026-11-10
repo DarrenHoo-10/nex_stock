@@ -230,7 +230,16 @@ class IntelligenceService:
             "total": len(templates),
         }
 
-    def list_items(self, **filters: Any) -> Dict[str, Any]:
+    def list_items(self, *, viewer_user_id: Optional[str] = None, **filters: Any) -> Dict[str, Any]:
+        """``viewer_user_id`` (a non-primary user) hides per-code rows (announcements, Q&A) of codes outside that
+        user's own watchlist / holdings; the primary user / no viewer sees the whole pool."""
+        from src.services.news_akshare_source import PER_CODE_KINDS
+        from src.services.news_digest_service import viewer_announcement_codes
+
+        own_codes = viewer_announcement_codes(viewer_user_id)
+        if own_codes is not None:
+            filters["restrict_kinds"] = sorted(PER_CODE_KINDS)
+            filters["allowed_scope_values"] = sorted(own_codes)
         rows, total = self.repo.list_items(**filters)
         return {
             "items": [self._item_to_dict(row) for row in rows],

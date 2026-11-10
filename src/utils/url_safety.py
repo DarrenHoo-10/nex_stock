@@ -46,6 +46,10 @@ from urllib.parse import urlparse
 Resolver = Callable[[str, int], Iterable[str]]
 
 _METADATA_HOSTS = frozenset({"metadata.google.internal", "metadata", "instance-data"})
+#: Domains whose requests a shared data-source gate meters and bans for the whole process (``data_provider/
+#: eastmoney_gate.py``: one 403 cools the host down for everyone). A user-supplied endpoint on one of them could
+#: only be there to trip that gate, so it is refused like a private address. Keep in step with the gates.
+SHARED_GATE_DOMAINS = ("eastmoney.com",)
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain", ".lan", ".home.arpa", ".intranet")
 _BLOCKED_NETWORKS = tuple(
     ipaddress.ip_network(cidr)
@@ -170,6 +174,8 @@ def _validate_public_https_url(
     _parsed, raw_host, port = _check_syntax(url, schemes=schemes)
     host = _normalize_host(raw_host)
     effective_port = port or 443
+    if any(host == domain or host.endswith("." + domain) for domain in SHARED_GATE_DOMAINS):
+        raise UnsafeUrlError("shared_data_source_host", "URL host belongs to a shared data source and cannot be a target")
 
     literal = _parse_ip(host)
     if literal is not None:

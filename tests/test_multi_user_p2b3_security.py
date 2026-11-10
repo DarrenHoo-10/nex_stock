@@ -1402,13 +1402,18 @@ def test_no_system_paid_key_other_than_the_documented_ones_is_reachable_from_a_u
         values = value if isinstance(value, (list, tuple)) else [value]
         if any(f"SYSTEM-{key}" == str(item) for item in values):
             inherited.add(key)
-    assert "SOCIAL_SENTIMENT_API_KEY" in _BLANKED_SYSTEM_KEYS
-    assert "SOCIAL_SENTIMENT_API_KEY" not in inherited
+    # the system's own paid third-party data keys (SOCIAL_SENTIMENT_API_KEY, ASHARE_API_KEY) are blanked in every view
+    for key in ("SOCIAL_SENTIMENT_API_KEY", "ASHARE_API_KEY"):
+        assert key in _BLANKED_SYSTEM_KEYS and key not in inherited and key not in DATA_SOURCE_CREDENTIAL_KEYS
     unexpected = inherited - DATA_SOURCE_CREDENTIAL_KEYS
-    # system-scope channel secrets (bot tokens, usage HMAC secret) sit in the process-level config of any view; they
-    # are consumed only by notification / usage code that a user analysis never calls
-    assert all(
-        key.startswith(("DINGTALK_", "DISCORD_", "FEISHU_", "SLACK_", "LLM_USAGE_", "WECHAT", "TELEGRAM", "EMAIL"))
-        or key in {"FEISHU_APP_SECRET"}
-        for key in unexpected
-    ), unexpected
+    # Bot-app credentials are process-level (one process connects one bot application): they sit in the config of any
+    # view, but must stay unreachable from a user's request. The audited list is explicit (not a prefix), and a
+    # personal notifier - the only notification path a user's request can reach - resets every one of them.
+    bot_app_secrets = {"DINGTALK_APP_KEY", "DINGTALK_APP_SECRET", "DISCORD_BOT_TOKEN", "FEISHU_APP_SECRET", "SLACK_BOT_TOKEN"}
+    assert unexpected <= bot_app_secrets, unexpected - bot_app_secrets
+    from src.services.user_notification_service import UserNotificationConfig
+
+    personal = UserNotificationConfig(view)
+    for key in unexpected:
+        assert getattr(view, key.lower()) == f"SYSTEM-{key}"  # the view does carry it ...
+        assert getattr(personal, key.lower()) in (None, ""), key  # ... the personal notifier never does

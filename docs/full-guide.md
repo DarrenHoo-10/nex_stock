@@ -436,7 +436,7 @@ daily_stock_analysis/
 
 | 变量名 | 说明 | 默认值 | 必填 |
 |--------|------|--------|:----:|
-| `ASHARE_API_KEY` | ashareapi.com 的开盘竞价分时报价密钥，需专业版及以上权限。必盈无可用竞价点时使用；Tushare 可补充最终撮合结果。 | - | 可选 |
+| `ASHARE_API_KEY` | ashareapi.com 的开盘竞价分时报价密钥，需专业版及以上权限。必盈无可用竞价点时使用；Tushare 可补充最终撮合结果。系统付费 Key：多用户部署下只有主用户的请求使用它，其他用户走必盈 / Tushare。 | - | 可选 |
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
 | `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。个股行情窗口双击日 K 查看历史交易日分时（`GET /api/v1/stocks/{code}/intraday`）也走必盈历史 5 分钟线，未配置时该功能提示需要配置必盈 licence（接口返回 503，`reason=biying_not_configured`）。 | - | 可选 |
 | `BIYING_TIMEOUT_SECONDS` | 必盈单次请求超时（秒） | `8` | 可选 |
@@ -1580,6 +1580,7 @@ python main.py --debug
 | `USER_PUSH_MAX_WORKERS` | `4` | 个人告警推送的后台线程数（范围 1-32）；每个用户同一时间最多一次推送在途 |
 | `USER_CHAT_SEND_MAX_PER_HOUR` | `30` | 每个非主用户每小时最多通过 `/agent/chat/send` 转发的次数（范围 1-10000），超过返回 `rate_limited` |
 | `USER_ALERT_PUSH_MAX_PER_HOUR` | `60` | 每个非主用户每小时最多收到的个人告警推送条数（范围 1-10000），超过只记录触发 |
+| `USER_ONDEMAND_FETCH_MAX_PER_HOUR` | `60` | 每个非主用户每小时最多触发多少次需要访问外部数据源的按需取数（个股公司事件 / 研报 / 资金面 / 投资者问答 / 集合竞价 / 分时，范围 1-10000，管理员级设置，写在 `.env`）；已有缓存或「已取过」记录的请求不消耗名额，超过后返回已存储的数据，不再访问外部；主用户不受限 |
 | `USER_SCHEDULE_RUN_TIMEOUT_SECONDS` | `1800` | 多用户定时：单个用户一次运行的独立超时（秒，范围 30-21600，管理员级设置）；超时只放弃这个用户的这次运行，不影响其他用户 |
 | `POSITION_STOP_LOSS_PCT` | `10` | 次日计划的止损幅度（%），从买入价或持仓成本起算 |
 | `POSITION_MAX_TOTAL_PCT` | `100` | 总仓位上限（%，持仓市值占总资金） |
@@ -2019,7 +2020,7 @@ A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是
 - 缓存缺失或过期时，工具仍会按原逻辑从数据源获取日线数据；获取成功后会 best-effort 写回 `stock_daily`，保存失败不会阻断 Agent 回复。
 - `search_stock_news` 与 `search_comprehensive_intel` 成功返回后会 best-effort 写入 `news_intel`，复用现有 URL / fallback key 去重逻辑。
 - `search_market_news(keyword, days=3)` 按题材 / 关键词查新闻，不绑定单只股票：先查资讯库里最近 `days` 天（1–7）的快讯和公告（标题、摘要、关联板块命中任一关键词），命中少于 3 条时再用已配置的搜索引擎做题材搜索；不写入 `news_intel`。
-- 助手的系统接口权限（只给 Web 助手页 / 助手抽屉 / 飞书助手所用的单 Agent Chat，不给报告分析、定时任务、Bot 命令和多 Agent 模式）：`read_api_doc` 按层读取 `/api/v1` 的接口文档（不带参数是分组目录；`group` 是某个分组的接口列表；`endpoint="GET /api/v1/plan/account"` 是参数、请求体和返回结构），文档由当前代码的 OpenAPI 生成，不会和代码脱节；`call_api(method, path, query, body)` 在进程内调用任意 `/api/v1` 接口，读写都可以，和登录用户在网页上的权限一样，不经过鉴权中间件。系统提示只告诉助手文档在哪里，接口细节由它按需查阅。唯一不能调用的是助手自己的对话接口（`/agent/chat`、`/agent/chat/stream` 及其取消接口，避免自我调用）和不会结束的 SSE 流 `GET /analysis/tasks/stream`；三个上传文件的接口需要 multipart，助手调用不了。Codex 后端不提供这两个工具。
+- 助手的系统接口权限（只给 Web 助手页 / 助手抽屉 / 飞书助手所用的单 Agent Chat，不给报告分析、定时任务、Bot 命令和多 Agent 模式）：`read_api_doc` 按层读取 `/api/v1` 的接口文档（不带参数是分组目录；`group` 是某个分组的接口列表；`endpoint="GET /api/v1/plan/account"` 是参数、请求体和返回结构），文档由当前代码的 OpenAPI 生成，不会和代码脱节；`call_api(method, path, query, body)` 在进程内调用 `/api/v1` 接口，读写都可以，身份是对话所属的用户（工具由注册表注入会话所有者，模型传入的 `user_id` 无效）：只能读写这个用户自己的数据，`require_admin` 的接口只有管理员能调用（从路由依赖树算出，新增的管理员接口自动纳入），不经过鉴权中间件也不会变成主用户。`/system/*`、`/usage/*`、`/auth/*`、`/me/settings*`、`/me/notification-channels*`（系统设置、个人密钥和推送渠道）对所有人（含管理员）都不可调用；路径里的 `..`、编码的 `%2f` / `%2e` 等写法会被拒绝；`read_api_doc` 只列出当前用户能调用的分组和接口（`docs/design/multi-user.md` 第 23.1 节）。系统提示只告诉助手文档在哪里，接口细节由它按需查阅。唯一不能调用的是助手自己的对话接口（`/agent/chat`、`/agent/chat/stream` 及其取消接口，避免自我调用）和不会结束的 SSE 流 `GET /analysis/tasks/stream`；三个上传文件的接口需要 multipart，助手调用不了。Codex 后端不提供这两个工具。
 - Chat 股票作用域：没有讨论对象的问题（如「寒潮有哪些股票值得关注」）使用 `open` 作用域，个股工具可以查询任何能校验通过的 A 股 / 指数代码；一旦会话里确认了股票、助手抽屉选中了股票、在做对比或对象待澄清，仍只允许查询这些对象，越界调用返回 `stock_scope_violation`。
 - `get_realtime_quote` 不复用 `stock_daily` 作为实时行情缓存，也不会把盘中实时行情写入日线表；如需实时行情缓存，应单独设计实时行情存储。
 

@@ -194,18 +194,51 @@ def test_require_stock_code_rejects_index_codes(orgids):
             require_stock_code(bad)
 
 
+def _acting(user_id):
+    from api.deps import CurrentUser
+
+    return CurrentUser(user_id=user_id, handle=user_id, display_name=user_id, role="user", is_admin=False)
+
+
 def test_watchlist_add_stores_the_new_bse_code(orgids):
     from api.v1.endpoints.stocks import add_to_watchlist
     from api.v1.schemas.history import WatchlistRequest
     from fastapi import HTTPException
+    from src.config import get_primary_user_id
     from tests.test_stock_watchlist_api import FakeSystemConfigService
 
+    primary = _acting(get_primary_user_id())  # the primary user's watchlist is STOCK_LIST in the system config
     service = FakeSystemConfigService("600089")
-    response = add_to_watchlist(WatchlistRequest(stock_code="832982"), service=service)
+    response = add_to_watchlist(WatchlistRequest(stock_code="832982"), service=service, user=primary)
     assert response.stock_codes == ["600089", "920982"] and "旧代码" in response.message
     with pytest.raises(HTTPException) as caught:
-        add_to_watchlist(WatchlistRequest(stock_code="430999"), service=service)
+        add_to_watchlist(WatchlistRequest(stock_code="430999"), service=service, user=primary)
     assert caught.value.status_code == 400 and caught.value.detail["error"] == "legacy_bse_code"
+
+
+def test_watchlist_add_stores_the_new_bse_code_for_a_non_primary_user(orgids, tmp_path, monkeypatch):
+    """A non-primary user's watchlist is ``user_watchlist``: the new code is stored there, STOCK_LIST is untouched."""
+    from api.v1.endpoints.stocks import add_to_watchlist
+    from api.v1.schemas.history import WatchlistRequest
+    from fastapi import HTTPException
+    from src.services.watchlist_service import WatchlistService
+    from tests.multi_user_helpers import USER_A, prepare_multi_user_env, teardown_multi_user_env
+    from tests.test_stock_watchlist_api import FakeSystemConfigService
+
+    prepare_multi_user_env(tmp_path, monkeypatch)
+    try:
+        service = FakeSystemConfigService("600089")
+        user = _acting(USER_A)
+        response = add_to_watchlist(WatchlistRequest(stock_code="832982"), service=service, user=user)
+        assert response.stock_codes == ["920982"] and "旧代码" in response.message
+        assert WatchlistService().list_codes(USER_A) == ["920982"]
+        assert service.update_calls == [] and service.stock_list == "600089"
+        with pytest.raises(HTTPException) as caught:
+            add_to_watchlist(WatchlistRequest(stock_code="430999"), service=service, user=user)
+        assert caught.value.status_code == 400 and caught.value.detail["error"] == "legacy_bse_code"
+        assert WatchlistService().list_codes(USER_A) == ["920982"]
+    finally:
+        teardown_multi_user_env()
 
 
 # ---------------------------------------------------------------------------

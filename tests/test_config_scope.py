@@ -123,9 +123,10 @@ def test_schema_response_exposes_scope_for_every_field():
 
 
 # Secrets read by Config that are deliberately process-level: bot app credentials / stream
-# secrets, webhook-callback verification and the Feishu doc exporter token.
+# secrets, webhook-callback verification, the Feishu doc exporter token, and the system's own paid
+# third-party data keys (blanked in every non-primary user view, see ``_BLANKED_SYSTEM_KEYS``).
 SYSTEM_SECRETS_READ_BY_CONFIG = {
-    "DINGTALK_APP_KEY", "DINGTALK_APP_SECRET", "DISCORD_BOT_TOKEN", "DISCORD_INTERACTIONS_PUBLIC_KEY",
+    "ASHARE_API_KEY", "DINGTALK_APP_KEY", "DINGTALK_APP_SECRET", "DISCORD_BOT_TOKEN", "DISCORD_INTERACTIONS_PUBLIC_KEY",
     "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_FOLDER_TOKEN", "FEISHU_VERIFICATION_TOKEN",
     "SLACK_BOT_TOKEN", "SOCIAL_SENTIMENT_API_KEY", "TELEGRAM_WEBHOOK_SECRET", "WECOM_ENCODING_AES_KEY",
     "WECOM_TOKEN",

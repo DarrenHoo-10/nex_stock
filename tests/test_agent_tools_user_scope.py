@@ -264,6 +264,9 @@ _AUDITED_ALLOWANCES = {
     "src/agent/tools/data_tools.py": {"PortfolioService", "PortfolioRiskService"},  # get_portfolio_snapshot: user_scoped
     "src/agent/assistant_memory.py": {"AssistantNote", "assistant_note"},  # takes the session owner's user_id
     "src/agent/events.py": {"alert_rules"},  # in-memory EventMonitor rules, not the per-user alert_rules table
+    # call_api / read_api_doc only name the "DailyPlan" API group in their help text; they are user_scoped and the
+    # internal client acts as the session owner (tests/test_multi_user_assistant_api_identity.py)
+    "src/agent/tools/api_tools.py": {"DailyPlan"},
 }
 
 

@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.deps import require_admin
+from api.deps import CurrentUser, get_current_user, require_admin
 
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.intelligence import (
@@ -162,11 +162,15 @@ def list_items(
     days: Optional[int] = Query(None, ge=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> IntelligenceItemListResponse:
     try:
+        # The shared pool also holds announcements / Q&A fetched only because other users follow a code: a
+        # non-primary viewer gets those of their own watchlist / holdings only.
         return IntelligenceItemListResponse(**IntelligenceService().list_items(
             scope_type=scope_type, scope_value=scope_value, market=market,
             query=query, days=days, page=page, page_size=page_size,
+            viewer_user_id=user.user_id,
         ))
     except Exception as exc:
         raise _internal_error("List intelligence items failed", exc)

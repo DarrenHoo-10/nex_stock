@@ -71,8 +71,9 @@ _NEVER_INHERIT_KEYS: FrozenSet[str] = frozenset({"STOCK_LIST", "HINDSIGHT_BANK_I
 _NOTIFICATION_PREFERENCE_PREFIXES = ("REPORT_", "NOTIFICATION_")
 _NOTIFICATION_PREFERENCE_KEYS = frozenset({"SINGLE_STOCK_NOTIFY", "MERGE_EMAIL_NOTIFICATION"})
 # System-scope keys that are blanked for non-primary users: server-side file / local CLI, and the system's own
-# paid third-party data key (a personal analysis must not spend it; US social sentiment simply stays off).
-_BLANKED_SYSTEM_KEYS = ("LITELLM_CONFIG", "OPENCODE_CLI_MODEL", "SOCIAL_SENTIMENT_API_KEY")
+# paid third-party data keys (a personal request must not spend them: US social sentiment stays off, the opening
+# auction falls back to the free sources).
+_BLANKED_SYSTEM_KEYS = ("LITELLM_CONFIG", "OPENCODE_CLI_MODEL", "SOCIAL_SENTIMENT_API_KEY", "ASHARE_API_KEY")
 _ALLOWED_AGENT_BACKENDS = frozenset({"", "auto", "litellm"})
 
 

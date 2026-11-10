@@ -29,7 +29,6 @@ Safety on top of the existing senders (the user supplies the targets, the server
 
 from __future__ import annotations
 
-import collections
 import concurrent.futures
 import contextvars
 import dataclasses
@@ -53,6 +52,7 @@ from src.notification import (
 )
 from src.repositories.user_repo import UserRepository
 from src.user_secrets import UserSecretError, UserSecretStore
+from src.utils.rate_limit import SlidingWindowLimiter
 from src.utils.safe_requests import BlockedRequestError, call_with_deadline, scoped_resolver, user_outbound_requests
 from src.utils.safe_smtp import ALLOWED_SMTP_PORTS, check_smtp_endpoint
 from src.utils.url_safety import RESOLUTION_DEPENDENT_REASONS, UnsafeUrlError, check_public_https_url
@@ -479,30 +479,7 @@ def _send_budget_seconds() -> float:
     return seconds
 
 
-class _SlidingWindowLimiter:
-    """Per-user count of events in the last hour (in memory; a restart resets it - this is abuse control, not accounting)."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._events: Dict[Tuple[str, str], "collections.deque[float]"] = {}
-
-    def allow(self, kind: str, user_id: str, limit: int, *, window_seconds: float = 3600.0) -> bool:
-        now = time.monotonic()
-        with self._lock:
-            events = self._events.setdefault((kind, user_id), collections.deque())
-            while events and now - events[0] >= window_seconds:
-                events.popleft()
-            if len(events) >= max(1, int(limit)):
-                return False
-            events.append(now)
-            return True
-
-    def reset(self) -> None:
-        with self._lock:
-            self._events.clear()
-
-
-_limiter = _SlidingWindowLimiter()
+_limiter = SlidingWindowLimiter()
 
 
 def _hourly_limit(name: str, default: int) -> int:

@@ -111,7 +111,7 @@ BIYING_TIMEOUT_SECONDS=8   # 可选，单次请求超时（秒）
 
 **在 Web 里的用处**
 
-- 开盘集合竞价与 5 分钟线独立加载。优先使用必盈当天或历史逐笔交易（历史自 2026-08-13 起归档）。09:15–09:24 每分钟保留最后一个有效价格，09:25 单独展示实际撮合价和成交股数。各分钟的可见性取决于源返回的记录，当天逐笔数据盘中约每小时更新。必盈缺数据时，若配置了 `ASHARE_API_KEY`，尝试 ashareapi.com 的竞价分时；最后尝试 Tushare 的 `stk_auction`（ETF 用 `etf_auction`）获取最终撮合结果。竞价量不重复计入盘中均价。
+- 开盘集合竞价与 5 分钟线独立加载。优先使用必盈当天或历史逐笔交易（历史自 2026-08-13 起归档）。09:15–09:24 每分钟保留最后一个有效价格，09:25 单独展示实际撮合价和成交股数。各分钟的可见性取决于源返回的记录，当天逐笔数据盘中约每小时更新。必盈缺数据时，若配置了 `ASHARE_API_KEY`（多用户部署下只有主用户的请求使用，其他用户跳过这一步），尝试 ashareapi.com 的竞价分时；最后尝试 Tushare 的 `stk_auction`（ETF 用 `etf_auction`）获取最终撮合结果。竞价量不重复计入盘中均价。
 - 个股行情窗口 / 个股计划页：双击日 K 查看当天分时（`GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD`）。当天先走 Tushare `rt_min_daily`，再走必盈当天 5 分钟线；历史交易日只走必盈历史 5 分钟线，并缓存 6 小时。**没有配置 `BIYING_LICENCE` 时，历史分时会返回 503**。503 的 `error` 是 `intraday_unavailable`，`reason` 说明原因：`biying_not_configured`（历史交易日需要必盈证书）、`not_configured`（当天没有任何分钟线数据源）、`no_bars`（数据源没有这天的数据，如停牌、非交易日）、`source_failed`（数据源请求失败），`message` 是对应的中文说明，页面直接显示这条说明，不再显示通用的「检查代理、DNS」。
 - 助手：盘中全市场快照、个股报价、5 分钟线（Tushare 失败后用必盈兜底）。
 
@@ -252,6 +252,7 @@ ENABLE_EASTMONEY_PATCH=true
 - 同一子域名一次只发一个请求，两次请求至少间隔 `EASTMONEY_MIN_INTERVAL_SEC` 秒（默认 1.0），另加 0.1–0.5 秒随机抖动；不同子域名互不影响。
 - 某子域名返回 HTTP 403（封禁信号）后不重试，暂停 `EASTMONEY_BAN_COOLDOWN_MINUTES` 分钟（默认 30）；期间对它的请求直接抛 `EastmoneyCoolingDown`（属于 `requests` 的连接错误），各处现有的回退逻辑会换用其他来源。
 - 在子进程里运行的 AkShare 东财函数（如 `stock_zh_a_hist`、`stock_zh_a_spot_em`）整个调用期间占住对应子域名。
+- 多用户部署：用户自己的出站请求（个人推送渠道的 webhook 等，`in_user_outbound_scope()`）不经过这个闸门，它们的 403 不会让所有人的东方财富来源冷却；`eastmoney.com`（含子域名）也不能作为任何用户提供的出站地址（`url_safety.SHARED_GATE_DOMAINS`，设计见 `docs/design/multi-user.md` 第 23.4 节）。
 - 设置 →「数据状态」里有「东方财富（统一限速）」一行：显示是否有子域名在冷却（warnings 里写明子域名和恢复时间），两个配置项可以直接修改，保存后立即生效。
 - 选股原有的 `SCREENING_EASTMONEY_MIN_INTERVAL_SEC` / `SCREENING_EASTMONEY_JITTER_SEC` 仍作用于选股自己的东财请求，排队和 403 冷却与全局共用。
 - 与 5.4 的东财接口补丁可以同时开启，两者叠加。

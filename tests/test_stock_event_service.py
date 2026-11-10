@@ -77,6 +77,16 @@ def _on_day(rows, field="ann_date"):
     return lambda params: [r for r in rows if str(r.get(field)) == params.get(field, params.get("trade_date"))]
 
 
+def _primary():
+    """The acting user the open stock routes receive for the primary user (CLI / local mode)."""
+    from api.deps import CurrentUser
+    from src.config import get_primary_user_id
+
+    uid = get_primary_user_id()
+    return CurrentUser(user_id=uid, handle=uid, display_name=uid, role="admin", is_admin=True)
+
+
+
 # ----------------------------------------------------------------------
 # parsing
 # ----------------------------------------------------------------------
@@ -216,16 +226,16 @@ def test_api_returns_events_risks_and_rejects_index_codes(db, monkeypatch):
     monkeypatch.setattr(events_module.StockEventService, "__init__",
                         lambda self, repo=None, fetcher=None, today=None: setattr(self, "_repo", StockEventRepository(db))
                         or setattr(self, "_fetcher", None) or setattr(self, "_today", lambda: TODAY))
-    response = get_stock_events("600089", kinds=None, days=30)
+    response = get_stock_events("600089", kinds=None, days=30, user=_primary())
     assert response.stock_code == "600089" and {e.kind for e in response.events} == {"holder_trade", "share_float",
                                                                                       "pledge"}
     assert {e.kind_label for e in response.events} >= {"股东增减持", "限售解禁"}
     assert len(response.risks) == 3
-    only = get_stock_events("600089", kinds="share_float", days=30)
+    only = get_stock_events("600089", kinds="share_float", days=30, user=_primary())
     assert [e.kind for e in only.events] == ["share_float"]
     for bad, error in (("sh000001", "invalid_stock_code"), ("600089", "invalid_kind")):
         with pytest.raises(HTTPException) as caught:
-            get_stock_events(bad, kinds="nope" if error == "invalid_kind" else None, days=30)
+            get_stock_events(bad, kinds="nope" if error == "invalid_kind" else None, days=30, user=_primary())
         assert caught.value.status_code == 400 and caught.value.detail["error"] == error
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import and_, delete, desc, select
 
@@ -95,6 +95,15 @@ class StockEventRepository:
             row.rows, row.status, row.error, row.fetched_at = rows, status, (error or None) and error[:500], utc_naive_now()
             session.commit()
 
+    def code_fetch_marker(self, kind: str) -> Optional[Tuple[str, Any]]:
+        """``(status, fetched_at)`` of the newest "fetched on demand" marker row ``kind`` (``cf:<code>``), if any."""
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(StockEventIngest.status, StockEventIngest.fetched_at)
+                .where(StockEventIngest.kind == kind).order_by(desc(StockEventIngest.ann_date)).limit(1)
+            ).first()
+            return (row[0], row[1]) if row else None
+
     def ingested_days(self, kind: str, *, since: date) -> Dict[date, str]:
         with self.db.get_session() as session:
             rows = session.execute(
@@ -109,6 +118,8 @@ class StockEventRepository:
             rows = session.execute(select(StockEventIngest).order_by(desc(StockEventIngest.ann_date))).scalars().all()
             latest: Dict[str, Dict[str, Any]] = {}
             for row in rows:
+                if row.kind.startswith("cf:"):  # per-code "fetched on demand" markers are not an ingest kind
+                    continue
                 latest.setdefault(row.kind, {
                     "kind": row.kind, "ann_date": row.ann_date.isoformat(), "status": row.status,
                     "rows": row.rows, "error": row.error,

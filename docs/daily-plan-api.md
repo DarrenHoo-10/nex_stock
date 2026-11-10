@@ -146,7 +146,7 @@
 - `kind=stock`：这只股票是当次提问的默认对象。会话里没有用文字确认过的股票时，没点名对象的问题（如「明天怎么看」「风险呢」）按它回答，工具也只允许查它；问题里点名了别的股票时以点名的为准，并去掉 `daily_plan`。它不写入会话状态，所以取消抽屉里的对象后，后续提问不再带它。顶层的 `stock_code` 仍只是提示，不会单独选定对象。
 - `kind=board`：板块 id、交易日写进提示词，模型用 `get_board_signal` 查询判定。
 - 交易日和周期（短线 / 波段）以一行文字带进对话上下文（`src/agent/executor.py::format_daily_plan_context_line`）。
-- 助手可以通过 `read_api_doc` / `call_api` 读写本文档里的全部接口（账户与持仓 `/plan/account`、`/plan/holdings`，计划 `/plan/stocks/{code}`，自选 `/stocks/watchlist` 等），包括改持仓、加自选、手动运行计划；说明见 `full-guide.md` 的「Agent 工具数据缓存与持久化」。
+- 助手可以通过 `read_api_doc` / `call_api` 读写本文档里的全部接口（账户与持仓 `/plan/account`、`/plan/holdings`，计划 `/plan/stocks/{code}`，自选 `/stocks/watchlist` 等），包括改持仓、加自选、手动运行计划；身份是对话所属的用户（多用户部署下读写的都是该用户自己的数据，管理员接口只有管理员能调用，系统设置、个人密钥和推送渠道接口不开放）；说明见 `full-guide.md` 的「Agent 工具数据缓存与持久化」。
 - `kind=none` 且问题里也没有对象时（如「寒潮有哪些股票值得关注」），个股工具可以查任何能校验通过的代码（`open` 作用域），题材新闻用 `search_market_news` 查询。
 
 ### 设置页写入的配置项

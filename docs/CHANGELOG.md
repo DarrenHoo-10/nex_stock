@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 多用户合并 main 后的隔离补漏（审计后，设计见 `docs/design/multi-user.md` 第 23 节）。助手的 `call_api` / `read_api_doc` 改为 `user_scoped`，以会话所有者的身份调用：`user_center` 模式下不再全部 401（主用户也能用），`local` 模式下不再以主用户管理员身份执行；`/system/*`、`/usage/*`、`/auth/*`、`/me/settings*`、`/me/notification-channels*` 对所有人（含管理员）不可调用，其余 `require_admin` 路由（从路由依赖树算出，不是路径名单）只有管理员可调用；路径里的 `..`、编码的 `%2f` / `%2e` 等写法被拒绝；`read_api_doc` 不再显示调用不了的分组和接口
+- [修复] 开放的个股详情路由不再无限制消耗系统的外部数据额度：没有事件的股票取过一次后 24 小时内不再重取（失败 10 分钟后重试），资金面两融 / 主力资金缓存 30 分钟，投资者问答记住「取过」，整个进程共用一个 Tushare 取数器和限速器；非主用户有按需取数的每小时限频（新增 `USER_ONDEMAND_FETCH_MAX_PER_HOUR`，默认 60，主用户不受限，超限返回已存储的数据，集合竞价 / 分时返回 429 `rate_limited`），并优先使用自己保存的 `TUSHARE_TOKEN`
+- [修复] `ASHARE_API_KEY` 按系统付费 Key 处理：非主用户的配置视图里为空，开盘集合竞价只对主用户使用 ashareapi 分支，其他用户走必盈 / Tushare
+- [修复] 个人 webhook 不能再触发东方财富访问闸门的全局冷却：个人出站请求不经过该闸门，`eastmoney.com`（含子域名）不能作为任何用户提供的出站地址（个人渠道保存 / 更新、SearXNG、模型 Base URL 等）
+- [修复] 资讯池「谁关注了这只股票」的推断面扩大到所有按代码抓取的类型：投资者问答与公告一样，非主用户只能看到自己自选 / 持仓代码的行（`GET /intelligence/items`、个股档案资讯块、资讯摘要、资讯库搜索、`GET /stocks/{code}/qa`），主用户不变
+- [改进] `AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO` 改为用户级（与同组的压缩开关、档位、触发 token 数一致）；巨潮 orgId 映射表加载失败后 5 分钟内不再重试
+- [测试] 新增 `tests/test_multi_user_assistant_api_identity.py`（`local` / `user_center` 两种模式：两个用户加主用户、管理员路由、路径写法、文档可见性）和 `tests/test_multi_user_merge_audit.py`（重复请求不重取、限频、共享取数器与用户 Token、`ASHARE_API_KEY`、东方财富闸门、资讯池成员关系、巨潮映射表退避）；`tests/test_eastmoney_gate.py` 的自选股用例补传 `user=` 并新增非主用户变体，`tests/test_multi_user_p2b3_security.py` 对机器人应用凭据改为显式清单并断言个人通知配置会重置它们
 - [新功能] 多用户 P3b Web：个人设置新增「推送渠道」（`/settings/personal`，设计见 `docs/design/multi-user.md` 第 22 节）：列出自己的渠道（类型图标、名称、启用开关、打码后的配置），添加 / 编辑对话框按类型显示字段（飞书、钉钉、企业微信、Telegram、PushPlus、Server酱3、邮件、自定义 Webhook，字段目录来自 `GET /me/notification-channels` 的 `channel_types`），删除前确认，「发送测试消息」只显示通用结果类别（已发送 / 渠道拒绝 / 地址不被允许 / 配置无法读取 / 测试太频繁，不显示上游文本）；`unsafe_target`、`invalid_config`（逐字段提示）、`channel_limit_reached`、`channel_not_found`、`secret_store_unavailable`、`rate_limited` 都有中英文说明；密钥只显示 `******`，留空或保持 `******` 表示保持原值，更新只发送改动的字段。主用户只读列出 `.env` 渠道类型（不显示地址 / 密钥）并链接到系统设置
 - [新功能] 多用户 P3b Web：个人设置新增「推送与定时」：次日计划开关 + 生成时间、盘前推送开关 + 时间（时间输入，提示最早可选 / 最晚可选，处理 `plan_time_too_early`（带 `earliest_time`）和 `preopen_time_too_late`（带 `latest_time`），被拒绝时整批不保存）、`GET /me/schedule` 的生效定时摘要、可单项「恢复默认」；没有启用渠道时提示「未配置推送渠道，定时结果只在网页查看」并可跳到渠道页；主用户只读显示生效值
 - [改进] 个人设置的推送分组不再列出次日计划 / 盘前推送的开关和时间（移到「推送与定时」），分组改名「推送偏好」（报告类型、静默时段、通知路由等）；`FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` 这类旧的渠道凭据键仍被个人设置接口返回，但页面不再显示（它们不被任何推送路径读取），不改动系统设置页

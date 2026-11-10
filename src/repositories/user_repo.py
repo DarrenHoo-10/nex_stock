@@ -63,6 +63,13 @@ class UserRepository:
 
         self.db._run_write_transaction(f"app_user[{user_id}]", _write)
 
+    def get_app_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        with self.db.get_session() as session:
+            row = session.get(AppUser, user_id)
+            if row is None:
+                return None
+            return {"user_id": row.user_id, "handle": row.handle, "display_name": row.display_name, "role": row.role}
+
     def list_app_users(self) -> List[Dict[str, Any]]:
         with self.db.get_session() as session:
             rows = session.execute(select(AppUser).order_by(AppUser.first_seen_at, AppUser.user_id)).scalars().all()

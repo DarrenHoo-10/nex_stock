@@ -11,6 +11,16 @@ from pydantic import BaseModel
 
 import api.internal_client as internal
 from src.agent.tools import api_tools
+from src.config import get_primary_user_id
+
+
+def _call(*args, **kwargs):
+    """``call_api`` as the primary user (the registry supplies ``user_id``; local mode, no user table involved)."""
+    return api_tools._handle_call_api(*args, user_id=get_primary_user_id(), **kwargs)
+
+
+def _doc(*args, **kwargs):
+    return api_tools._handle_read_api_doc(*args, user_id=get_primary_user_id(), **kwargs)
 
 
 class _Item(BaseModel):
@@ -52,52 +62,52 @@ def fake_api(monkeypatch):
     app = _fake_app()
     monkeypatch.setattr(internal, "_internal_app", app)
     monkeypatch.setattr(internal, "_running_app", None)
-    monkeypatch.setattr(internal, "_route_patterns", None)
+    monkeypatch.setattr(internal, "_route_index", None)
     yield app
-    internal._route_patterns = None
+    internal._route_index = None
 
 
 def test_call_api_dispatches_in_process_with_path_query_and_body(fake_api):
-    one = api_tools._handle_call_api("GET", "/items/42", query={"verbose": True})
+    one = _call("GET", "/items/42", query={"verbose": True})
     assert one == {"endpoint": "GET /api/v1/items/{item_id}", "status_code": 200, "ok": True,
                    "data": {"id": "42", "verbose": True}}
-    assert api_tools._handle_call_api("get", "/api/v1/items/latest")["endpoint"] == "GET /api/v1/items/latest"
-    assert api_tools._handle_call_api("GET", "/api/v1/items/7?verbose=true")["data"]["verbose"] is True
-    created = api_tools._handle_call_api("POST", "/api/v1/items", body={"name": "a", "qty": 2})
+    assert _call("get", "/api/v1/items/latest")["endpoint"] == "GET /api/v1/items/latest"
+    assert _call("GET", "/api/v1/items/7?verbose=true")["data"]["verbose"] is True
+    created = _call("POST", "/api/v1/items", body={"name": "a", "qty": 2})
     assert created["ok"] and fake_api.state.calls == [{"name": "a", "qty": 2}]
 
 
 def test_call_api_reports_errors_without_raising(fake_api):
-    invalid = api_tools._handle_call_api("POST", "/api/v1/items", body={"qty": 2})
+    invalid = _call("POST", "/api/v1/items", body={"qty": 2})
     assert invalid["status_code"] == 422 and not invalid["ok"]
-    assert "没有接口" in api_tools._handle_call_api("GET", "/api/v1/nope")["error"]
-    assert "method" in api_tools._handle_call_api("TRACE", "/api/v1/items/1")["error"]
-    assert "query" in api_tools._handle_call_api("GET", "/api/v1/items/1", query="verbose=1")["error"]
-    big = api_tools._handle_call_api("GET", "/api/v1/big")
+    assert "没有接口" in _call("GET", "/api/v1/nope")["error"]
+    assert "method" in _call("TRACE", "/api/v1/items/1")["error"]
+    assert "query" in _call("GET", "/api/v1/items/1", query="verbose=1")["error"]
+    big = _call("GET", "/api/v1/big")
     assert big["truncated"] and len(big["text"]) == api_tools._RESULT_MAX_CHARS
 
 
 def test_call_api_refuses_excluded_routes(fake_api):
-    result = api_tools._handle_call_api("POST", "/api/v1/agent/chat", body={"message": "hi"})
+    result = _call("POST", "/api/v1/agent/chat", body={"message": "hi"})
     assert "不能由助手调用" in result["error"] and fake_api.state.calls == []
 
 
 def test_read_api_doc_discloses_directory_group_then_endpoint(fake_api):
-    directory = api_tools._handle_read_api_doc()
+    directory = _doc()
     assert "read_api_doc" in directory["guide"]
     assert {g["group"]: g["endpoints"] for g in directory["groups"]} == {"Agent": 1, "Items": 3, "Misc": 1}
-    group = api_tools._handle_read_api_doc(group="items")
+    group = _doc(group="items")
     assert "GET /api/v1/items/{item_id} — One item" in group["endpoints"]
-    assert any("不可调用" in line for line in api_tools._handle_read_api_doc(group="Agent")["endpoints"])
-    assert "groups" in api_tools._handle_read_api_doc(group="nothing")
+    assert any("不可调用" in line for line in _doc(group="Agent")["endpoints"])
+    assert "groups" in _doc(group="nothing")
 
-    detail = api_tools._handle_read_api_doc(endpoint="POST /api/v1/items")
+    detail = _doc(endpoint="POST /api/v1/items")
     assert detail["request_body"]["schema"] == {"name": "string — Name", "qty?": "integer — Qty"}
-    by_path = api_tools._handle_read_api_doc(endpoint="/api/v1/items/42")
+    by_path = _doc(endpoint="/api/v1/items/42")
     assert by_path["endpoint"] == "GET /api/v1/items/{item_id}"
     assert {p["name"] for p in by_path["parameters"]} == {"item_id", "verbose"}
-    assert api_tools._handle_read_api_doc(endpoint="GET /items/latest")["endpoint"] == "GET /api/v1/items/latest"
-    assert api_tools._handle_read_api_doc(endpoint="POST /api/v1/agent/chat")["callable"] is False
+    assert _doc(endpoint="GET /items/latest")["endpoint"] == "GET /api/v1/items/latest"
+    assert _doc(endpoint="POST /api/v1/agent/chat")["callable"] is False
 
 
 def test_in_process_calls_share_the_serving_app_state(fake_api):
@@ -114,11 +124,11 @@ def test_real_api_document_covers_plan_watchlist_and_excluded_routes_exist():
     spec = internal.get_openapi_spec()
     for method, path in internal.EXCLUDED_ROUTES:
         assert method.lower() in spec["paths"][path], (method, path)
-    plan = api_tools._handle_read_api_doc(group="DailyPlan")["endpoints"]
+    plan = _doc(group="DailyPlan")["endpoints"]
     assert any(line.startswith("GET /api/v1/plan/account") for line in plan)
-    watch = api_tools._handle_read_api_doc(endpoint="GET /api/v1/stocks/watchlist")
+    watch = _doc(endpoint="GET /api/v1/stocks/watchlist")
     assert watch["endpoint"] == "GET /api/v1/stocks/watchlist" and "response" in watch
-    assert len(str(api_tools._handle_read_api_doc())) < api_tools._DOC_MAX_CHARS
+    assert len(str(_doc())) < api_tools._DOC_MAX_CHARS
 
 
 def test_only_the_chat_registry_gets_api_tools():

@@ -611,3 +611,71 @@ P3b 只做前端（`apps/dsa-web/`）和文档，后端契约就是第 21 节。
 - **次日计划的推送状态**：`RunPush.channel` 放宽为 `'feishu' | 'personal'`，新增 `reason`、`channels`。`RunPushStatus`（设置 → 运行和推送）对 `personal` 显示「个人渠道推送」、每个渠道类型的送达 / 失败，`reason=no_model` 显示「未配置模型」，没有可用渠道显示「计划只在网页里查看」；`feishu`（以及没有该字段的旧记录）的文案与之前完全一致。计划页面沿用既有的中文文案约定，没有接入 i18n；个人设置的新文案都有 zh / en。
 - **没做**：机器人 / MCP 的多用户映射；个人渠道的路由（`NOTIFICATION_*_CHANNELS`）和静默时段没有专门界面（仍在「推送偏好」里按通用字段编辑，路由键写的是系统渠道名，不继承）；计划页「飞书消息预览」标题对个人渠道仍写「飞书」。
 - **测试**：`PersonalChannelsSection.test.tsx`、`PersonalScheduleSection.test.tsx`、`PersonalSettingsPanel.test.tsx`（标签、旧键隐藏、主用户只读、`local`）、`RunPushStatus.test.tsx`、`api/__tests__/me.test.ts`、`api/__tests__/multiUserErrors.test.ts`；浏览器离线场景在 `apps/dsa-web/e2e/fixtures/multi-user.spec.ts`，截图输出到 `apps/dsa-web/test-results/pr-screenshots/`（不入库）。均在 `meApi` 边界或网络层 mock，不访问外网。
+
+## 23. 合并 main 后的隔离补漏
+
+把 `origin/main` 合入多用户分支后审计，发现 main 新增的几处代码绕过了多用户契约（第 1 节「一个人只影响自己」、3.3 / 3.4 的密钥规则、第 7 节报告隐私、第 8 节 Agent 只读本人数据）。本节列出每一项的根因和改法。主用户和 `local` 模式的行为见 23.8。
+
+### 23.1 助手 `call_api` / `read_api_doc` 以会话所有者的身份调用
+
+- **问题**：`src/agent/tools/api_tools.py` 经 `api/internal_client.py` 的进程内 `TestClient` 调接口，内部应用没有鉴权中间件，工具也没有 `user_scoped`。`AUTH_MODE=user_center` 下 `get_current_user` 取不到会话，每个个人 / 管理员接口都是 401（主用户也一样，功能整体失效）；`local` 模式下每个调用都是主用户管理员，包括 `PUT /system/config`，机器人会话和提示词注入都能走到。
+- **身份怎么带**：两个工具都标 `user_scoped=True`，注册表把会话所有者作为 `user_id` 传入（模型传的 `user_id` 被丢弃，缺失即拒绝，与 `get_portfolio_snapshot` 相同）。`internal_client.acting_user(user_id)` 构造 `api.deps.get_current_user` 对这个用户会得到的 `CurrentUser`：主用户在 `local` 模式是管理员；`user_center` 模式取 `app_user` 里的角色（每次登录刷新），主用户没有登记行（只用 CLI / 机器人、从没登录过网页）是管理员，其他用户没有登记行或角色不是 `admin` 一律是普通用户，绝不默认管理员。内部应用对 `get_current_user` 做依赖覆盖，读取每个请求 `state` 上的 `assistant_user`，这个值由包在应用外面的一层 ASGI 包装（`_ActingAs`）按调用写入，模型能发送的只有路径、查询参数和请求体，写不进 `state`；每次调用各自一个包装，并发的两个用户互不影响（不是应用级的全局覆盖）。路由上的 `require_admin` 因此照常执行（普通用户 403 `ADMIN_REQUIRED`）。
+- **策略**（`api/internal_client.py`，`call` 里再执行一遍，工具之外的调用方也绕不过）：
+  - 对所有人（管理员也一样）永远不可调用：`/system/*`、`/usage/*`、`/auth/*`（含登录 / 退出 / 改密）、`/me/settings*`、`/me/notification-channels*`（个人密钥和推送渠道的 webhook / Token，提示词注入不能读也不能改），以及原有的 `EXCLUDED_ROUTES`（自我调用、SSE）。
+  - 其余用了 `require_admin` 的路由（资讯源管理、阈值、板块推荐刷新、决策信号写、回测运行、大盘复盘、选股运行……）只有管理员能调用。管理员集合不是路径名单，是从路由的依赖树里算出来的：`route_requires_admin(method, template)` 遍历 `route.dependant`，路由器级和装饰器级的 `dependencies=[Depends(require_admin)]` 都包含在内，新增的管理员路由自动纳入。
+  - 方法不另设限制：沿用工具原有的范围（读写都可以），写操作带的仍是所有者的身份，只能改所有者自己的数据。
+- **路径**：策略针对「Starlette 实际会执行的那条路由」检查（按注册顺序取第一个完整匹配，`match_route`），不再用另一套正则；`safe_route_path` 在匹配前拒绝会让路由器和策略检查看到不同路径的写法：`.` / `..` 段（httpx 会折叠）、编码的 ASCII（`%2f` `%2e` `%5c` `%25` 等，只放行 UTF-8 中文所需的 `%80` 以上字节）、空段 `//`、`\`、`#`、`?`、空白和控制字符。
+- **`read_api_doc`**：不显示用户调不了的内容：被永久屏蔽的前缀对所有人隐藏，管理员路由对普通用户隐藏（分组目录、分组列表、单个接口详情、`group` 当路径前缀用时都一样，空了的分组从目录里消失）；其余不可调用的路由（自我调用、SSE）仍显示并标注原因。
+- **测试**：`tests/test_multi_user_assistant_api_identity.py`（`local` 与 `user_center` 两种模式各跑一遍）：用户 B 的助手读 / 写的是 B 自己的计划和持仓账户、读不到 A 的；主用户在 `user_center` 下功能可用；普通用户调用每个管理员路由都被拒绝，管理员集合与依赖树一致；`/system`、`/usage`、`/auth`、`/me/settings`、`/me/notification-channels` 对包括主用户在内的所有人屏蔽；12 种路径写法被拒绝且路由不会被执行；未知角色 / 未登记用户不是管理员；文档对普通用户隐藏管理员分组；注册表丢弃模型传入的 `user_id`、缺用户即拒绝。`tests/test_agent_api_tools.py` 改为带 `user_id` 调用，`tests/test_agent_tools_user_scope.py` 的审计允许表补一行说明。
+
+### 23.2 开放的个股详情路由不再无限制消耗系统的外部数据额度
+
+- **问题**：`GET /stocks/{code}/events`、`/research`、`/capital`、`/qa` 对所有登录用户开放，每次请求都可能访问外部数据源：没有事件的股票（`stock_event` 里没有行）每次请求都被判为「没取过」而重新取一遍（约 10 次 Tushare 调用）；资金面每次请求调用 `margin_detail` 和新浪；每个请求新建 `TushareFetcher`，它自己的 80 次 / 分钟限速器形同虚设。
+- **「取过了」要记住**（`src/services/stock_event_service.py`）：按需取数结束后（无论取到什么）写一条 `stock_event_ingest` 标记行（`kind = cf:<code>`，已有的表和唯一约束，不加表也不加列；诊断页的 `ingest_status` 不列出它；清理跟着原有的 `prune`）。`_needs_code_fetch` 先看这条标记：成功 24 小时内（`CODE_REFRESH_HOURS`）不再取；有任一类取失败则 10 分钟内（`CODE_FAILURE_RETRY_MINUTES`）不再取，之后重试。每日全市场入库已覆盖前一天时仍然直接不取（原有判断）。没有标记的存量股票沿用原来按事件行 `fetched_at` 的判断。
+- **资金面缓存**（`src/services/capital_service.py`）：两融、主力资金按（部分，代码，天数）进程内缓存 30 分钟（`SECTION_CACHE_SECONDS`，数据一天只公布一次），空结果同样缓存；失败记 2 分钟（`SECTION_FAILURE_SECONDS`）后再试，期间返回同样的失败信息而不再调用来源。北向沿用原有的 1 小时缓存。
+- **投资者问答**：「近 6 小时取过」原来靠已存问答行的 `fetched_at`，没有已回复问答的股票永远是「没取过」；现在另外按进程内标记记住「取过」（成功 6 小时，失败 10 分钟）。
+- **一个限速器**（`src/services/on_demand_fetch.py`）：`shared_tushare_fetcher()` 是进程里唯一的系统 Token 取数器（系统 Token 改了会重建），事件服务、资金面服务、宏观服务和日常入库都用它，限速计数被所有请求共享。
+- **每用户限频**：新增 `USER_ONDEMAND_FETCH_MAX_PER_HOUR`（默认 60，范围 1-10000，系统级、隐藏于设置表单、写在 `.env`，`.env.example` 与 `docs/full-guide.md` / `_EN.md` 有说明）。只对非主用户、只在真的要访问外部来源时消耗一个名额：命中缓存、「取过」标记或失败记忆的请求不消耗。超限时按路由返回已存储的数据而不访问外部：事件 / 研报在 `fetch` 里带 `rate_limited`，资金面各部分 `{status: rate_limited}`，问答 `fetch.status=rate_limited`；开盘集合竞价和分时（见 23.3）返回 429 `rate_limited`。限频结果不进缓存，窗口过去后正常取。主用户、CLI、系统任务不受限。
+- **用户自己的数据源凭据**（3.4）：非主用户保存了自己的 `TUSHARE_TOKEN` 时，按需取数用它（`tushare_fetcher_for(user_id)`，每个用户每个 Token 一个缓存的取数器，所以他自己的限速器持续生效，额度由他自己承担）；没有，或与系统 Token 相同，就用共享的系统取数器，并受上面的限频约束。
+- **测试**：`tests/test_multi_user_merge_audit.py`：重复请求不重取（含空结果、失败后的短暂停、存量 24 小时规则）、资金面缓存与失败记忆、每用户限频互不影响且主用户不受限、超限时从存储返回且不访问来源、共享取数器与用户自己的 Token、问答路由的标记与限频、路由只对非主用户传入 `user_id`。
+
+### 23.3 `ASHARE_API_KEY` 是系统付费 Key
+
+- **问题**：`GET /stocks/{code}/opening-auction` 对所有用户开放，`intraday_snapshot_service` 用系统的 `ASHARE_API_KEY` 调 ashareapi.com。
+- **改法**：与 `SOCIAL_SENTIMENT_API_KEY` 同类：列入 `user_config_service._BLANKED_SYSTEM_KEYS`（非主用户的视图里为空），`get_opening_auction(..., user_id=)` 对非主用户不走 ashareapi 分支，只用免费来源（必盈 → Tushare `stk_auction`）；缓存键带「是否可用付费 Key」，主用户较完整的结果与非主用户的结果互不覆盖。`tests/test_config_scope.py` 的 `SYSTEM_SECRETS_READ_BY_CONFIG` 允许表补入 `ASHARE_API_KEY`（有意的进程级秘密）。
+- **`test_multi_user_p2b3_security.py` 里 `DINGTALK_APP_KEY`、`DINGTALK_APP_SECRET`、`DISCORD_BOT_TOKEN`、`SLACK_BOT_TOKEN` 的出现**：不是合并带来的，是 P2b-3 当时的断言（按 `DINGTALK_` / `DISCORD_` / `SLACK_` 等前缀放行）。机器人应用凭据是进程级的（一个进程只连一个 Bot），在任何视图的 `Config` 属性里都有系统值，但用户请求能走到的通知路径只有个人通知服务，P3 起它把这些属性重置为数据类默认值。断言改为不弱化的形式：已审计的显式集合（不再是前缀），并且对每一个都断言个人通知配置（`UserNotificationConfig`）取到的是空值。合并后真正新增的越界项只有 `ASHARE_API_KEY`。
+- **开盘集合竞价和分时的取数**也按 23.2 的限频：只在缓存未命中、真的要访问必盈 / Tushare 时消耗名额，超限返回 429；检查在单飞缓存之外做，一个用户超限不会把错误带给正在等同一个请求的其他用户。
+
+### 23.4 东方财富闸门不能被用户的 webhook 触发
+
+- **问题**：`data_provider/eastmoney_gate.py` 钩住所有 `requests.Session.request` 到 `*.eastmoney.com` 的请求，把 403 当成封禁信号并让整个进程冷却 30 分钟。用户的自定义 webhook 指向东方财富主机并让它回 403，就能让所有人的东方财富来源停 30 分钟。
+- **改法**：(1) 钩子在个人出站范围内（`safe_requests.in_user_outbound_scope()`）直接放行，既不占该主机的排队轮次，也不会触发冷却；(2) `url_safety.SHARED_GATE_DOMAINS = ("eastmoney.com",)`：这些域名（含子域名，不含 `noteastmoney.com` 这类相似域名）按私网地址同等对待，不能作为任何用户提供的出站地址——保存 / 更新渠道时（`unsafe_target`）、模型 Base URL、SearXNG、Hindsight 等所有用 `check_public_https_url` 的位置、以及每次发送前的复查（`BlockedRequestError`）。目前只有东方财富有这类共享闸门，再加闸门时同步这个常量。
+- **测试**：`tests/test_multi_user_merge_audit.py`：用户范围内的 403 不产生冷却也不占轮次（去掉钩子里的放行判断，这条测试会失败）、范围外行为不变；东方财富主机及其子域名、大小写、末尾点、端口的写法被拒绝，相似域名放行；创建 / 更新个人渠道（飞书、钉钉、企业微信、自定义）被拒绝且不回显被拒绝的值，发送前复查也拦截。
+
+### 23.5 资讯池成员关系推断扩展到所有按代码抓取的类型
+
+- **问题**：`announcement_visible` 只过滤 `kind == announcement`，但资讯池里按「谁关注了这只股票」抓取的还有投资者问答（`qa`）。看得到某只股票的问答，就知道有人关注它。
+- **哪些是按代码抓取的**：看 `news_pool_service`：公告（巨潮 / 东方财富 / 深交所，均 `scope_type=symbol`、单一代码）和问答（`fetch_qa_for_codes`）都按 `wanted_codes()` 逐只抓取；快讯、财经早餐、长文是全市场抓取。常量 `news_akshare_source.PER_CODE_KINDS = {announcement, qa}`，新增按代码抓取的类型时加进去。
+- **改法**：`announcement_visible` 对 `PER_CODE_KINDS` 里的类型都按「代码在不在本人自选 / 持仓里」过滤（资讯摘要、资讯库搜索自动覆盖）；`GET /intelligence/items` 和个股档案（`/stocks/{code}/profile` 的资讯块）经 `IntelligenceService.list_items(viewer_user_id=)` 在 SQL 里过滤（分页和 `total` 保持正确）。`GET /stocks/{code}/qa` 对没关注该代码的非主用户不展示也不依赖已存的行：没有他自己的刷新记录就先刷新一次（占一个限频名额），超限则返回空列表，所以响应与「有没有人关注」无关。主用户不变。
+- **测试**：`tests/test_multi_user_merge_audit.py`：两个用户各关注一只股票，互相看不到对方的公告和问答（接口、服务、个股档案、摘要、搜索），快讯不受影响，分页 / 总数正确，主用户看到全部；问答路由。
+
+### 23.6 小项
+
+- `AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO` 改为用户级（与同组的 `AGENT_CONTEXT_COMPRESSION_ENABLED` / `_PROFILE` / `_TRIGGER_TOKENS` 一致；非密钥，未设置时回退系统默认值）。
+- 巨潮 orgId 映射表加载失败（或为空）后 5 分钟内（`ORGID_FAILURE_RETRY_SECONDS`）不再重试，沿用旧映射或代码规则，不再每个代码、每次请求都访问一次不可达的站点。
+- `tests/test_eastmoney_gate.py::test_watchlist_add_stores_the_new_bse_code` 补传 `user=`（主用户），新增非主用户变体（写入 `user_watchlist`，不改系统 `STOCK_LIST`）。
+
+### 23.7 新增配置与迁移
+
+- 新增 `USER_ONDEMAND_FETCH_MAX_PER_HOUR`（默认 60，系统级，`.env`）。无新表、无迁移；按需取数标记使用已有的 `stock_event_ingest`。
+
+### 23.8 主用户的可见变化
+
+- 助手：`local` 模式下仍是主用户管理员，但 `/system/*`、`/usage/*`、`/auth/*`、`/me/settings*`、`/me/notification-channels*` 不再能经助手调用（助手改系统设置的能力移除，需要时在设置页改）；`user_center` 模式下助手从完全不可用变为可用。`read_api_doc` 不再列出这些分组。路径含 `..`、`%2f` 等写法的调用被拒绝。
+- 事件 / 研报 / 资金面 / 问答：主用户不限频；没有事件的股票不再每次请求都重取（24 小时内），资金面两融 / 主力资金 30 分钟内取同一问题返回缓存。事件服务用进程共享的 Tushare 取数器，日常入库与请求共用一个限速计数。
+- 开盘集合竞价：主用户仍可使用 `ASHARE_API_KEY`。
+- 其余（资讯池成员过滤、东方财富闸门放行、巨潮映射表退避）对主用户没有可见变化。
+
+### 23.9 回滚
+
+代码回滚即可，无迁移；`stock_event_ingest` 里的 `cf:` 标记行旧代码不读取，可以留着。要临时放宽限频：调大 `USER_ONDEMAND_FETCH_MAX_PER_HOUR`。

@@ -198,6 +198,7 @@ class StockProfileService:
                         market=query_market,
                         page=1,
                         page_size=10,
+                        viewer_user_id=self.user_id,
                     )
                     successful_queries += 1
                 except Exception:

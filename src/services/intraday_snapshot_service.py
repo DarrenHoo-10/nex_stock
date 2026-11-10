@@ -502,8 +502,11 @@ class IntradaySnapshotService:
 
     # -- 5-minute bars of one given session --------------------------------
 
-    def get_session_bars(self, stock_code: str, trade_date: str) -> BarsResult:
+    def get_session_bars(self, stock_code: str, trade_date: str, *, user_id: Optional[str] = None) -> BarsResult:
         """5-minute bars of ``trade_date`` (``YYYY-MM-DD``), oldest first.
+
+        ``user_id`` (a non-primary user) takes one on-demand fetch permit when the answer is not cached
+        (``OnDemandFetchLimited`` when over the limit); ``None`` = primary user / system, not limited.
 
         Today's session reuses the live chain (Tushare ``rt_min_daily`` then Biying
         ``latest``) and falls back to Biying history; any other date comes from Biying
@@ -523,6 +526,10 @@ class IntradaySnapshotService:
         code = normalize_stock_code(stock_code)
         is_today = day == now.date()
         ttl = self.ttl_seconds if is_today else PAST_SESSION_TTL_SECONDS
+        if self._cache.peek_fresh(("bars", code, "5MIN", trade_date), ttl) is None:
+            from src.services.on_demand_fetch import require_on_demand_permit
+
+            require_on_demand_permit(user_id)
         (bars, source), served_stale = self._cache.get(
             ("bars", code, "5MIN", trade_date),
             lambda: self._load_session_bars(stock_code, code, trade_date, is_today),
@@ -539,8 +546,15 @@ class IntradaySnapshotService:
             is_stale=is_stale, stale_reason=reason, trade_date=trade_date,
         )
 
-    def get_opening_auction(self, stock_code: str, trade_date: str) -> dict:
+    def get_opening_auction(self, stock_code: str, trade_date: str, *, user_id: Optional[str] = None) -> dict:
+        """Opening auction prints of one session.
+
+        ``user_id`` (a non-primary user): the system's paid ``ASHARE_API_KEY`` is never used for them (free sources
+        only, cached apart from the primary user's richer answer), and an uncached fetch takes one on-demand permit
+        (``OnDemandFetchLimited`` when over the limit). ``None`` = primary user / system.
+        """
         from data_provider.base import normalize_stock_code
+        from src.config import get_primary_user_id
 
         now = self._now()
         day = datetime.strptime(trade_date, "%Y-%m-%d").date()
@@ -548,14 +562,18 @@ class IntradaySnapshotService:
         if len(code) != 6 or not code.isascii() or not code.isdigit() or day > now.date():
             raise ValueError("需要六位 A 股代码和有效交易日期")
         is_today = day == now.date()
+        paid = user_id is None or user_id == get_primary_user_id()
+        cache_key = ("opening_auction", code, trade_date, paid)
+        if self._cache.peek_fresh(cache_key, self.ttl_seconds) is None:
+            from src.services.on_demand_fetch import require_on_demand_permit
+
+            require_on_demand_permit(user_id)
         result, _ = self._cache.get(
-            ("opening_auction", code, trade_date),
-            lambda: self._load_opening_auction(code, trade_date, is_today),
-            self.ttl_seconds,
+            cache_key, lambda: self._load_opening_auction(code, trade_date, is_today, paid), self.ttl_seconds,
         )
         return result
 
-    def _load_opening_auction(self, code: str, day: str, is_today: bool) -> dict:
+    def _load_opening_auction(self, code: str, day: str, is_today: bool, paid_key_allowed: bool = True) -> dict:
         from data_provider.auction_quotes import fetch_auction_quotes
         from src.config import get_config
 
@@ -566,7 +584,7 @@ class IntradaySnapshotService:
                 return {"points": points, "source": "biying"}
         except Exception as exc:
             logger.info("Biying opening auction unavailable: %s", type(exc).__name__)
-        key = get_config().ashare_api_key
+        key = get_config().ashare_api_key if paid_key_allowed else None
         if key:
             try:
                 points = fetch_auction_quotes(code, day, is_today, key)

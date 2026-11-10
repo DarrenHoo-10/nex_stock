@@ -31,6 +31,7 @@ from src.services.news_akshare_source import (
     KIND_ANNOUNCEMENT,
     KIND_MORNING_BRIEF,
     NO_URL_PREFIX,
+    PER_CODE_KINDS,
     SOURCE_LABELS,
     SOURCE_TYPE,
     normalize_a_share_code,
@@ -123,12 +124,14 @@ def _within(row: Any, when: Optional[datetime], since: datetime, until: datetime
 
 
 def viewer_announcement_codes(viewer_user_id: Optional[str]) -> Optional[Set[str]]:
-    """Codes whose announcements ``viewer_user_id`` may see: their own watchlist + holdings, normalised.
+    """Codes whose per-code pool rows (announcements, investor Q&A) ``viewer_user_id`` may see: their own watchlist +
+    holdings, normalised.
 
     ``None`` = no restriction (the primary user / no viewer: the shared pool is theirs, unchanged). The pool also holds
-    announcements fetched only because *some other user* watches or holds the code (``NewsPoolService.wanted_codes``);
+    rows fetched only because *some other user* watches or holds the code (``NewsPoolService.wanted_codes``);
     showing those to everyone would tell a user which codes other users follow, so a non-primary viewer gets
-    announcements of their own codes only. General news (flashes, morning briefs, board / market news) is not affected.
+    the per-code rows of their own codes only (``PER_CODE_KINDS``). General news (flashes, morning briefs, board /
+    market news) is not affected.
     """
     from src.config import get_primary_user_id
 
@@ -152,8 +155,11 @@ def viewer_announcement_codes(viewer_user_id: Optional[str]) -> Optional[Set[str
 
 
 def announcement_visible(kind: Optional[str], codes: Sequence[Any], own_codes: Optional[Set[str]]) -> bool:
-    """Whether a pool row may be shown to a viewer whose allowed codes are ``own_codes`` (see ``viewer_announcement_codes``)."""
-    if own_codes is None or kind != KIND_ANNOUNCEMENT:
+    """Whether a pool row may be shown to a viewer whose allowed codes are ``own_codes`` (see ``viewer_announcement_codes``).
+
+    Applies to every per-code kind (``PER_CODE_KINDS``: announcements and investor Q&A), not only announcements.
+    """
+    if own_codes is None or kind not in PER_CODE_KINDS:
         return True
     return bool(own_codes.intersection(normalize_a_share_code(code) for code in codes))
 
