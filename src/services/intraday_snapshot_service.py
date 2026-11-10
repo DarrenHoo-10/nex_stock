@@ -539,6 +539,50 @@ class IntradaySnapshotService:
             is_stale=is_stale, stale_reason=reason, trade_date=trade_date,
         )
 
+    def get_opening_auction(self, stock_code: str, trade_date: str) -> dict:
+        from data_provider.base import normalize_stock_code
+
+        now = self._now()
+        day = datetime.strptime(trade_date, "%Y-%m-%d").date()
+        code = normalize_stock_code(stock_code)
+        if len(code) != 6 or not code.isascii() or not code.isdigit() or day > now.date():
+            raise ValueError("需要六位 A 股代码和有效交易日期")
+        is_today = day == now.date()
+        result, _ = self._cache.get(
+            ("opening_auction", code, trade_date),
+            lambda: self._load_opening_auction(code, trade_date, is_today),
+            self.ttl_seconds,
+        )
+        return result
+
+    def _load_opening_auction(self, code: str, day: str, is_today: bool) -> dict:
+        from data_provider.auction_quotes import fetch_auction_quotes
+        from src.config import get_config
+
+        try:
+            fetcher = self._fetcher("BiyingFetcher")
+            points = fetcher.get_opening_auction(code, day, is_today) if fetcher else []
+            if points:
+                return {"points": points, "source": "biying"}
+        except Exception as exc:
+            logger.info("Biying opening auction unavailable: %s", type(exc).__name__)
+        key = get_config().ashare_api_key
+        if key:
+            try:
+                points = fetch_auction_quotes(code, day, is_today, key)
+                if points:
+                    return {"points": points, "source": "ashareapi"}
+            except Exception as exc:
+                logger.info("Opening auction quotes unavailable: %s", type(exc).__name__)
+        try:
+            fetcher = self._fetcher("TushareFetcher")
+            point = fetcher.fetch_opening_auction(code, day.replace("-", "")) if fetcher else None
+            if point:
+                return {"points": [point], "source": "tushare"}
+        except Exception as exc:
+            logger.info("Opening auction match unavailable: %s", type(exc).__name__)
+        return {"points": [], "source": None}
+
     def _load_session_bars(
         self, stock_code: str, code: str, trade_date: str, is_today: bool
     ) -> Tuple[List[Dict[str, Any]], str]:

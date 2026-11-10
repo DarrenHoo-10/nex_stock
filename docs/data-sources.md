@@ -69,7 +69,7 @@ TUSHARE_TOKEN=你的token
 
 **公司事件**：业绩预告 `forecast`、业绩快报 `express`、股东增减持 `stk_holdertrade`、回购 `repurchase`、限售解禁 `share_float`、股权质押 `pledge_stat`、机构调研 `stk_surv`、券商盈利预测 `report_rc`、龙虎榜 `top_list` + 席位 `top_inst` 由 `src/services/stock_event_service.py` 调用，存入 `stock_event` 表（研报为 `research`、龙虎榜为 `dragon_tiger`）；打板和情绪数据也存在这里：开盘啦涨停 / 炸板 / 跌停 `kpl_list`（`limit_board`，含连板状态和涨停原因题材）、同花顺热股榜 `ths_hot` 与东方财富人气榜 `dc_hot`（合并为 `hot_rank`，各取前 100，同花顺的 `rank_reason` 是 AI 摘要，截取 300 字），每个交易日按交易日入库（补最近 5 天，每天 5 次请求）。每个交易日的资讯任务（`NEWS_DAILY_FETCH_TIME`）按日取一次全市场（约 10 次请求；第一次补最近 30 天，研报补 90 天、龙虎榜补 10 天，约 250 次），没有 Token 时跳过；某只股票本地没有近期数据时，`GET /api/v1/stocks/{code}/events` 和选股会按需单独补取这只股票（每类 1 次）。龙虎榜只能按交易日取全市场，所以只来自每日入库；Tushare 约 20 点发布当天榜单，当天和取到空结果的交易日下次运行会再取一次。
 
-**资金面**：两融 `margin_detail`（单只股票，近 20 个交易日）和北向 / 南向 `moneyflow_hsgt`（全市场，进程内缓存 1 小时）不入库，由 `src/services/capital_service.py` 在 `GET /api/v1/stocks/{code}/capital` 时按需读取。`moneyflow_hsgt` 单位为百万元；2024 年 8 月起交易所盘后只公布北向成交额，数值量级与成交额一致，不能当作净买入。这些接口在 15000 积分账号上已采样确认可用；公告 `anns_d`、互动问答 `irm_qa_*`、研报 `research_report`、短讯 `news`、竞价 `stk_auction` 需要单独购买，项目不使用。
+**资金面**：两融 `margin_detail`（单只股票，近 20 个交易日）和北向 / 南向 `moneyflow_hsgt`（全市场，进程内缓存 1 小时）不入库，由 `src/services/capital_service.py` 在 `GET /api/v1/stocks/{code}/capital` 时按需读取。`moneyflow_hsgt` 单位为百万元；2024 年 8 月起交易所盘后只公布北向成交额，数值量级与成交额一致，不能当作净买入。这些接口在 15000 积分账号上已采样确认可用；公告 `anns_d`、互动问答 `irm_qa_*`、研报 `research_report`、短讯 `news` 需要单独购买，项目不使用。竞价 `stk_auction` 仅在分时页作为可选的撮合结果补充源。
 
 **宏观和指数**：PMI `cn_pmi`、货币供应量 `cn_m`、社会融资规模 `sf_month`、LPR `shibor_lpr`、主要指数估值 `index_dailybasic`（PE / PE TTM / PB）、指数成分和权重 `index_weight`（沪深300、中证500、中证1000、上证50、创业板指、科创50 的月度快照）由 `src/services/macro_service.py` 调用，存入 `macro_series` 表。每天的资讯任务刷新一次（每个序列 20 小时内不重复取，约 15 次请求），没有 Token 时跳过；`GET /api/v1/data/macro` 和 `GET /api/v1/data/indices/{code}/constituents` 只读本地表。这几个接口在本账号已采样确认可用，所以没有用 a-stock-data 列出的统计局 / 人民银行 / 中证官网网页。
 
@@ -111,6 +111,7 @@ BIYING_TIMEOUT_SECONDS=8   # 可选，单次请求超时（秒）
 
 **在 Web 里的用处**
 
+- 开盘集合竞价与 5 分钟线独立加载。优先使用必盈当天或历史逐笔交易（历史自 2026-08-13 起归档）。09:15–09:24 每分钟保留最后一个有效价格，09:25 单独展示实际撮合价和成交股数。各分钟的可见性取决于源返回的记录，当天逐笔数据盘中约每小时更新。必盈缺数据时，若配置了 `ASHARE_API_KEY`，尝试 ashareapi.com 的竞价分时；最后尝试 Tushare 的 `stk_auction`（ETF 用 `etf_auction`）获取最终撮合结果。竞价量不重复计入盘中均价。
 - 个股行情窗口 / 个股计划页：双击日 K 查看当天分时（`GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD`）。当天先走 Tushare `rt_min_daily`，再走必盈当天 5 分钟线；历史交易日只走必盈历史 5 分钟线，并缓存 6 小时。**没有配置 `BIYING_LICENCE` 时，历史分时会返回 503**。503 的 `error` 是 `intraday_unavailable`，`reason` 说明原因：`biying_not_configured`（历史交易日需要必盈证书）、`not_configured`（当天没有任何分钟线数据源）、`no_bars`（数据源没有这天的数据，如停牌、非交易日）、`source_failed`（数据源请求失败），`message` 是对应的中文说明，页面直接显示这条说明，不再显示通用的「检查代理、DNS」。
 - 助手：盘中全市场快照、个股报价、5 分钟线（Tushare 失败后用必盈兜底）。
 

@@ -5,8 +5,9 @@ import { PlanKline } from '../PlanKline';
 
 const getHistory = vi.hoisted(() => vi.fn());
 const getQuote = vi.hoisted(() => vi.fn());
+const getOpeningAuction = vi.hoisted(() => vi.fn().mockResolvedValue({ source: null, points: [] }));
 const getIntraday = vi.hoisted(() => vi.fn());
-vi.mock('../../../../api/stocks', () => ({ stocksApi: { getHistory, getQuote, getIntraday } }));
+vi.mock('../../../../api/stocks', () => ({ stocksApi: { getOpeningAuction, getHistory, getQuote, getIntraday } }));
 
 function bar(day: number) {
   const close = 8 + day * 0.01;

@@ -131,6 +131,17 @@ class IntradayBar(BaseModel):
     amount: Optional[float] = Field(None, description="成交额（元）")
 
 
+class OpeningAuctionPoint(BaseModel):
+    time: str
+    price: float
+    volume: Optional[float] = Field(None, description="最终撮合成交量（股），试撮报价不提供")
+
+
+class OpeningAuctionResponse(BaseModel):
+    source: Optional[Literal["ashareapi", "tushare", "biying"]] = None
+    points: List[OpeningAuctionPoint]
+
+
 class StockIntradayResponse(BaseModel):
     """某个交易日的分时（5 分钟）行情响应"""
 

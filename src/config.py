@@ -1106,6 +1106,7 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    ashare_api_key: Optional[str] = None
     biying_licence: Optional[str] = None
     biying_timeout_seconds: float = 8.0
     intraday_snapshot_ttl_seconds: int = 60
@@ -2093,6 +2094,7 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            ashare_api_key=os.getenv('ASHARE_API_KEY'),
             biying_licence=os.getenv('BIYING_LICENCE'),
             biying_timeout_seconds=parse_env_float(os.getenv('BIYING_TIMEOUT_SECONDS'), 8.0, field_name='BIYING_TIMEOUT_SECONDS', minimum=1.0),
             intraday_snapshot_ttl_seconds=parse_env_int(os.getenv('INTRADAY_SNAPSHOT_TTL_SECONDS'), 60, field_name='INTRADAY_SNAPSHOT_TTL_SECONDS', minimum=0),

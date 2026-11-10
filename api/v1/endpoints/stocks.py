@@ -24,6 +24,7 @@ from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
     IntradayBar,
+    OpeningAuctionResponse,
     KLineData,
     StockEventItem,
     StockEventsResponse,
@@ -833,6 +834,17 @@ def get_stock_qa(
             platform=payload.get("platform") or platform, platform_label=labels[payload.get("platform") or platform],
         ))
     return StockQaResponse(stock_code=code, platform=platform, coverage=coverage, items=items, fetch=fetch)
+
+
+@router.get("/{stock_code}/opening-auction", response_model=OpeningAuctionResponse)
+def get_opening_auction(
+    stock_code: str, date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+) -> OpeningAuctionResponse:
+    try:
+        result = get_intraday_snapshot_service().get_opening_auction(stock_code, date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="股票代码或交易日期无效") from exc
+    return OpeningAuctionResponse(**result)
 
 
 @router.get(

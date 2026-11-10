@@ -4,6 +4,7 @@ import { getParsedApiError } from '../../../api/error';
 import { stocksApi } from '../../../api/stocks';
 import type { StockIntradayBar } from '../../../api/stocks';
 import { useUiLanguage } from '../../../contexts/UiLanguageContext';
+import { OpeningAuctionStrip } from './OpeningAuctionStrip';
 import { CHART_COLORS } from './chartTheme';
 import { SESSION_SLOTS, buildIntradaySeries } from './intradayMath';
 import { formatVolume } from './klineMath';
@@ -267,6 +268,7 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
           {t('quote.intraday.back')}
         </button>
       </div>
+      <OpeningAuctionStrip key={`${code}/${date}/${reloadKey}`} code={code} date={date} digits={digits} />
       {body}
     </div>
   );

@@ -302,6 +302,61 @@ def _bar(time_text, close=10.0):
             "volume": 100, "amount": 1000.0}
 
 
+class TestOpeningAuction(unittest.TestCase):
+    def test_history_quotes_sorted_and_cached_by_session(self):
+        service, manager, _ = _service()
+        with patch("src.config.get_config", return_value=SimpleNamespace(ashare_api_key="test")), \
+                patch("data_provider.auction_quotes.requests.get") as http:
+            http.return_value.json.return_value = {"ok": True, "data": [
+                {"time": "09:25:00", "price": 10}, {"time": "09:15:05", "price": 9},
+                {"time": "09:15:00", "price": 8}, {"time": "09:30", "price": 11},
+                {"time": "09:20", "price": "inf"},
+            ]}
+            result = service.get_opening_auction("600000", "2026-11-05")
+            self.assertEqual(result["points"], [
+                {"time": "09:15:05", "price": 9}, {"time": "09:25:00", "price": 10},
+            ])
+            self.assertEqual(service.get_opening_auction("SH600000", "2026-11-05"), result)
+            self.assertEqual(http.call_args.kwargs["params"],
+                             {"code": "600000", "date": "2026-11-05", "mode": "stock-history"})
+            http.assert_called_once()
+            manager.get_fetcher.assert_called_once_with("BiyingFetcher", capability="realtime_quote")
+
+    def test_final_match_for_requested_stock_and_day(self):
+        fetcher = _tushare(None)
+        fetcher._api.stk_auction.return_value = pd.DataFrame([
+            {"ts_code": "600000.SH", "trade_date": "20261104", "price": 7, "vol": 200},
+            {"ts_code": "600000.SH", "trade_date": "20261105", "price": 10, "vol": 300},
+        ])
+        service, _, _ = _service(tushare=fetcher)
+        with patch("src.config.get_config", return_value=SimpleNamespace(ashare_api_key=None)):
+            self.assertEqual(service.get_opening_auction("600000", "2026-11-05"), {
+                "source": "tushare", "points": [{"time": "09:25:00", "price": 10, "volume": 300}],
+            })
+
+    def test_biying_prints_exclude_other_dates_and_regular_trades(self):
+        fetcher = BiyingFetcher(licence="test")
+        tushare = _tushare(None)
+        service, _, _ = _service(biying=fetcher, tushare=tushare)
+        with patch("src.config.get_config", return_value=SimpleNamespace(ashare_api_key=None)), \
+                patch("data_provider.biying_fetcher.requests.get") as http:
+            http.return_value.status_code = 200
+            http.return_value.json.return_value = [
+                {"d": d, "t": t, "p": 10, "v": v} for d, t, v in [
+                    ("2026-11-05", "09:25:02", 830200), ("2026-11-05", "09:15:05", 0),
+                    ("2026-11-05", "09:15:02", 1200),
+                    ("2026-11-04", "09:25:00", 400), ("2026-11-05", "09:30:00", 600),
+                ]
+            ]
+            result = service.get_opening_auction("600000", "2026-11-05")
+            self.assertEqual(result, {"source": "biying", "points": [
+                {"time": "09:15:05", "price": 10},
+                {"time": "09:25:02", "price": 10, "volume": 830200},
+            ]})
+            self.assertIn("/hsrl/zbjy/20261105/600000/", http.call_args.args[0])
+            tushare._api.stk_auction.assert_not_called()
+
+
 class TestSessionBars(unittest.TestCase):
     """Bars of one given trading day (double-click on a daily candle)."""
 

@@ -793,6 +793,25 @@ class TushareFetcher(TushareMarketDataMixin, BaseFetcher):
         """Raw ``rt_k`` frame for a ts_code / wildcard pattern (e.g. ``6*.SH``)."""
         return self._call_rt_api("rt_k", ts_code=ts_code)
 
+    def fetch_opening_auction(self, code: str, day: str) -> Optional[Dict[str, Any]]:
+        """Final match only. Filter by both identifiers even when the API returns extra rows."""
+        ts_code = self._convert_stock_code(code)
+        frame = self._call_rt_api(
+            "etf_auction" if _is_etf_code(code) else "stk_auction",
+            ts_code=ts_code, trade_date=day, fields="ts_code,trade_date,price,vol",
+        )
+        for row in frame.to_dict("records"):
+            if row.get("ts_code") != ts_code or str(row.get("trade_date")) != day:
+                continue
+            price = _to_float_or_none(row.get("price"))
+            if price is not None and price > 0:
+                volume = _to_float_or_none(row.get("vol"))
+                return {
+                    "time": "09:25:00", "price": price,
+                    "volume": volume if volume is not None and volume > 0 else None,
+                }
+        return None
+
     def fetch_rt_min_daily(self, ts_code: str, freq: str = "5MIN") -> pd.DataFrame:
         """Raw ``rt_min_daily`` frame (today's intraday bars; needs 「A股分钟RT」)."""
         return self._call_rt_api("rt_min_daily", ts_code=ts_code, freq=freq)
