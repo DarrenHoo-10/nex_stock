@@ -19,6 +19,7 @@ from src.core.config_registry import SCOPE_USER, get_config_scope, get_field_def
 from src.repositories.user_repo import UserRepository
 from src.services.system_config_service import SystemConfigService
 from src.user_secrets import UserSecretError, UserSecretStore
+from src.utils.url_safety import UnsafeUrlError, check_public_https_url, split_url_list
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,11 @@ _MAX_VALUE_LENGTH = 16384
 # Not flagged sensitive by the registry but carry credentials.
 _EXTRA_SECRET_KEYS = frozenset({"CUSTOM_WEBHOOK_URLS"})
 _EXTRA_HEADERS_KEY_RE = re.compile(r"^LLM_[A-Z0-9_]+_EXTRA_HEADERS$")
+# User-scope keys whose value is an address the server will call (model Base URLs incl. ``LLM_<NAME>_BASE_URL``,
+# SearXNG, Hindsight, notification webhooks ...). Matched by name so a newly registered endpoint key is
+# covered without touching this list; every such value must be a public https URL (src/utils/url_safety.py).
+_URL_KEY_SUFFIXES = ("_URL", "_URLS", "_BASE_URL", "_BASE_URLS", "_API_BASE")
+_URL_LIST_KEY_SUFFIXES = ("_URLS", "_BASE_URLS")
 
 
 class UserSettingError(ValueError):
@@ -47,6 +53,31 @@ def is_secret_setting_key(key: str) -> bool:
     if key_upper in _EXTRA_SECRET_KEYS or _EXTRA_HEADERS_KEY_RE.match(key_upper):
         return True
     return bool(get_field_definition(key_upper).get("is_sensitive", False))
+
+
+def is_url_setting_key(key: str) -> bool:
+    """Whether the value of ``key`` is a URL the server will call (so it must pass the SSRF check)."""
+    return (key or "").strip().upper().endswith(_URL_KEY_SUFFIXES)
+
+
+def validate_url_setting(key: str, value: str) -> None:
+    """SSRF guard for a URL-valued user setting; raises :class:`UserSettingError` ``unsafe_url``.
+
+    The message and issues name the key and the reason, never the submitted value.
+    """
+    key_upper = key.upper()
+    urls = split_url_list(value) if key_upper.endswith(_URL_LIST_KEY_SUFFIXES) else [value.strip()]
+    for url in urls:
+        if not url:
+            continue
+        try:
+            check_public_https_url(url)
+        except UnsafeUrlError as exc:
+            raise UserSettingError(
+                "unsafe_url",
+                f"{key_upper} must be a public https URL ({exc.reason})",
+                [{"key": key_upper, "code": exc.reason, "message": exc.message, "severity": "error"}],
+            ) from exc
 
 
 def _clean_user_id(user_id: str) -> str:
@@ -115,6 +146,7 @@ class UserSettingsService:
                 "The primary user's personal settings are the .env values; edit the system settings instead",
             )
         prepared = [self._prepare(key, value) for key, value in items.items()]
+        self._validate_model_routes(user_id, prepared)
         for key, stored_value, is_secret in prepared:
             if stored_value is None:  # masked secret: keep the stored value
                 continue
@@ -131,6 +163,29 @@ class UserSettingsService:
         return deleted
 
     # ------------------------------------------------------------------ helpers
+    def _validate_model_routes(self, user_id: str, prepared: List[Any]) -> None:
+        """Refuse a save that would make the user's model routes use a provider / endpoint they may not use.
+
+        Only checked when the batch touches a model-route key; the stored settings + this batch are validated as
+        a whole (``validate_user_model_routes``), because the wire model depends on several keys at once
+        (``LLM_<NAME>_PROTOCOL`` / ``_BASE_URL`` / ``_MODELS``, ``LITELLM_MODEL`` ...).
+        """
+        from src.llm.credentials_guard import ModelKeyRequiredError
+        from src.services.user_config_service import is_model_route_setting_key, validate_user_model_routes
+
+        route_keys = [key for key, _value, _secret in prepared if is_model_route_setting_key(key)]
+        if not route_keys:
+            return
+        pending = {key: value for key, value, _secret in prepared if value is not None}
+        try:
+            validate_user_model_routes(self.get_plain_values(user_id), pending)
+        except ModelKeyRequiredError as exc:
+            raise UserSettingError(
+                exc.code,
+                exc.message,
+                [{"key": route_keys[0], "code": exc.code, "message": exc.message, "severity": "error"}],
+            ) from exc
+
     @staticmethod
     def _prepare(key: str, value: Any):
         key_upper = (key or "").strip().upper()
@@ -156,6 +211,8 @@ class UserSettingsService:
             if is_secret:  # issues echo the submitted value; never return a secret
                 errors = [{k: v for k, v in issue.items() if k != "actual"} for issue in errors]
             raise UserSettingError("invalid_value", f"{key_upper} failed validation", errors)
+        if is_url_setting_key(key_upper) and value.strip():
+            validate_url_setting(key_upper, value)
         return key_upper, SystemConfigService.normalize_single_value(key_upper, value), is_secret
 
     @staticmethod

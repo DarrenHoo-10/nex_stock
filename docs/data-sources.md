@@ -257,6 +257,8 @@ tushare(-1，仅配置 Token 后) > efinance(0) > akshare(1) > tushare/pytdx/tic
 
 **港股 / 美股 / 日韩台**：港股实时按 `FUTU_HK_REALTIME_SOURCE_PRIORITY`；美股以 Longbridge / YFinance 为主链，Finnhub / AlphaVantage 只补充；日股 / 韩股只走 YFinance。各场景的失败降级见 [数据源稳定性与故障处理图示](data-source-stability.md)。
 
+多用户部署中，用户自己触发的分析用其个人设置里的凭据取数（`TUSHARE_TOKEN`、`TICKFLOW_API_KEY`、`BIYING_LICENCE`、`MX_APIKEY`、`FINNHUB_API_KEY`、`ALPHAVANTAGE_API_KEY`；没配的回退到系统层）。只换凭据：渠道优先级、复权方式、超时等口径始终取系统配置，取到的数据照常写入共享缓存，系统 Token 的位置不变（用户 Token 在链路里的位置与系统 Token 一致）。某个用户的 Token 失效只会让他自己的这次取数按上面的回退顺序降级。板块流水线、新闻采集、行情同步等共享任务始终用系统 Token。Longbridge / Futu 和 `SOCIAL_SENTIMENT_API_KEY`、`FXMACRODATA_API_KEY` 仍只用系统配置；Agent 工具的取数暂用系统凭据。
+
 ## 7. 配置方式与安全
 
 - **本地**：写进项目根目录 `.env`（参考 `.env.example`），或在 Web 设置页填写（保存前有草稿保护，见 [设置页草稿保护](settings-draft-protection.md)）。

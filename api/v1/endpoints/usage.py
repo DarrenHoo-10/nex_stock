@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query
 
@@ -64,6 +64,29 @@ def _build_summary_payload(period: str, from_dt: datetime, to_dt: datetime, data
     }
 
 
+def build_usage_summary(db_manager: DatabaseManager, period: str, user_id: Optional[str] = None) -> UsageSummaryResponse:
+    """Usage summary of one user (``user_id``) or of everybody (``None``, administrator view)."""
+    normalized_period = _normalize_period(period)
+    from_dt, to_dt = _date_range(normalized_period)
+    scope = {"user_id": user_id} if user_id is not None else {}
+    data = db_manager.get_llm_usage_summary(from_dt, to_dt, **scope)
+    return UsageSummaryResponse(**_build_summary_payload(normalized_period, from_dt, to_dt, data))
+
+
+def build_usage_dashboard(
+    db_manager: DatabaseManager, period: str, limit: int, user_id: Optional[str] = None,
+) -> UsageDashboardResponse:
+    """Usage dashboard of one user (``user_id``) or of everybody (``None``, administrator view)."""
+    normalized_period = _normalize_period(period)
+    from_dt, to_dt = _date_range(normalized_period)
+    scope = {"user_id": user_id} if user_id is not None else {}
+    data = db_manager.get_llm_usage_summary(from_dt, to_dt, **scope)
+    records = db_manager.get_llm_usage_records(from_dt, to_dt, limit=limit, **scope)
+    payload = _build_summary_payload(normalized_period, from_dt, to_dt, data)
+    payload["recent_calls"] = [_enrich_call_record(row) for row in records]
+    return UsageDashboardResponse(**payload)
+
+
 @router.get(
     "/summary",
     response_model=UsageSummaryResponse,
@@ -74,10 +97,7 @@ def get_usage_summary(
     period: str = Query("month", description="'today' | 'month' | 'all'"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> UsageSummaryResponse:
-    normalized_period = _normalize_period(period)
-    from_dt, to_dt = _date_range(normalized_period)
-    data = db_manager.get_llm_usage_summary(from_dt, to_dt)
-    return UsageSummaryResponse(**_build_summary_payload(normalized_period, from_dt, to_dt, data))
+    return build_usage_summary(db_manager, period)
 
 
 @router.get(
@@ -91,10 +111,4 @@ def get_usage_dashboard(
     limit: int = Query(50, ge=1, le=200, description="Recent call records to include"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> UsageDashboardResponse:
-    normalized_period = _normalize_period(period)
-    from_dt, to_dt = _date_range(normalized_period)
-    data = db_manager.get_llm_usage_summary(from_dt, to_dt)
-    records = db_manager.get_llm_usage_records(from_dt, to_dt, limit=limit)
-    payload = _build_summary_payload(normalized_period, from_dt, to_dt, data)
-    payload["recent_calls"] = [_enrich_call_record(row) for row in records]
-    return UsageDashboardResponse(**payload)
+    return build_usage_dashboard(db_manager, period, limit)

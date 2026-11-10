@@ -48,18 +48,32 @@ def fxmacrodata_tool_names(*operations: str) -> list[str]:
     return [f"fxmacrodata_{operation}" for operation in selected]
 
 
+def _authorization_for(user_id: str | None) -> str:
+    """The FXMACRODATA_API_KEY of the host environment, for the primary user only.
+
+    The key is the administrator's own paid authorization: a non-primary user's agent run uses the public
+    USD baseline instead (docs/design/multi-user.md 3.3 / 17). ``None`` is the primary user (CLI, bots).
+    """
+    from src.config import get_primary_user_id
+
+    if user_id is not None and user_id != get_primary_user_id():
+        return ""
+    return os.environ.get("FXMACRODATA_API_KEY") or ""
+
+
 def build_fxmacrodata_tools(client: FXMacroDataClient | None = None) -> list[FXMacroDataTool]:
     """Build read-only tools; the USD baseline works without configuration.
 
     An optional FXMACRODATA_API_KEY is read from the host environment at call
-    time, never put into a tool schema, invocation argument or response.
+    time (for the primary user only), never put into a tool schema, invocation
+    argument or response.
     """
     def make_handler(operation_name):
-        def handler(**arguments):
+        def handler(user_id=None, **arguments):
             provider = client
             try:
                 if provider is None:
-                    provider = FXMacroDataClient(api_key=os.environ.get("FXMACRODATA_API_KEY") or "", timeout=30)
+                    provider = FXMacroDataClient(api_key=_authorization_for(user_id), timeout=30)
                 response = provider.execute(operation_name, arguments).as_dict()
                 response["provider_url"] = (
                     "https://fxmacrodata.com/?utm_source=daily_stock_analysis"
@@ -101,6 +115,7 @@ def build_fxmacrodata_tools(client: FXMacroDataClient | None = None) -> list[FXM
             description=f"FXMacroData: {operation.description}",
             parameters=parameters,
             handler=make_handler(operation.name),
+            user_scoped=True,  # which authorization the call uses depends on the acting user
             category="market",
             policy=ToolPolicy.declared(
                 read_only=True, permissions=["network"], timeout_seconds=35,

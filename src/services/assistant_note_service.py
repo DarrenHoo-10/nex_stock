@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, func, select
 
+from src.config import get_primary_user_id
 from src.storage import (
     AssistantNote,
     AssistantNoteProposal,
@@ -174,18 +175,34 @@ def make_diff(before_md: str, after_md: str) -> str:
 
 
 class AssistantNoteService:
-    def __init__(self, db_manager: Optional[DatabaseManager] = None, config: Any = None):
+    """Notes, revisions and proposals of ONE user.
+
+    Bound to ``user_id`` at construction (API: the authenticated user; ``None`` = primary user for
+    bots, CLI and other context-less callers; resolved once). A page, revision or proposal owned by
+    another user behaves exactly like a missing one (``NoteNotFound`` / ``ProposalNotFound``).
+    """
+
+    def __init__(
+        self, db_manager: Optional[DatabaseManager] = None, config: Any = None, user_id: Optional[str] = None,
+    ):
         self.db = db_manager or DatabaseManager.get_instance()
         self._config = config
+        self.user_id = user_id or get_primary_user_id()
 
     # -- config ----------------------------------------------------------
 
     def _cfg(self, name: str, default: Any) -> Any:
         config = self._config
         if config is None:
-            from src.config import get_config
+            # Note limits (ASSISTANT_NOTE_*) are personal settings: a non-primary user's own view applies.
+            if self.user_id != get_primary_user_id():
+                from src.services.user_config_service import get_user_config
 
-            config = get_config()
+                config = get_user_config(self.user_id)
+            else:
+                from src.config import get_config
+
+                config = get_config()
         value = getattr(config, name, default)
         return default if value is None else value
 
@@ -207,7 +224,9 @@ class AssistantNoteService:
 
     def list_pages(self, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         with self.db.get_session() as session:
-            stmt = select(AssistantNote).order_by(AssistantNote.scope, AssistantNote.subject, AssistantNote.id)
+            stmt = select(AssistantNote).where(AssistantNote.user_id == self.user_id).order_by(
+                AssistantNote.scope, AssistantNote.subject, AssistantNote.id,
+            )
             if scope:
                 scope_text = str(scope).strip().lower()
                 if scope_text not in NOTE_SCOPES:
@@ -217,7 +236,7 @@ class AssistantNoteService:
 
     def list_revisions(self, note_id: int) -> List[Dict[str, Any]]:
         with self.db.get_session() as session:
-            if session.get(AssistantNote, note_id) is None:
+            if self._owned_note(session, note_id) is None:
                 raise NoteNotFound()
             rows = session.execute(
                 select(AssistantNoteRevision)
@@ -228,7 +247,9 @@ class AssistantNoteService:
 
     def list_proposals(self, status: Optional[str] = PROPOSAL_PENDING) -> List[Dict[str, Any]]:
         with self.db.get_session() as session:
-            stmt = select(AssistantNoteProposal).order_by(AssistantNoteProposal.created_at.desc())
+            stmt = select(AssistantNoteProposal).where(
+                AssistantNoteProposal.user_id == self.user_id,
+            ).order_by(AssistantNoteProposal.created_at.desc())
             if status:
                 stmt = stmt.where(AssistantNoteProposal.status == status)
             return [_proposal_dict(row) for row in session.execute(stmt).scalars()]
@@ -237,14 +258,23 @@ class AssistantNoteService:
         """Total note size against the injection cap (drives the 'needs tidy' hint)."""
         with self.db.get_session() as session:
             total = session.execute(
-                select(func.coalesce(func.sum(func.length(AssistantNote.body_md)), 0))
+                select(func.coalesce(func.sum(func.length(AssistantNote.body_md)), 0)).where(
+                    AssistantNote.user_id == self.user_id,
+                )
             ).scalar_one()
         limit = self.inject_max_chars
         return {"total_chars": int(total or 0), "inject_max_chars": limit, "needs_tidy": int(total or 0) > limit}
 
-    @staticmethod
-    def _find(session, scope: str, subject: Optional[str]) -> Optional[AssistantNote]:
-        stmt = select(AssistantNote).where(AssistantNote.scope == scope)
+    def _owned_note(self, session, note_id: int) -> Optional[AssistantNote]:
+        note = session.get(AssistantNote, note_id)
+        return note if note is not None and note.user_id == self.user_id else None
+
+    def _owned_proposal(self, session, proposal_id: str) -> Optional[AssistantNoteProposal]:
+        proposal = session.get(AssistantNoteProposal, proposal_id)
+        return proposal if proposal is not None and proposal.user_id == self.user_id else None
+
+    def _find(self, session, scope: str, subject: Optional[str]) -> Optional[AssistantNote]:
+        stmt = select(AssistantNote).where(AssistantNote.user_id == self.user_id, AssistantNote.scope == scope)
         stmt = stmt.where(AssistantNote.subject.is_(None) if subject is None else AssistantNote.subject == subject)
         return session.execute(stmt).scalars().first()
 
@@ -273,6 +303,7 @@ class AssistantNoteService:
                 start = datetime.combine(date.today(), dt_time.min)
                 used = session.execute(
                     select(func.count(AssistantNoteProposal.id)).where(
+                        AssistantNoteProposal.user_id == self.user_id,
                         AssistantNoteProposal.source == SOURCE_SUGGESTED,
                         AssistantNoteProposal.created_at >= start,
                     )
@@ -285,6 +316,7 @@ class AssistantNoteService:
                 raise NoteValidationError("修改内容与当前页面相同")
             proposal = AssistantNoteProposal(
                 id=str(uuid.uuid4()),
+                user_id=self.user_id,
                 scope=scope,
                 subject=subject,
                 title=_resolve_title(scope, subject, title, note.title if note else None),
@@ -305,7 +337,7 @@ class AssistantNoteService:
 
     def confirm_proposal(self, proposal_id: str) -> Dict[str, Any]:
         def write(session) -> Dict[str, Any]:
-            proposal = session.get(AssistantNoteProposal, proposal_id)
+            proposal = self._owned_proposal(session, proposal_id)
             if proposal is None:
                 raise ProposalNotFound()
             if proposal.status != PROPOSAL_PENDING:
@@ -328,7 +360,7 @@ class AssistantNoteService:
 
     def reject_proposal(self, proposal_id: str) -> Dict[str, Any]:
         def write(session) -> Dict[str, Any]:
-            proposal = session.get(AssistantNoteProposal, proposal_id)
+            proposal = self._owned_proposal(session, proposal_id)
             if proposal is None:
                 raise ProposalNotFound()
             if proposal.status != PROPOSAL_PENDING:
@@ -373,7 +405,7 @@ class AssistantNoteService:
     def revert(self, note_id: int, version: int, *, expected_version: Optional[int] = None) -> Dict[str, Any]:
         """Write a new version whose body equals an earlier revision."""
         def write(session) -> Dict[str, Any]:
-            note = session.get(AssistantNote, note_id)
+            note = self._owned_note(session, note_id)
             if note is None:
                 raise NoteNotFound()
             if expected_version is not None and int(expected_version) != int(note.version):
@@ -405,6 +437,7 @@ class AssistantNoteService:
             session.execute(delete(AssistantNote).where(AssistantNote.id == note.id))
             # Pending proposals were based on a page that no longer exists.
             for proposal in session.execute(select(AssistantNoteProposal).where(
+                AssistantNoteProposal.user_id == self.user_id,
                 AssistantNoteProposal.scope == scope,
                 AssistantNoteProposal.status == PROPOSAL_PENDING,
             )).scalars():
@@ -417,17 +450,22 @@ class AssistantNoteService:
 
     def clear_all(self) -> Dict[str, int]:
         def write(session) -> Dict[str, int]:
-            revisions = session.execute(delete(AssistantNoteRevision)).rowcount or 0
-            notes = session.execute(delete(AssistantNote)).rowcount or 0
-            proposals = session.execute(delete(AssistantNoteProposal)).rowcount or 0
+            own_note_ids = select(AssistantNote.id).where(AssistantNote.user_id == self.user_id)
+            revisions = session.execute(
+                delete(AssistantNoteRevision).where(AssistantNoteRevision.note_id.in_(own_note_ids))
+            ).rowcount or 0
+            notes = session.execute(delete(AssistantNote).where(AssistantNote.user_id == self.user_id)).rowcount or 0
+            proposals = session.execute(
+                delete(AssistantNoteProposal).where(AssistantNoteProposal.user_id == self.user_id)
+            ).rowcount or 0
             return {"notes": notes, "revisions": revisions, "proposals": proposals}
 
         return self.db._run_write_transaction("assistant_note_clear_all", write)
 
     # -- internals -------------------------------------------------------
 
-    @staticmethod
     def _write_version(
+        self,
         session,
         note: Optional[AssistantNote],
         scope: str,
@@ -442,7 +480,7 @@ class AssistantNoteService:
         now = datetime.now()
         if note is None:
             note = AssistantNote(
-                scope=scope, subject=subject, title=title, body_md=body_md, version=1, updated_at=now,
+                user_id=self.user_id, scope=scope, subject=subject, title=title, body_md=body_md, version=1, updated_at=now,
             )
             session.add(note)
         else:

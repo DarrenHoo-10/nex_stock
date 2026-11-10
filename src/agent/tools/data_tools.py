@@ -569,13 +569,18 @@ get_stock_info_tool = ToolDefinition(
 # ============================================================
 
 def _handle_get_portfolio_snapshot(
+    user_id: str,
     account_id: Optional[int] = None,
     cost_method: str = "fifo",
     include_positions: bool = False,
     include_risk: bool = True,
     as_of: Optional[str] = None,
 ) -> dict:
-    """Get compact portfolio snapshot for account-aware suggestions."""
+    """Get compact portfolio snapshot for account-aware suggestions.
+
+    ``user_id`` is the acting user (session owner), supplied by the tool registry for ``user_scoped``
+    tools; only that user's accounts are read.
+    """
     method = (cost_method or "fifo").strip().lower()
     if method not in {"fifo", "avg"}:
         return {"error": "cost_method must be fifo or avg"}
@@ -595,7 +600,7 @@ def _handle_get_portfolio_snapshot(
         return {"status": "not_supported", "error": f"portfolio module unavailable: {exc}"}
 
     try:
-        portfolio_service = PortfolioService()
+        portfolio_service = PortfolioService(user_id=user_id)
         snapshot = portfolio_service.get_portfolio_snapshot(
             account_id=account_id,
             as_of=as_of_date,
@@ -669,6 +674,7 @@ get_portfolio_snapshot_tool = ToolDefinition(
     handler=_handle_get_portfolio_snapshot,
     category="data",
     policy=_PORTFOLIO_READ_POLICY,
+    user_scoped=True,
 )
 
 

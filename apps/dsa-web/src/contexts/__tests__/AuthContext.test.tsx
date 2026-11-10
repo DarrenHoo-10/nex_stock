@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApiError, createParsedApiError } from '../../api/error';
+import { useCurrentUser } from '../../hooks/useCurrentUser';
 import { AuthProvider, useAuth } from '../AuthContext';
 import { csrfHeadersFor, getUserCenterLoginUrl } from '../../utils/userCenterSession';
 
@@ -21,6 +22,12 @@ vi.mock('../../api/auth', () => ({
     changePassword,
     logout,
   },
+}));
+
+const { getMe } = vi.hoisted(() => ({ getMe: vi.fn() }));
+
+vi.mock('../../api/me', () => ({
+  meApi: { getMe },
 }));
 
 vi.mock('../../stores', () => ({
@@ -318,5 +325,133 @@ describe('AuthContext', () => {
       expect(csrfHeadersFor('POST')).toEqual({});
       expect(getUserCenterLoginUrl()).toBeNull();
     });
+  });
+});
+
+describe('AuthProvider current user (GET /me)', () => {
+  const userCenterStatus = {
+    authMode: 'user_center',
+    authEnabled: true,
+    loggedIn: false,
+    passwordSet: false,
+    passwordChangeable: false,
+    setupState: 'enabled',
+  };
+  const session = (role: string) => ({
+    authenticated: true,
+    authorized: true,
+    username: 'Alice',
+    role,
+    csrfToken: 'csrf',
+    loginUrl: 'https://user.example.test/login',
+    logoutUrl: 'https://user.example.test/logout',
+  });
+  const me = {
+    userId: 'u-alice',
+    handle: 'alice',
+    displayName: 'Alice A.',
+    role: 'user',
+    isAdmin: false,
+    authMode: 'user_center' as const,
+    modelKeyConfigured: false,
+  };
+
+  const UserProbe = () => {
+    const { user, isAdmin, modelKeyConfigured, displayName, isMultiUser, refresh } = useCurrentUser();
+    return (
+      <div>
+        <span data-testid="has-user">{String(user !== null)}</span>
+        <span data-testid="admin">{String(isAdmin)}</span>
+        <span data-testid="key">{String(modelKeyConfigured)}</span>
+        <span data-testid="name">{displayName}</span>
+        <span data-testid="multi">{String(isMultiUser)}</span>
+        <button type="button" onClick={() => void refresh()}>refresh-me</button>
+      </div>
+    );
+  };
+
+  function renderProbe() {
+    return render(
+      <AuthProvider>
+        <UserProbe />
+      </AuthProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    getMe.mockReset();
+  });
+
+  it('fetches /me once with the session and exposes admin, model key and display name', async () => {
+    getStatus.mockResolvedValueOnce(userCenterStatus);
+    getUserCenterSession.mockResolvedValueOnce(session('user'));
+    getMe.mockResolvedValueOnce(me);
+
+    renderProbe();
+
+    await waitFor(() => expect(screen.getByTestId('has-user')).toHaveTextContent('true'));
+    expect(getMe).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('admin')).toHaveTextContent('false');
+    expect(screen.getByTestId('key')).toHaveTextContent('false');
+    expect(screen.getByTestId('name')).toHaveTextContent('Alice A.');
+    expect(screen.getByTestId('multi')).toHaveTextContent('true');
+  });
+
+  it('re-reads /me on demand, e.g. after a personal model key was saved', async () => {
+    getStatus.mockResolvedValueOnce(userCenterStatus);
+    getUserCenterSession.mockResolvedValueOnce(session('user'));
+    getMe.mockResolvedValueOnce(me).mockResolvedValueOnce({ ...me, modelKeyConfigured: true });
+
+    renderProbe();
+    await waitFor(() => expect(screen.getByTestId('key')).toHaveTextContent('false'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'refresh-me' }));
+
+    await waitFor(() => expect(screen.getByTestId('key')).toHaveTextContent('true'));
+    expect(getMe).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to the session role when /me cannot be read', async () => {
+    getStatus.mockResolvedValueOnce(userCenterStatus);
+    getUserCenterSession.mockResolvedValueOnce(session('admin'));
+    getMe.mockRejectedValueOnce(new Error('network'));
+
+    renderProbe();
+
+    await waitFor(() => expect(screen.getByTestId('has-user')).toHaveTextContent('true'));
+    expect(screen.getByTestId('admin')).toHaveTextContent('true');
+    expect(screen.getByTestId('key')).toHaveTextContent('true');
+    expect(screen.getByTestId('name')).toHaveTextContent('Alice');
+  });
+
+  it('does not call /me in local mode and behaves as the single administrator', async () => {
+    getStatus.mockResolvedValueOnce({
+      authMode: 'local',
+      authEnabled: false,
+      loggedIn: false,
+      passwordSet: false,
+      passwordChangeable: false,
+      setupState: 'no_password',
+    });
+
+    renderProbe();
+
+    await waitFor(() => expect(getStatus).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('has-user')).toHaveTextContent('false'));
+    expect(getMe).not.toHaveBeenCalled();
+    expect(screen.getByTestId('admin')).toHaveTextContent('true');
+    expect(screen.getByTestId('key')).toHaveTextContent('true');
+    expect(screen.getByTestId('multi')).toHaveTextContent('false');
+  });
+
+  it('does not call /me while the user-center session is not authorized', async () => {
+    getStatus.mockResolvedValueOnce(userCenterStatus);
+    getUserCenterSession.mockResolvedValueOnce({ ...session('user'), authorized: false });
+
+    renderProbe();
+
+    await waitFor(() => expect(getUserCenterSession).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('has-user')).toHaveTextContent('false'));
+    expect(getMe).not.toHaveBeenCalled();
   });
 });

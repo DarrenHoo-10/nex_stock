@@ -18,6 +18,23 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_TOOL_SURFACE_SCOPE_DIMENSIONS = frozenset({"stock"})
 
+# ``user_scoped`` tools that return the acting user's *personal data* (holdings). A report whose agent run called
+# one of them contains that data and is private to its requester (docs/design/multi-user.md section 17).
+# The other ``user_scoped`` tools (search with the user's own keys) read no personal data.
+PERSONAL_DATA_TOOL_NAMES = frozenset({"get_portfolio_snapshot"})
+
+
+def tool_calls_read_personal_data(tool_calls_log: Any) -> bool:
+    """Whether an agent run's tool-call log shows a personal-data tool was called."""
+    for entry in tool_calls_log or []:
+        if isinstance(entry, dict) and entry.get("tool") in PERSONAL_DATA_TOOL_NAMES:
+            return True
+    return False
+
+
+class ToolUserContextRequired(PermissionError):
+    """A ``user_scoped`` tool was invoked without the acting user (fail closed, never the primary user)."""
+
 
 # ============================================================
 # Data classes
@@ -94,6 +111,10 @@ class ToolDefinition:
     category: str = "data"  # data | analysis | search | action | market
     policy: ToolPolicy = field(default_factory=ToolPolicy.unknown)
     timeout_seconds: Optional[float] = None  # Optional per-tool execution timeout
+    # True when the handler reads or writes one user's personal data (portfolio, watchlist, plan,
+    # notes, ...). The registry then passes the acting user as the handler's ``user_id`` argument
+    # (never taken from model-supplied arguments) and refuses the call when there is none.
+    user_scoped: bool = False
 
     # ----- Multi-provider schema converters -----
 
@@ -302,19 +323,27 @@ class ToolRegistry:
 
     # ----- Execution -----
 
-    def execute(self, name: str, **kwargs) -> Any:
+    def execute(self, name: str, *, user_id: Optional[str] = None, **kwargs) -> Any:
         """Execute a registered tool by name.
 
         Returns the result as a JSON-serializable value.
         Raises ``KeyError`` if tool not found.
+        Raises :class:`ToolUserContextRequired` when a ``user_scoped`` tool is called without ``user_id``.
         Raises the handler's exception on execution failure.
 
-        Tool names must match the registry exactly.
+        Tool names must match the registry exactly.  ``user_id`` is the acting user supplied by the
+        runtime (session owner); only ``user_scoped`` tools receive it, and any ``user_id`` inside the
+        model-supplied ``kwargs`` is discarded.
         """
         tool_def = self.resolve(name)
         if tool_def is None:
             raise KeyError(f"Tool '{name}' not found in registry. Available: {self.list_names()}")
 
+        if tool_def.user_scoped:
+            kwargs.pop("user_id", None)
+            if not user_id:
+                raise ToolUserContextRequired(f"Tool '{name}' needs the acting user; none was provided")
+            return tool_def.handler(user_id=user_id, **kwargs)
         return tool_def.handler(**kwargs)
 
 

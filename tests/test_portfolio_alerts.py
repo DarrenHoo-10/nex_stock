@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 from datetime import date
 
 from src.services.portfolio_alerts import (
@@ -180,6 +181,7 @@ class PortfolioAlertsTestCase(unittest.TestCase):
             target_scope="portfolio_holdings",
             target="all",
             config=None,
+            user_id="local",
             portfolio_service=FakePortfolioService(snapshot=snapshot),
         )
 
@@ -207,33 +209,36 @@ class PortfolioAlertsTestCase(unittest.TestCase):
             target_scope="portfolio_holdings",
             target="all",
             config=None,
+            user_id="local",
             portfolio_service=FakePortfolioService(snapshot=snapshot),
         )
 
         self.assertEqual([item.symbol for item in targets], ["SH000001", "SZ000001", "000001", "SH600519"])
         self.assertEqual(overflow, 0)
 
-    def test_watchlist_expansion_refreshes_stock_list(self) -> None:
-        class Config:
-            stock_list = ["600519", "600519", "aapl"]
+    def test_watchlist_expansion_reads_the_users_watchlist(self) -> None:
+        calls = []
 
-            def __init__(self):
-                self.refreshed = False
+        class FakeWatchlistService:
+            def list_codes(self, user_id):
+                calls.append(user_id)
+                return ["000001", "000001", "hk00700"]
 
-            def refresh_stock_list(self):
-                self.refreshed = True
-                self.stock_list = ["000001", "000001", "hk00700"]
+        with patch("src.services.portfolio_alerts.WatchlistService", FakeWatchlistService):
+            targets, overflow = expand_symbol_targets(
+                target_scope="watchlist",
+                target="default",
+                config=None,
+                user_id="user-a",
+            )
 
-        config = Config()
-        targets, overflow = expand_symbol_targets(
-            target_scope="watchlist",
-            target="default",
-            config=config,
-        )
-
-        self.assertTrue(config.refreshed)
+        self.assertEqual(calls, ["user-a"])
         self.assertEqual([item.symbol for item in targets], ["000001", "HK00700"])
         self.assertEqual(overflow, 0)
+
+    def test_risk_alert_without_owner_or_injected_service_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no owner"):
+            evaluate_portfolio_risk_alert(_risk_rule("portfolio_drawdown"))
 
 
 if __name__ == "__main__":

@@ -20,6 +20,12 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import Config, channel_allows_empty_api_key, get_config
+from src.llm.credentials_guard import (
+    ModelKeyRequiredError,
+    is_user_view,
+    require_explicit_credentials,
+    user_call_scope,
+)
 from src.llm.hermes import route_has_hermes
 
 logger = logging.getLogger(__name__)
@@ -208,9 +214,9 @@ def _parse_items_from_text(text: str) -> List[Tuple[str, Optional[str], str]]:
     return [(c, None, "medium") for c in codes]
 
 
-def _resolve_vision_model() -> str:
-    """Determine the litellm model to use for vision."""
-    cfg = get_config()
+def _resolve_vision_model(config: Optional[Config] = None) -> str:
+    """Determine the litellm model to use for vision (``config`` = the acting user's view; default the system's)."""
+    cfg = config if config is not None else get_config()
     # Prefer explicit vision model, then OPENAI_VISION_MODEL alias, then primary litellm model
     model = (cfg.vision_model or cfg.openai_vision_model or cfg.litellm_model or "").strip()
     if not model:
@@ -267,12 +273,23 @@ def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
     return channel_allows_empty_api_key(protocol, params.get("api_base"))
 
 
-def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] = None) -> str:
-    """Extract stock codes from an image using litellm (all providers via OpenAI vision format)."""
+def _call_litellm_vision(
+    image_b64: str,
+    mime_type: str,
+    api_key: Optional[str] = None,
+    config: Optional[Config] = None,
+) -> str:
+    """Extract stock codes from an image using litellm (all providers via OpenAI vision format).
+
+    ``config`` is the acting user's configuration. A non-primary user's call must carry a key from
+    that view: without one nothing is sent (LiteLLM would otherwise read the server's provider variables).
+    """
     global litellm
-    cfg = get_config()
-    model = _resolve_vision_model()
+    cfg = config if config is not None else get_config()
+    model = _resolve_vision_model(config)
     if not model:
+        if is_user_view(cfg):
+            raise ModelKeyRequiredError()
         raise ValueError("未配置 Vision API。请设置 LITELLM_MODEL 或相关 API Key。")
     if route_has_hermes(getattr(cfg, "llm_model_list", []) or [], model):
         raise ValueError("Hermes Vision 未验证：VISION_MODEL 不能选择包含 Hermes deployment 的 route。")
@@ -301,6 +318,8 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         if deployment is not None:
             deployment_params = dict(deployment.get("litellm_params") or {})
     if key is None and not deployment_params:
+        if is_user_view(cfg):
+            raise ModelKeyRequiredError()
         raise ValueError(f"No API key found for vision model {model}")
     wire_model = str(deployment_params.get("model") or model).strip()
 
@@ -333,10 +352,12 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
             call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
 
+    require_explicit_credentials(cfg, call_kwargs, model=wire_model)
     if getattr(litellm, "completion", None) is None:
         import litellm as litellm_module
         litellm = litellm_module
-    response = litellm.completion(**call_kwargs)
+    with user_call_scope(cfg):
+        response = litellm.completion(**call_kwargs)
     if response and response.choices and response.choices[0].message.content:
         return response.choices[0].message.content
     raise ValueError("LiteLLM vision returned empty response")
@@ -345,6 +366,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
 def extract_stock_codes_from_image(
     image_bytes: bytes,
     mime_type: str,
+    config: Optional[Config] = None,
 ) -> Tuple[List[Tuple[str, Optional[str], str]], str]:
     """
     从图片中提取股票代码及名称（使用 Vision LLM）。
@@ -355,6 +377,8 @@ def extract_stock_codes_from_image(
     Args:
         image_bytes: 原始图片字节
         mime_type: MIME 类型（如 image/jpeg, image/png）
+        config: 发起用户的配置（非主用户必须传其配置视图并已通过 ``require_usable_model``）；
+            默认使用系统配置（主用户）
 
     Returns:
         (items, raw_text) - items 为 [(code, name?, confidence), ...]，raw_text 为原始 LLM 响应。
@@ -375,14 +399,19 @@ def extract_stock_codes_from_image(
     _verify_image_magic_bytes(image_bytes, mime_type)
 
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
-    model = _resolve_vision_model()
-    keys = _get_api_keys_for_model(model, get_config())
+    cfg = config if config is not None else get_config()
+    model = _resolve_vision_model(config)
+    keys = _get_api_keys_for_model(model, cfg)
 
     last_error: Optional[Exception] = None
     for attempt in range(3):
         try:
             key = random.choice(keys) if keys else None
-            raw = _call_litellm_vision(image_b64, mime_type, api_key=key)
+            raw = (
+                _call_litellm_vision(image_b64, mime_type, api_key=key, config=config)
+                if config is not None
+                else _call_litellm_vision(image_b64, mime_type, api_key=key)
+            )
             logger.debug("[ImageExtractor] raw LLM response:\n%s", raw)
             items = _parse_items_from_text(raw)
             logger.info(
@@ -390,6 +419,8 @@ def extract_stock_codes_from_image(
                 f"{[(i[0], i[1]) for i in items[:5]]}{'...' if len(items) > 5 else ''}"
             )
             return items, raw
+        except ModelKeyRequiredError:
+            raise
         except Exception as e:
             last_error = e
             if attempt < 2:

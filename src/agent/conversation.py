@@ -15,6 +15,18 @@ from src.storage import ChatSessionStateConflict, get_db
 
 logger = logging.getLogger(__name__)
 
+# Chat platforms whose bots own a session-id namespace: ``{platform}_{user_id}[:scope]`` (bot/commands) and
+# ``feishu:{chat_id}[:thread]`` (Feishu assistant). Only the primary user's bots write them, so an API client of
+# any other user must not create such ids (they would pre-empt the session the bot needs later).
+BOT_SESSION_PLATFORMS = ("feishu", "dingtalk", "discord", "wecom", "telegram")
+
+
+def is_bot_session_id(session_id: Optional[str]) -> bool:
+    """Whether ``session_id`` lies in a chat bot's reserved namespace (see ``BOT_SESSION_PLATFORMS``)."""
+    lowered = str(session_id or "").strip().lower()
+    return any(lowered.startswith((f"{platform}_", f"{platform}:")) for platform in BOT_SESSION_PLATFORMS)
+
+
 @dataclass
 class ConversationSession:
     """A single multi-turn conversation session."""
@@ -93,11 +105,14 @@ class ConversationManager:
             role, content, accepted_turn=accepted_turn, db_manager=db_manager, **extra,
         )
 
-    def prepare_turn(self, session_id: str):
-        """Bind the database instance before history preparation/model work."""
+    def prepare_turn(self, session_id: str, user_id: Optional[str] = None):
+        """Bind the database instance before history preparation/model work.
+
+        ``user_id`` is the session owner (``None`` = primary user: bots, CLI and other context-less callers).
+        """
         self.get_or_create(session_id)
         db = get_db()
-        generation = db.ensure_chat_session_generation(session_id)
+        generation = db.ensure_chat_session_generation(session_id, user_id=user_id)
         snapshot = db.read_chat_session_snapshot(session_id)
         if snapshot["session_generation"] != generation:
             raise ChatSessionStateConflict()

@@ -7,7 +7,19 @@
 - API 层（`api/v1/endpoints/boards.py`、`api/v1/endpoints/daily_plan.py`）和 Web 页面已实现。
 - 板块异动服务 `src/services/board_anomaly_service.py`（`BoardAnomalyService`）已实现，读取本地的板块指标和判定结果（见[核心流程后端设计](design/core-backend-design.md)第 2 节），数据由调度器每个交易日 17:00 运行的板块日度流程（`BOARD_PIPELINE_*`，也可用 `scripts/run_board_pipeline.py` 手动运行）产生；没有任何已完成的运行时 `/boards/anomalies` 返回空列表和说明，不返回 503。
 - 次日计划服务 `src/services/daily_plan_service.py`（`DailyPlanService`）已实现，数据流和规则见下面的「次日计划服务」一节。服务模块无法导入时 `/plan/*` 仍返回 `503 {"error": "daily_plan_unavailable", "message": "次日计划服务未就绪"}`，Web 页面显示「次日计划服务未就绪」说明，不影响其他页面。
-- API 在每次请求时按需导入服务模块，服务类支持无参构造。
+- API 在每次请求时按需导入服务模块；服务类按用户构造（`DailyPlanService(user_id=...)`，不传则为主用户，`PRIMARY_USER_ID`），`get_daily_plan_service` 依赖从 `get_current_user` 取得当前用户，客户端不传也不能传 `user_id`。
+- 多用户下现金、持仓、计划运行和个股计划按用户隔离（见下面的「用户与数据范围」）。
+
+## 用户与数据范围
+
+次日计划里的**现金、持仓（`plan_account` / `plan_holding`）、运行记录（`plan_run`）和个股计划存档（`plan_stock`）都属于当前登录用户**，行里的 `user_id` 由服务端按登录身份写入，接口路径和请求字段没有变化：
+
+- 列表和读取只返回自己的数据；别人的运行 id 返回 404（`not_found`，响应体与不存在的 id 相同），不返回 403。`GET /plan/runs/latest` 只看自己最近一次运行。
+- 两个用户可以持有同一只股票、在同一个交易日各有一份计划，互不覆盖：`PUT /plan/holdings` 只整体覆盖调用者自己的快照。
+- 运行名额按用户计：用户 A 的运行没结束时 A 再触发返回 409，不影响用户 B 触发自己的运行；一个用户读取状态时，只会把**他自己**遗留的 `running` 记录标为 `failed`。
+- 计划范围 = 自己的持仓 + 自己的自选：主用户的自选是 `.env` 的 `STOCK_LIST`，其他用户的自选在 `user_watchlist` 表，统一经 `WatchlistService` 读取。
+- 板块信号、选股任务和本地行情是共享的；板块、选股和行情每次运行只读取一次。仓位规则（`POSITION_*`）和模型取当前用户的个人设置（主用户即 `.env`；其他用户未设置时仓位规则回退系统默认值，模型不回退）。
+- 定时任务（`DAILY_PLAN_ENABLED`）本期只为主用户运行（用 `.env` 的自选和主用户的账户），推送沿用现有飞书配置；按用户定时和推送属于后续阶段。CLI、机器人等没有用户上下文的入口同样以主用户身份运行。
 
 ## 次日计划服务
 
@@ -17,7 +29,7 @@
 
 **账户**：现金与持仓快照存在 SQLite（`plan_account`、`plan_holding`），`PUT /plan/holdings` 整体覆盖（代码不能重复，最多 50 只，校验失败返回 400）。持仓行补上名称、板块（主板 / 创业板 / 科创板 / 北交所）、ST、最新收盘与涨跌幅、市值、盈亏；没有行情的持仓按成本计市值。`sellable`（T+1）：买入日期不早于本地最新交易日则为 `false`（今天买入，今天不能卖），没填买入日期时为 `true` 并在 `sellable_note` 提示确认。总资金 = 现金 + 持仓市值。
 
-**自选与持仓范围**：持仓在前，其后是自选（`STOCK_LIST`）。只处理 6 位 A 股代码，指数、港股、美股等其他条目跳过，并在运行的 `data_gaps` 里列出。
+**自选与持仓范围**：持仓在前，其后是当前用户的自选（主用户为 `STOCK_LIST`，其他用户为 `user_watchlist`）。只处理 6 位 A 股代码，指数、港股、美股等其他条目跳过，并在运行的 `data_gaps` 里列出。
 
 **仓位规则**（`POSITION_*`，不写死任何数值，配置缺失或非法时回到默认值）：
 
@@ -42,7 +54,7 @@
 
 **存储与读取**：每次运行把每只股票的计划存进 `plan_stock`（含失败的）；`GET /plan/stocks`、`GET /plan/stocks/{code}` 读取该交易日最新一份存档，所以打开页面不调用模型。没有可用存档的股票（刚加入自选，或持仓变动后存档过期）：列表里显示 `status=missing`；打开详情时现算一份（一次模型调用）并存档，下次直接读取。已生成的计划不会随仓位规则的修改而改写，修改后下一次运行才会按新规则重算（历史存档按生成时的规则展示）。不在自选也不在持仓里且没有存档的代码返回 404。
 
-**运行**（`POST /plan/runs`、定时任务）：后台线程依次执行 板块（读取最近一次完成的板块运行）→ 选股（读取最近一次完成的选股任务，不会发起新的选股）→ 个股计划（`MAX_WORKERS` 个工作线程，一只失败不影响其他）→ 换股判断 → 飞书推送，每一步的状态和用时写进 `steps`，`plan_run` 保存运行记录、失败项、推送状态、推送预览和模型调用次数。同一进程同一时间只有一个运行，运行中再触发返回 409；进程重启后遗留的 `running` 记录在下次读取时标为 `failed`。运行状态：全部成功 `succeeded`；有失败股票或板块 / 选股 / 换股步骤降级为 `partial`；没有一只成功为 `failed`；没有自选和持仓为 `skipped`。推送失败只记在 `push` 和 `push` 步骤上，不改变计划与运行状态。
+**运行**（`POST /plan/runs`、定时任务）：后台线程依次执行 板块（读取最近一次完成的板块运行）→ 选股（读取最近一次完成的选股任务，不会发起新的选股）→ 个股计划（`MAX_WORKERS` 个工作线程，一只失败不影响其他）→ 换股判断 → 飞书推送，每一步的状态和用时写进 `steps`，`plan_run` 保存运行记录、失败项、推送状态、推送预览和模型调用次数。同一进程里每个用户同一时间只有一个运行，该用户运行中再触发返回 409（其他用户不受影响）；进程重启后遗留的 `running` 记录在该用户下次读取时标为 `failed`。运行状态：全部成功 `succeeded`；有失败股票或板块 / 选股 / 换股步骤降级为 `partial`；没有一只成功为 `failed`；没有自选和持仓为 `skipped`。推送失败只记在 `push` 和 `push` 步骤上，不改变计划与运行状态。
 
 **飞书推送**：只发飞书（复用现有发送逻辑：应用机器人绑定会话 / `FEISHU_CHAT_ID`，或群 Webhook，签名、关键词、超长分段不变）。内容：持仓结论（第一屏）→ 换股判断 → 自选股一行一只（买入在前）→ 板块异动前几名 → 数据提醒（缺失数据、失败股票）→ 网页查看提示。未配置飞书时 `push.status=skipped`、`push.configured=false`，预览照常生成。
 
@@ -59,8 +71,10 @@
 | 状态码 | `error` | 场景 |
 | --- | --- | --- |
 | 400 | `validation_error` | 服务抛出 `DailyPlanValidationError`；阈值校验失败（`detail` 为问题列表） |
-| 404 | `not_found` | 板块、股票计划或运行记录不存在 |
-| 409 | `daily_plan_run_conflict` | 已有运行在进行中时再次 `POST /plan/runs`（手动或定时触发均占用同一个运行名额） |
+| 400 | `model_key_required` | 非主用户没有自己的模型 Key 时 `POST /plan/runs`（手动运行）；查看已有计划不受影响，按需计划只出规则计划，不会使用系统模型 |
+| 400 | `unsafe_url` | 用户保存的模型地址在调用前的检查中不再是 https 公网地址 |
+| 404 | `not_found` | 板块、股票计划或运行记录不存在（包括属于其他用户的运行记录） |
+| 409 | `daily_plan_run_conflict` | 当前用户已有运行在进行中时再次 `POST /plan/runs`（手动或定时触发均占用该用户的运行名额；不同用户互不占用） |
 | 409 | `config_version_conflict` | 保存阈值时配置已被修改（`detail.current_config_version`） |
 | 422 | `validation_error` | 请求字段格式错误（股票代码非 6 位、股数 ≤ 0、现金为负等），沿用全局请求校验处理 |
 | 500 | `internal_error` | 其他异常（含服务返回的数据不符合响应模型） |
@@ -73,7 +87,7 @@
 | GET | `/boards/anomalies?trade_date=&board_type=industry\|concept&state=` | 市场概况与板块列表（含状态、标签、涨幅、超额、成交额放大、上涨占比、涨停数） |
 | GET | `/boards/{board_id}?trade_date=` | 板块详情：6 项指标、近 8 日超额收益、代表股票（龙头 / 成交额 / 跟风）、判定理由、`can_pick` |
 | GET | `/boards/thresholds` | `{"items": [...]}`：每个阈值的说明、默认值、当前值、依据等级（`medium` / `low` / `inferred`） |
-| GET | `/boards/follows` | 我关注的板块：`{"trade_date", "boards": [{"id", "name", "board_type", "followed_at", "today"}]}`，`today` 是最近一次运行里该板块的列表行（没有时为 null） |
+| GET | `/boards/follows` | 我关注的板块（按登录用户隔离，板块数据与推荐仍全员共享）：`{"trade_date", "boards": [{"id", "name", "board_type", "followed_at", "today"}]}`，`today` 是最近一次运行里该板块的列表行（没有时为 null） |
 | PUT / DELETE | `/boards/follows/{board_id}` | 关注 / 取消关注（重复操作无副作用），返回最新的关注列表；未知板块 404 |
 | GET | `/boards/recommendations?trade_date=` | 推荐重点跟踪的板块：`status`（`ready` / `generating` / `none` / `no_run`）、`source`（`model` 模型挑选 / `rule` 按规则排序）、`model`、`note`（按规则排序的原因）、`items: [{rank, reason, board}]` |
 | POST | `/boards/recommendations/refresh` | 后台重新生成最近一次运行的推荐（返回 202 和当前状态，用 GET 轮询） |

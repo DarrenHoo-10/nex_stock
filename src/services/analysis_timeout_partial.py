@@ -125,9 +125,14 @@ def _query_history_rows_since(
     database = db if db is not None else storage_mod.get_db()
     AnalysisHistory = storage_mod.AnalysisHistory
     codes = _normalize_codes(expected_codes)
+    from src.config import get_primary_user_id
+
     conditions = [
         AnalysisHistory.created_at >= run_started_at,
         AnalysisHistory.report_type != "market_review",
+        # The scheduled run (and its notice, sent to the system channels) is the primary user's: another user's
+        # report - above all a private, position-aware one - never belongs in it.
+        storage_mod.analysis_history_requester_clause(get_primary_user_id()),
     ]
     if codes:
         conditions.append(AnalysisHistory.code.in_(codes))

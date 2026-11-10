@@ -104,9 +104,12 @@ def test_tool_is_registered_without_stock_scope():
     calls = []
     original = tool.handler
     try:
-        object.__setattr__(tool, "handler", lambda keyword, days=3: calls.append((keyword, days)) or {"ok": 1})
+        object.__setattr__(
+            tool, "handler", lambda keyword, days=3, user_id=None: calls.append((keyword, days)) or {"ok": 1},
+        )
         result = ToolSurface(registry).execute_tool(
-            "search_market_news", {"keyword": "寒潮"}, ToolAccessContext(stock_scope=StockScope(strict=True)))
+            "search_market_news", {"keyword": "寒潮"},
+            ToolAccessContext(stock_scope=StockScope(strict=True), user_id="someone"))
     finally:
         object.__setattr__(tool, "handler", original)
     assert result["ok"] and calls == [("寒潮", 3)]

@@ -21,6 +21,14 @@ from src.storage import (
 )
 
 
+def signal_visibility_condition(viewer_user_id: str) -> Any:
+    """Signals ``viewer_user_id`` may see: shared ones (no owner) and the viewer's own."""
+    return or_(
+        DecisionSignalRecord.owner_user_id.is_(None),
+        DecisionSignalRecord.owner_user_id == viewer_user_id,
+    )
+
+
 @dataclass
 class DecisionSignalCreateResult:
     """Outcome of an idempotent DecisionSignal create attempt."""
@@ -149,12 +157,16 @@ class DecisionSignalRepository:
                 invalidation_reference_at=row.created_at,
             )
 
-    def get(self, signal_id: int) -> Optional[DecisionSignalRecord]:
+    def get(self, signal_id: int, viewer_user_id: Optional[str] = None) -> Optional[DecisionSignalRecord]:
+        """One signal by id; with ``viewer_user_id`` another user's private signal counts as missing."""
         self.expire_due_signals()
         with self.db.get_session() as session:
-            return session.execute(
+            row = session.execute(
                 select(DecisionSignalRecord).where(DecisionSignalRecord.id == signal_id).limit(1)
             ).scalar_one_or_none()
+            if row is not None and viewer_user_id is not None and row.owner_user_id not in (None, viewer_user_id):
+                return None
+            return row
 
     def list(
         self,
@@ -176,6 +188,7 @@ class DecisionSignalRepository:
         expires_to: Optional[datetime] = None,
         page: int = 1,
         page_size: int = 20,
+        viewer_user_id: Optional[str] = None,
     ) -> Tuple[List[DecisionSignalRecord], int]:
         self.expire_due_signals()
         created_from = self._normalize_optional_datetime(created_from)
@@ -199,6 +212,8 @@ class DecisionSignalRepository:
             expires_from=expires_from,
             expires_to=expires_to,
         )
+        if viewer_user_id is not None:
+            conditions.append(signal_visibility_condition(viewer_user_id))
         where_clause = and_(*conditions) if conditions else True
         safe_page = max(1, int(page))
         safe_page_size = max(1, min(int(page_size), 100))
@@ -225,6 +240,7 @@ class DecisionSignalRepository:
         stock_codes: List[str],
         market: Optional[str] = None,
         limit: int = 1,
+        viewer_user_id: Optional[str] = None,
     ) -> List[DecisionSignalRecord]:
         self.expire_due_signals()
         safe_limit = max(1, min(int(limit), 100))
@@ -234,6 +250,8 @@ class DecisionSignalRepository:
         ]
         if market:
             conditions.append(DecisionSignalRecord.market == market)
+        if viewer_user_id is not None:
+            conditions.append(signal_visibility_condition(viewer_user_id))
         with self.db.get_session() as session:
             rows = session.execute(
                 select(DecisionSignalRecord)
@@ -251,7 +269,13 @@ class DecisionSignalRepository:
         actions: List[str],
         decision_profile: Optional[str],
         exclude_signal_id: Optional[int] = None,
+        owner_user_id: Optional[str] = None,
     ) -> List[DecisionSignalRecord]:
+        """Active signals a new signal may supersede: only those with the very same owner.
+
+        Shared signals (``owner_user_id=None``) only supersede shared ones, and a user's private signal only
+        supersedes that user's own: one user's report never changes what another user sees.
+        """
         self.expire_due_signals()
         if not actions:
             return []
@@ -261,6 +285,11 @@ class DecisionSignalRepository:
             DecisionSignalRecord.stock_code == stock_code,
             self._same_profile_condition(decision_profile),
             DecisionSignalRecord.action.in_(actions),
+            (
+                DecisionSignalRecord.owner_user_id.is_(None)
+                if owner_user_id is None
+                else DecisionSignalRecord.owner_user_id == owner_user_id
+            ),
         ]
         if exclude_signal_id is not None:
             conditions.append(DecisionSignalRecord.id != exclude_signal_id)

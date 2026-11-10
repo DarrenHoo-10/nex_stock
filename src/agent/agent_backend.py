@@ -65,6 +65,8 @@ class AgentRunRequest:
     max_wall_clock_seconds: Optional[float]
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     cancel_event: Optional[threading.Event] = None
+    # Acting user (session owner) for tools that read personal data.
+    user_id: Optional[str] = None
 
 
 @dataclass
@@ -117,6 +119,7 @@ class LiteLLMAgentBackend(AgentBackend):
             progress_callback=request.progress_callback,
             max_wall_clock_seconds=request.max_wall_clock_seconds,
             stock_scope=request.stock_scope,
+            user_id=request.user_id,
         )
         usage = {"total_tokens": loop_result.total_tokens} if loop_result.total_tokens > 0 else None
         error_code = None

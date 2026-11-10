@@ -127,9 +127,22 @@ class ResolvedChatTurn:
     clarification: Optional[str] = None
     compatibility_disposition: str = "invalidate"
 
+    @property
+    def user_id(self) -> str:
+        """Verified owner of the session: the acting user of this turn (never defaulted)."""
+        owner = self.snapshot.get("user_id")
+        if not owner:
+            raise ValueError("Resolved Chat turn has no verified session owner")
+        return owner
+
 
 class AgentChatSessionService:
-    """Coordinate Agent Chat session state without exposing storage to HTTP handlers."""
+    """Coordinate Agent Chat session state without exposing storage to HTTP handlers.
+
+    Every session-scoped method takes the acting ``user_id`` (API: the authenticated user; ``None`` =
+    primary user for CLI, bots and other context-less callers) and treats a session owned by another
+    user exactly like a session that does not exist (``ChatSessionNotFound``).
+    """
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
@@ -170,22 +183,32 @@ class AgentChatSessionService:
             selected_skill_ids_update=normalized,
         )
 
+    def require_session_access(self, session_id: str, user_id: Optional[str] = None) -> None:
+        """Raise ``ChatSessionNotFound`` for a session owned by another user."""
+        self.db.require_chat_session_access(session_id, user_id)
+
     def list_sessions(
         self,
         limit: int,
-        user_id: Optional[str],
+        session_prefix: Optional[str] = None,
+        *,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        """Own sessions only; ``session_prefix`` (e.g. ``telegram_123``) narrows them further."""
         return self.db.get_chat_sessions(
             limit=limit,
-            session_prefix=user_id,
-            extra_session_ids=[user_id] if user_id else None,
+            session_prefix=session_prefix,
+            extra_session_ids=[session_prefix] if session_prefix else None,
+            user_id=user_id,
         )
 
     def get_session_detail(
         self,
         session_id: str,
         limit: int,
+        user_id: Optional[str] = None,
     ) -> ChatSessionDetail:
+        self.require_session_access(session_id, user_id)
         snapshot = self.db.read_chat_session_snapshot(session_id)
         registry, lookup = _stock_lookup()
 
@@ -202,8 +225,11 @@ class AgentChatSessionService:
         self, config: Any, session_id: str, message: str,
         requested_skill_ids: Optional[List[str]] = None,
         *, context: Optional[Dict[str, Any]] = None, expected_generation: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> ResolvedChatTurn:
-        generation = self.db.ensure_chat_session_generation(session_id, expected_generation=expected_generation)
+        generation = self.db.ensure_chat_session_generation(
+            session_id, expected_generation=expected_generation, user_id=user_id,
+        )
         snapshot = self.db.read_chat_session_snapshot(session_id)
         if snapshot["session_generation"] != generation:
             raise ChatSessionStateConflict()
@@ -314,5 +340,5 @@ class AgentChatSessionService:
             active_stock_context=turn.active_stock_context, confirm_stock=turn.confirm_stock, **extra,
         )
 
-    def delete_session(self, session_id: str) -> int:
-        return self.db.delete_conversation_session(session_id)
+    def delete_session(self, session_id: str, user_id: Optional[str] = None) -> int:
+        return self.db.delete_conversation_session(session_id, user_id=user_id)

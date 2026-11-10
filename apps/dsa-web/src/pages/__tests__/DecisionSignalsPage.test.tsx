@@ -7,6 +7,9 @@ import {
 } from '../../api/decisionSignals';
 import { historyApi } from '../../api/history';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { CurrentUserProvider } from '../../test-utils/currentUser';
+import { adminUser, regularUser } from '../../test-utils/currentUserFixtures';
+import type { CurrentUser } from '../../types/me';
 import type { StockBarResponse } from '../../types/analysis';
 import type {
   DecisionSignalFeedbackItem,
@@ -1893,5 +1896,44 @@ describe('DecisionSignalsPage', () => {
     await waitFor(() => {
       expect(decisionSignalsApi.updateStatus).toHaveBeenCalledWith(7, { status });
     });
+  });
+});
+
+describe('DecisionSignalsPage write actions by role', () => {
+  function renderAs(user: CurrentUser | null) {
+    return render(
+      <UiLanguageProvider>
+        <CurrentUserProvider user={user}>
+          <DecisionSignalsPage />
+        </CurrentUserProvider>
+      </UiLanguageProvider>,
+    );
+  }
+
+  it('lets a regular user read the signal but hides reassess, feedback and status changes', async () => {
+    renderAs(regularUser);
+    await screen.findByText('贵州茅台');
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByRole('button', { name: '生成预览' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: '有用' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: '无用' })).toBeNull();
+    expect(within(dialog).getByText('运行与修改仅管理员可用，你可以查看已有结果。')).toBeInTheDocument();
+    expect(decisionSignalsApi.reassess).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an administrator', adminUser],
+    ['local mode', null],
+  ])('keeps every write action for %s', async (_label, user) => {
+    renderAs(user);
+    await screen.findByText('贵州茅台');
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: '生成预览' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '有用' })).toBeInTheDocument();
+    expect(within(dialog).queryByText('运行与修改仅管理员可用，你可以查看已有结果。')).toBeNull();
   });
 });

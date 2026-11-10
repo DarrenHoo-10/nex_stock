@@ -23,6 +23,7 @@ from src.services.user_config_service import (
 from src.services.user_settings_service import UserSettingError, UserSettingsService, is_secret_setting_key
 from src.storage import DatabaseManager
 from src.user_secrets import UserSecretStore
+from tests.multi_user_helpers import stub_dns
 
 PRIMARY = "admin-uid"
 
@@ -99,6 +100,7 @@ def env(tmp_path, monkeypatch):
             monkeypatch.delenv(key, raising=False)
     for key, value in SYSTEM_ENV.items():
         monkeypatch.setenv(key, value)
+    stub_dns(monkeypatch)  # saving a URL setting runs the SSRF guard, which resolves the host
     Config.reset_instance()
     DatabaseManager.reset_instance()
     DatabaseManager.get_instance()

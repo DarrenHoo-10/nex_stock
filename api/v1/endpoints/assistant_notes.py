@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from api.deps import CurrentUser, get_current_user
 from api.v1.schemas.assistant_notes import (
     NoteClearResponse,
     NoteDeleteResponse,
@@ -32,8 +33,9 @@ from src.services.assistant_note_service import (
 router = APIRouter()
 
 
-def get_assistant_note_service() -> AssistantNoteService:
-    return AssistantNoteService()
+def get_assistant_note_service(user: CurrentUser = Depends(get_current_user)) -> AssistantNoteService:
+    """Notes of the authenticated user only; every route below depends on this."""
+    return AssistantNoteService(user_id=user.user_id)
 
 
 def _http_error(exc: NoteError) -> HTTPException:

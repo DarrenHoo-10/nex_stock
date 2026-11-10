@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 
-from src.config import Config
+from src.config import Config, get_primary_user_id
 from src.notification import ChannelAttemptResult, NotificationDispatchResult
 from src.services.alert_indicators import (
     _calculate_rsi,
@@ -595,7 +595,7 @@ class AlertWorkerTestCase(unittest.TestCase):
         for case in cases:
             with self.subTest(case["name"]):
                 with self.assertRaisesRegex(ValueError, "requires triggered status"):
-                    self.service.repo.create_trigger_if_absent(case["fields"])
+                    self.service.repo.create_trigger_if_absent(get_primary_user_id(), case["fields"])
 
     def test_legacy_rules_coexist_with_db_rules_and_db_rule_wins_duplicate_key(self) -> None:
         self._create_rule(target="600519")
@@ -1192,7 +1192,7 @@ class AlertWorkerTestCase(unittest.TestCase):
         notifier.send_with_results.assert_not_called()
 
     def test_unsupported_persisted_rule_is_skipped_without_crashing_worker(self) -> None:
-        self.service.repo.create_rule({
+        self.service.repo.create_rule(get_primary_user_id(), {
             "name": "Future rule",
             "target_scope": "single_symbol",
             "target": "600519",
@@ -1364,6 +1364,7 @@ class AlertWorkerTestCase(unittest.TestCase):
         self.assertFalse(by_channel["wechat"]["success"])
         self.assertTrue(by_channel["custom"]["success"])
         cooldown = self.service.repo.get_rule_cooldown_summary(
+            get_primary_user_id(),
             rule_id=rule["id"],
             target="600519",
             severity="warning",
@@ -1397,6 +1398,7 @@ class AlertWorkerTestCase(unittest.TestCase):
         self.assertEqual(notifications[0]["channel"], "__noise_suppressed__")
         self.assertEqual(notifications[0]["error_code"], "noise_suppressed")
         cooldown = self.service.repo.get_rule_cooldown_summary(
+            get_primary_user_id(),
             rule_id=rule["id"],
             target="600519",
             severity="warning",
@@ -1432,6 +1434,7 @@ class AlertWorkerTestCase(unittest.TestCase):
         channels = {item["channel"] for item in self._notifications()}
         self.assertEqual(channels, {"__no_channel__", "wechat"})
         cooldown = self.service.repo.get_rule_cooldown_summary(
+            get_primary_user_id(),
             rule_id=rule["id"],
             target="600519",
             severity="warning",
@@ -1449,10 +1452,10 @@ class AlertWorkerTestCase(unittest.TestCase):
         notifier = self._notifier()
         original_create_trigger = self.service.repo.create_trigger
 
-        def _create_trigger(fields):
+        def _create_trigger(user_id, fields):
             if fields["target"] == "600519":
                 raise RuntimeError("database locked")
-            return original_create_trigger(fields)
+            return original_create_trigger(user_id, fields)
 
         async def _quote(_monitor, stock_code):
             if stock_code == "600519":
@@ -1719,7 +1722,7 @@ class AlertWorkerTestCase(unittest.TestCase):
             alert_type="price_cross",
             parameters={"direction": "above", "price": 10},
         )
-        row = self.service.repo.get_rule(rule["id"])
+        row = self.service.repo.get_rule(get_primary_user_id(), rule["id"])
         config = self._config()
         config.stock_list = [f"{index:06d}" for index in range(1, 102)]
 

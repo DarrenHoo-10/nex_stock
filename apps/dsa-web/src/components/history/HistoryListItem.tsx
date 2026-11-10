@@ -7,6 +7,7 @@ import { formatDateTime } from '../../utils/format';
 import { getMarketPhaseSummaryLabel } from '../../utils/marketPhase';
 import { truncateStockName } from '../../utils/stockName';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { RequesterBadges } from './RequesterBadges';
 
 interface HistoryListItemProps {
   item: HistoryItem;
@@ -102,6 +103,7 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
               <span className="text-[11px] text-muted-text">
                 {formatDateTime(item.createdAt)}
               </span>
+              <RequesterBadges info={item} />
               {phaseLabel ? (
                 <>
                   <span className="w-1 h-1 rounded-full bg-subtle-hover" />

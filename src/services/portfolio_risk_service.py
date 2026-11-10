@@ -7,7 +7,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.config import Config, get_config
+from src.config import Config, get_config, get_primary_user_id
 from src.repositories.portfolio_repo import PortfolioRepository
 from src.services.decision_signal_service import DecisionSignalService
 from src.services.decision_signal_summary import summarize_decision_signal
@@ -28,9 +28,14 @@ class PortfolioRiskService:
         portfolio_service: Optional[PortfolioService] = None,
         decision_signal_service: Optional[DecisionSignalService] = None,
         config: Optional[Config] = None,
+        user_id: Optional[str] = None,
     ):
         self.repo = repo or PortfolioRepository()
-        self.portfolio_service = portfolio_service or PortfolioService(repo=self.repo)
+        self.portfolio_service = portfolio_service or PortfolioService(repo=self.repo, user_id=user_id)
+        # Owner of every account this report reads; follows an injected PortfolioService.
+        self.user_id = getattr(self.portfolio_service, "user_id", None) or user_id or get_primary_user_id()
+        if user_id and user_id != self.user_id:
+            raise ValueError("user_id does not match the injected portfolio_service owner")
         self.decision_signal_service = decision_signal_service or DecisionSignalService(portfolio_repo=self.repo)
         self.config = config or get_config()
         self._data_manager = None
@@ -122,6 +127,7 @@ class PortfolioRiskService:
                     status="active",
                     page=page,
                     page_size=100,
+                    viewer_user_id=self.user_id,  # shared signals plus this user's own, never another user's
                 )
                 items = response.get("items", []) if isinstance(response, dict) else []
                 for item in items:
@@ -221,6 +227,7 @@ class PortfolioRiskService:
             return
 
         existing_rows = self.repo.list_daily_snapshots_for_risk(
+            user_id=self.user_id,
             as_of=as_of_date,
             cost_method=cost_method,
             account_id=account_id,
@@ -241,7 +248,7 @@ class PortfolioRiskService:
                 current_date += timedelta(days=1)
             return
 
-        account_ids = [int(account.id) for account in self.repo.list_accounts(include_inactive=False)]
+        account_ids = [int(account.id) for account in self.repo.list_accounts(self.user_id, include_inactive=False)]
         if not account_ids:
             return
         existing_pairs = {(int(row.account_id), row.snapshot_date) for row in existing_rows}
@@ -271,7 +278,7 @@ class PortfolioRiskService:
             return max(window_start, first_activity or as_of_date)
 
         first_activity_candidates: List[date] = []
-        for account in self.repo.list_accounts(include_inactive=False):
+        for account in self.repo.list_accounts(self.user_id, include_inactive=False):
             first_activity = self.repo.get_first_activity_date(account_id=int(account.id), as_of=as_of_date)
             if first_activity is not None:
                 first_activity_candidates.append(first_activity)
@@ -473,6 +480,7 @@ class PortfolioRiskService:
         lookback_days: int,
     ) -> Dict[str, Any]:
         rows = self.repo.list_daily_snapshots_for_risk(
+            user_id=self.user_id,
             as_of=as_of_date,
             cost_method=cost_method,
             account_id=account_id,

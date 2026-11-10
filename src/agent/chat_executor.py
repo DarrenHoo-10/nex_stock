@@ -13,6 +13,7 @@ from src.agent.conversation import conversation_manager
 from src.agent.executor import AgentResult, PreparedAgentChat, prepare_agent_chat
 from src.agent.provider_trace import persist_provider_trace_turns
 from src.agent.stock_scope import StockScopeResolution
+from src.config import get_primary_user_id
 from src.storage import DatabaseManager
 
 if TYPE_CHECKING:
@@ -31,6 +32,8 @@ class PreparedAgentChatTurn:
     user_message_id: int
     accepted_snapshot: Optional[Dict[str, Any]] = None
     db_manager: Optional[DatabaseManager] = None
+    # Acting user of the turn: the verified session owner (resolved turn) or the executor's user.
+    user_id: Optional[str] = None
 
 
 class AgentChatExecutor:
@@ -47,7 +50,10 @@ class AgentChatExecutor:
         use_legacy_default_prompt: bool = False,
         max_steps: int = 10,
         timeout_seconds: Optional[float] = None,
+        user_id: Optional[str] = None,
     ) -> None:
+        # Acting user of turns prepared without a resolved session turn (bots, CLI): ``None`` = primary user.
+        self.user_id = user_id or get_primary_user_id()
         self.backend = backend
         self.config = config
         self.context_llm_adapter = context_llm_adapter
@@ -94,6 +100,7 @@ class AgentChatExecutor:
     ) -> PreparedAgentChatTurn:
         """Prepare context and persist the user message without starting a backend."""
         resolved_kwargs = {}
+        acting_user = resolved_turn.user_id if resolved_turn is not None else self.user_id
         if resolved_turn is not None:
             if (session_service is None or resolved_turn.snapshot["session_id"] != session_id
                     or resolved_turn.message != message or resolved_turn.clarification is not None):
@@ -104,7 +111,7 @@ class AgentChatExecutor:
                 "source_snapshot": resolved_turn.snapshot,
             }
         else:
-            db, snapshot = conversation_manager.prepare_turn(session_id)
+            db, snapshot = conversation_manager.prepare_turn(session_id, user_id=acting_user)
             resolved_kwargs = {"db_manager": db, "source_snapshot": snapshot}
         prepared = prepare_agent_chat(
             message=message,
@@ -118,6 +125,7 @@ class AgentChatExecutor:
             use_codex_prompt=self.backend.backend_id == "codex_app_server",
             include_provider_trace=not self.backend.runtime_owns_loop,
             strict_initial_stock_scope=self.backend.runtime_owns_loop,
+            user_id=acting_user,
             **resolved_kwargs,
         )
         baseline_len = len(prepared.history_messages) + 2
@@ -145,6 +153,7 @@ class AgentChatExecutor:
             user_message_id=user_message_id,
             accepted_snapshot=accepted,
             db_manager=session_service.db if resolved_turn is not None else db,
+            user_id=acting_user,
         )
 
     def execute_turn(
@@ -166,6 +175,7 @@ class AgentChatExecutor:
                 max_wall_clock_seconds=self.timeout_seconds,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
+                user_id=turn.user_id,
             )
         )
         total_tokens = 0
@@ -206,6 +216,7 @@ class AgentChatExecutor:
                 retain_chat_turn(
                     session_id=turn.session_id, user_message_id=turn.user_message_id,
                     user_text=turn.message, assistant_text=result.content, memory=memory,
+                    user_id=turn.user_id,
                 )
             if not self.backend.runtime_owns_loop and assistant_message_id is not None:
                 persist_provider_trace_turns(

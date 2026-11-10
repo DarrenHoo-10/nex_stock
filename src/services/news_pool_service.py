@@ -86,9 +86,11 @@ def _sanitize(exc: BaseException) -> str:
 
 
 def _default_holdings() -> List[Tuple[str, str]]:
+    from src.config import get_primary_user_id
     from src.repositories.portfolio_repo import PortfolioRepository
 
-    return PortfolioRepository().list_cached_position_identities()
+    # Scheduled shared job: runs for the primary user (per-user coverage is a later phase).
+    return PortfolioRepository().list_cached_position_identities(user_id=get_primary_user_id())
 
 
 def in_trading_window(now: datetime, is_trading_day: Callable[[date], bool] = _is_cn_trading_day) -> bool:
@@ -308,8 +310,12 @@ class NewsPoolService:
     # daily job: announcements + 财经早餐
     # ------------------------------------------------------------------
     def wanted_codes(self) -> List[str]:
-        """Watchlist (``STOCK_LIST``) plus current A-share holdings, normalised and sorted."""
-        codes = {normalize_a_share_code(c) for c in (getattr(self.config, "stock_list", None) or [])}
+        """Primary user's watchlist plus current A-share holdings, normalised and sorted (shared system job)."""
+        from src.config import get_primary_user_id
+        from src.services.watchlist_service import WatchlistService
+
+        watchlist = WatchlistService(config=self.config).list_codes(get_primary_user_id())
+        codes = {normalize_a_share_code(c) for c in watchlist}
         try:
             for market, symbol in self._holdings_provider() or []:
                 if str(market).lower() == "cn":

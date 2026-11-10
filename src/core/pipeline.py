@@ -26,7 +26,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import pandas as pd
 
-from src.config import FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT, get_config, Config
+from src.config import FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT, get_config, get_primary_user_id, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.base import is_bse_code, normalize_stock_code
@@ -50,7 +50,10 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
 )
-from src.search_service import SearchService
+from src.agent.factory import analysis_uses_agent, compute_strategy_fingerprint
+from src.llm.channel_fingerprint import config_model_channel_fingerprint
+from src.llm.credentials_guard import is_user_view, resolve_acting_user_id
+from src.search_service import SearchService, searxng_urls_for_config
 from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt_section
 from src.analysis_context_pack_overview import render_analysis_context_pack_overview
 from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY, render_market_phase_summary
@@ -66,6 +69,14 @@ from src.agent.news_evidence import (
     reset_news_evidence_scope,
 )
 from src.services.empty_news import news_evidence_present
+from src.services.analysis_metadata_reuse import (
+    PART_CHIP,
+    PART_FUNDAMENTAL,
+    PART_MARKET_STRUCTURE,
+    PART_NEWS,
+    PART_REALTIME_QUOTE,
+    ReusedMetadata,
+)
 from src.formatters import strip_hidden_markdown_metadata
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.daily_market_context import (
@@ -250,17 +261,25 @@ class StockAnalysisPipeline:
         daily_market_context_enabled: Optional[bool] = None,
         daily_market_context_allow_generate: bool = True,
         extra_context_section: Optional[str] = None,
+        user_id: Optional[str] = None,
+        reused_metadata: Optional[ReusedMetadata] = None,
     ):
         """
         初始化调度器
-        
+
         Args:
             config: 配置对象（可选，默认使用全局配置）
             max_workers: 最大并发线程数（可选，默认从配置读取）
             extra_context_section: 调用方提供的额外 Prompt 背景段落（如 8:45 盘前版的隔夜美股与资讯），
                 原样注入每只股票的分析 Prompt；仅作运行时输入，不写入分析快照
+            user_id: 发起分析的用户（``None`` = 主用户：CLI、机器人、定时任务）。非主用户必须同时传入
+                该用户的配置视图（``get_user_config``），否则拒绝构造——模型 / 搜索 Key 不能落回系统配置
+            reused_metadata: 同股票同交易日更早一次分析已采集的输入（行情 / 筹码 / 基本面 / 市场结构 / 资讯），
+                命中的部分不再向数据源和搜索重新获取（``analysis_metadata_reuse``）；只含输入，不含任何结论
         """
         self.config = config or get_config()
+        self.reused_metadata = reused_metadata
+        self.user_id = resolve_acting_user_id(self.config, user_id)
         self.max_workers = max_workers or self.config.max_workers
         self.source_message = source_message
         self.query_id = query_id
@@ -283,7 +302,11 @@ class StockAnalysisPipeline:
         
         # 初始化各模块
         self.db = get_db()
-        self.fetcher_manager = DataFetcherManager()
+        # A non-primary user's analysis fetches with that user's own data-source credentials (falling back to the
+        # system's); priorities and adjust modes stay the system's. The primary user / system jobs: unchanged.
+        self.fetcher_manager = (
+            DataFetcherManager(config=self.config) if is_user_view(self.config) else DataFetcherManager()
+        )
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
         self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
@@ -312,11 +335,12 @@ class StockAnalysisPipeline:
                 brave_keys=self.config.brave_api_keys,
                 serpapi_keys=self.config.serpapi_keys,
                 minimax_keys=self.config.minimax_api_keys,
-                searxng_base_urls=self.config.searxng_base_urls,
+                searxng_base_urls=searxng_urls_for_config(self.config),
                 searxng_public_instances_enabled=self.config.searxng_public_instances_enabled,
                 searxng_timeout_seconds=getattr(self.config, "searxng_timeout_seconds", None),
                 news_max_age_days=self.config.news_max_age_days,
                 news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
+                searxng_follow_redirects=not is_user_view(self.config),
             )
         except Exception as exc:
             logger.warning("搜索服务初始化失败，将以无搜索模式运行: %s", exc, exc_info=True)
@@ -342,8 +366,10 @@ class StockAnalysisPipeline:
 
         # 初始化社交舆情服务（仅美股，可选）
         try:
+            # The social-sentiment key is the system's own paid key: a non-primary user's analysis never uses it
+            # (the user view has it blanked; this keeps it out even for a hand-built view).
             self.social_sentiment_service = SocialSentimentService(
-                api_key=self.config.social_sentiment_api_key,
+                api_key=None if is_user_view(self.config) else self.config.social_sentiment_api_key,
                 api_url=self.config.social_sentiment_api_url,
             )
             if self.social_sentiment_service.is_available:
@@ -377,6 +403,81 @@ class StockAnalysisPipeline:
                     "query_id": query_id,
                 },
             )
+
+    def _history_ownership_kwargs(
+        self,
+        result: Any,
+        *,
+        code: str,
+        analysis_target: Optional[AnalysisTarget] = None,
+        portfolio_context: Optional[Dict[str, Any]] = None,
+        agent_result: Any = None,
+    ) -> Dict[str, Any]:
+        """Requester, privacy and reuse-key columns saved with every new report (docs/design/multi-user.md 7, 17).
+
+        A report is private to its requester when it was produced with personal context: a position-aware
+        ``portfolio_context``, or an Agent run that called a personal-data tool (the portfolio snapshot).
+        ``model_channel_fingerprint`` identifies the model that actually answered (provider + Base URL + model);
+        ``skill_fingerprint`` the effective strategy set it ran with (request skills, else the config view's
+        ``AGENT_SKILLS``, else the default skill; ``None`` = not resolvable, never reused directly).
+        """
+        from src.agent.tools.registry import tool_calls_read_personal_data
+        from src.services.history_loader import get_frozen_target_date
+
+        private = bool(portfolio_context) or tool_calls_read_personal_data(
+            getattr(agent_result, "tool_calls_log", None)
+        )
+        try:
+            trade_date: Optional[str] = (
+                get_frozen_target_date()
+                or self._resolve_resume_target_date(code, analysis_target=analysis_target)
+            ).isoformat()
+        except Exception as exc:  # noqa: BLE001 - reuse columns are best effort, never block saving the report
+            logger.debug("report trade date unavailable for %s: %s", code, exc)
+            trade_date = None
+        try:
+            fingerprint = config_model_channel_fingerprint(
+                self.config, model=(getattr(result, "model_used", None) or "").split(",")[0].strip() or None
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("model channel fingerprint unavailable for %s: %s", code, exc)
+            fingerprint = None
+        try:
+            skill_fingerprint = compute_strategy_fingerprint(self.config, getattr(self, "analysis_skills", None))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("strategy fingerprint unavailable for %s: %s", code, exc)
+            skill_fingerprint = None
+        return {
+            "requester_user_id": getattr(self, "user_id", None),
+            "is_private": private,
+            "model_channel_fingerprint": fingerprint,
+            "report_trade_date": trade_date,
+            "report_language": self._ownership_report_language(result),
+            "skill_fingerprint": skill_fingerprint,
+        }
+
+    def _ownership_report_language(self, result: Any) -> Optional[str]:
+        try:
+            return normalize_report_language(
+                getattr(result, "report_language", None) or getattr(self.config, "report_language", "zh")
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _reused_input(self, part: str) -> Any:
+        """An input collected by an earlier analysis of this stock / trading date (``None`` = fetch it)."""
+        reuse = getattr(self, "reused_metadata", None)
+        return reuse.take(part) if reuse is not None else None
+
+    def _news_evidence_from_reuse(self) -> bool:
+        """Whether the reused news text carried real evidence (``False`` when no news was reused)."""
+        reuse = getattr(self, "reused_metadata", None)
+        return bool(reuse is not None and PART_NEWS in reuse.used and reuse.news_evidence_present)
+
+    def _acting_user_kwargs(self) -> Dict[str, Any]:
+        """``user_id`` for the Agent executor: only a non-primary requester is passed (primary / system = unchanged call)."""
+        user_id = getattr(self, "user_id", None)
+        return {"user_id": user_id} if user_id and is_user_view(self.config) else {}
 
     def fetch_and_save_stock_data(
         self, 
@@ -520,7 +621,11 @@ class StockAnalysisPipeline:
             realtime_quote = None
             try:
                 if self.config.enable_realtime_quote:
-                    realtime_quote = self.fetcher_manager.get_realtime_quote(code, log_final_failure=False)
+                    # an earlier analysis of this trading date already captured the quote (never reused while the
+                    # market is in session: then it is fetched again)
+                    realtime_quote = self._reused_input(PART_REALTIME_QUOTE) or self.fetcher_manager.get_realtime_quote(
+                        code, log_final_failure=False
+                    )
                     if realtime_quote:
                         # 股票使用实时行情名称；指数保持注册表中文名为权威显示名。
                         if realtime_quote.name and not is_index:
@@ -549,7 +654,7 @@ class StockAnalysisPipeline:
                 logger.debug(f"{stock_name}({code}) 指数目标跳过筹码分布")
             else:
                 try:
-                    chip_data = self.fetcher_manager.get_chip_distribution(code)
+                    chip_data = self._reused_input(PART_CHIP) or self.fetcher_manager.get_chip_distribution(code)
                     if chip_data:
                         logger.info(f"{stock_name}({code}) 筹码分布: 获利比例={chip_data.profit_ratio:.1%}, "
                                   f"90%集中度={chip_data.concentration_90:.2%}")
@@ -563,17 +668,16 @@ class StockAnalysisPipeline:
             # config.is_agent_available() so that users who only configured an
             # API Key for the traditional analysis path are not silently
             # switched to Agent mode (which is slower and more expensive).
-            use_agent = getattr(self.config, 'agent_mode', False)
-            if not use_agent:
-                if self.analysis_skills:
-                    use_agent = True
-                    logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
-            if not use_agent:
+            # (the rule is shared with the strategy fingerprint of report reuse: analysis_uses_agent)
+            use_agent, agent_reason = analysis_uses_agent(self.config, self.analysis_skills)
+            if agent_reason == "request_skills":
+                logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
+            elif agent_reason == "configured_skills":
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
-                configured_skills = getattr(self.config, 'agent_skills', [])
-                if configured_skills and configured_skills != ['all']:
-                    use_agent = True
-                    logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to configured skills: {configured_skills}")
+                logger.info(
+                    f"{stock_name}({code}) Auto-enabled agent mode due to configured skills: "
+                    f"{getattr(self.config, 'agent_skills', [])}"
+                )
 
             self._emit_progress(32, f"{stock_name}：正在聚合基本面与趋势数据")
 
@@ -589,7 +693,11 @@ class StockAnalysisPipeline:
                 "lhb",
                 "corporate_events",
             }
-            if is_index and INDEX_SKIP_MODULES.intersection(fundamental_modules):
+            # An earlier analysis of this trading date already aggregated it (boards / capital flow included).
+            reused_fundamental = None if is_index else self._reused_input(PART_FUNDAMENTAL)
+            if reused_fundamental is not None:
+                fundamental_context = reused_fundamental
+            elif is_index and INDEX_SKIP_MODULES.intersection(fundamental_modules):
                 logger.debug(f"{stock_name}({code}) 指数目标跳过基本面聚合")
                 fundamental_context = self.fetcher_manager.build_not_supported_fundamental_context(
                     code,
@@ -609,7 +717,9 @@ class StockAnalysisPipeline:
                     logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
                     fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
 
-            if is_index and "belong_boards" in INDEX_SKIP_MODULES:
+            if reused_fundamental is not None:
+                pass  # the reused context already carries the board membership
+            elif is_index and "belong_boards" in INDEX_SKIP_MODULES:
                 logger.debug(f"{stock_name}({code}) 指数目标跳过板块归属")
                 if isinstance(fundamental_context, dict):
                     fundamental_context = dict(fundamental_context)
@@ -619,14 +729,16 @@ class StockAnalysisPipeline:
                     code,
                     fundamental_context,
                 )
-            market_structure_context = self._build_market_structure_context(
-                code=code,
-                stock_name=stock_name,
-                market=market,
-                fundamental_context=fundamental_context,
-                trade_date=daily_market_target_date,
-                market_phase_summary=market_phase_summary,
-            )
+            market_structure_context = self._reused_input(PART_MARKET_STRUCTURE)
+            if market_structure_context is None:
+                market_structure_context = self._build_market_structure_context(
+                    code=code,
+                    stock_name=stock_name,
+                    market=market,
+                    fundamental_context=fundamental_context,
+                    trade_date=daily_market_target_date,
+                    market_phase_summary=market_phase_summary,
+                )
 
             # P0: write-only snapshot, fail-open, no read dependency on this table.
             if not is_index:
@@ -685,14 +797,21 @@ class StockAnalysisPipeline:
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
-            persisted_intelligence_context = self._load_persisted_intelligence_context(
+            # The evidence text (search + social + local intelligence pool) an earlier analysis of this trading
+            # date already collected: reused as it is, nothing is searched or loaded again.
+            reused_news = self._reused_input(PART_NEWS)
+            persisted_intelligence_context = None if reused_news is not None else self._load_persisted_intelligence_context(
                 code=code,
                 stock_name=stock_name,
                 market=market or "cn",
             )
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
-            if self.search_service is not None and self.search_service.is_available:
+            if reused_news is not None:
+                news_context = reused_news
+                news_result_count = self.reused_metadata.news_result_count
+                logger.info(f"{stock_name}({code}) 复用同日已采集的资讯证据")
+            elif self.search_service is not None and self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
                 # 检索已发起：此后即使一条都没拿到，也是「执行了但零命中」而非
@@ -739,7 +858,12 @@ class StockAnalysisPipeline:
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             social_evidence_context: Optional[str] = None
-            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+            if (
+                reused_news is None
+                and self.social_sentiment_service is not None
+                and self.social_sentiment_service.is_available
+                and is_us_stock_code(code)
+            ):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
@@ -865,6 +989,7 @@ class StockAnalysisPipeline:
                         news_result_count,
                         social_evidence_context,
                         persisted_intelligence_context,
+                        self._news_evidence_from_reuse(),
                     )
                 record_llm_run(
                     success=bool(result and getattr(result, "success", True)),
@@ -958,15 +1083,23 @@ class StockAnalysisPipeline:
                         chip_data=chip_data,
                         analysis_context_pack_overview=analysis_context_pack_overview,
                         market_phase_summary=market_phase_summary,
+                        news_evidence=getattr(result, "news_evidence_present", None),
                     )
                     result.diagnostic_context_snapshot = context_snapshot
+                    ownership = self._history_ownership_kwargs(
+                        result,
+                        code=code,
+                        analysis_target=analysis_target,
+                        portfolio_context=portfolio_context,
+                    )
                     saved_history_id = self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
                         report_type=report_type.value,
                         news_content=news_context,
                         context_snapshot=context_snapshot,
-                        save_snapshot=self.save_context_snapshot
+                        save_snapshot=self.save_context_snapshot,
+                        **ownership,
                     )
                     valid_saved_history_id = (
                         isinstance(saved_history_id, int)
@@ -989,6 +1122,11 @@ class StockAnalysisPipeline:
                             context_snapshot=context_snapshot,
                             portfolio_context=portfolio_context,
                             analysis_target=analysis_target,
+                            **(
+                                {"owner_user_id": ownership["requester_user_id"] or get_primary_user_id()}
+                                if ownership["is_private"]
+                                else {}
+                            ),
                         )
                 except Exception as e:
                     record_history_run(
@@ -1499,7 +1637,9 @@ class StockAnalysisPipeline:
                 else (getattr(self.config, 'agent_skills', None) or None)
             )
             # Build executor from shared factory (ToolRegistry and SkillManager prototype are cached)
-            executor = build_agent_executor(self.config, requested_skills)
+            executor = build_agent_executor(
+                self.config, requested_skills, **self._acting_user_kwargs(),
+            )
 
             # 指数目标：从 Agent 工具面剔除与 INDEX_SKIP_MODULES 对应的底层 provider
             # 工具（筹码/基本面/资金流），确保 Agent 分支同样零调用（Story 1.5 V6）。
@@ -1540,7 +1680,18 @@ class StockAnalysisPipeline:
             # executor (_build_user_message) and orchestrator (ctx.set_data)
             # can consume it through the existing news_context channel
             social_evidence_context: Optional[str] = None
-            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+            # The evidence text (social + local intelligence pool) an earlier analysis of this trading date already
+            # collected: injected as it is, nothing is fetched or loaded again.
+            reused_news = self._reused_input(PART_NEWS)
+            if reused_news is not None:
+                initial_context["news_context"] = reused_news
+                logger.info(f"[{code}] Agent mode: reused same-day news evidence injected into news_context")
+            if (
+                reused_news is None
+                and self.social_sentiment_service is not None
+                and self.social_sentiment_service.is_available
+                and is_us_stock_code(code)
+            ):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
@@ -1554,7 +1705,7 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"[{code}] Agent mode: social sentiment fetch failed: {e}")
 
-            persisted_intelligence_context = self._load_persisted_intelligence_context(
+            persisted_intelligence_context = None if reused_news is not None else self._load_persisted_intelligence_context(
                 code=code,
                 stock_name=stock_name,
                 market=("cn" if is_index else get_market_for_stock(normalize_stock_code(code)) or "cn"),
@@ -1658,6 +1809,7 @@ class StockAnalysisPipeline:
                     agent_news_result_count,
                     social_evidence_context,
                     persisted_intelligence_context,
+                    self._news_evidence_from_reuse(),
                 )
                 # Agent 的新闻证据经工具调用进入 LLM；把证据计数回填后重建输入包
                 # 概览，避免数据上下文面板在新闻已消费时仍按 news_context_missing
@@ -1864,7 +2016,7 @@ class StockAnalysisPipeline:
 
             # 保存新闻情报到数据库（Agent 工具结果仅用于 LLM 上下文，未持久化，Fixes #396）
             # 使用 search_stock_news（与 Agent 工具调用逻辑一致），仅 1 次 API 调用，无额外延迟
-            if self.search_service is not None and self.search_service.is_available:
+            if reused_news is None and self.search_service is not None and self.search_service.is_available:
                 try:
                     news_response = self.search_service.search_stock_news(
                         stock_code=("" if is_index else code),
@@ -1902,9 +2054,17 @@ class StockAnalysisPipeline:
                         chip_data=chip_data,
                         analysis_context_pack_overview=analysis_context_pack_overview,
                         market_phase_summary=market_phase_summary,
+                        news_evidence=getattr(result, "news_evidence_present", None),
                     )
                     result.diagnostic_context_snapshot = agent_context_snapshot
                     agent_context_snapshot["stock_name"] = resolved_stock_name
+                    ownership = self._history_ownership_kwargs(
+                        result,
+                        code=code,
+                        analysis_target=analysis_target,
+                        portfolio_context=portfolio_context,
+                        agent_result=agent_result,
+                    )
                     saved_history_id = self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
@@ -1912,6 +2072,7 @@ class StockAnalysisPipeline:
                         news_content=None,
                         context_snapshot=agent_context_snapshot,
                         save_snapshot=self.save_context_snapshot,
+                        **ownership,
                     )
                     valid_saved_history_id = (
                         isinstance(saved_history_id, int)
@@ -1940,6 +2101,11 @@ class StockAnalysisPipeline:
                             context_snapshot=agent_context_snapshot,
                             portfolio_context=portfolio_context,
                             analysis_target=analysis_target,
+                            **(
+                                {"owner_user_id": ownership["requester_user_id"] or get_primary_user_id()}
+                                if ownership["is_private"]
+                                else {}
+                            ),
                         )
                     latest_diagnostic_snapshot = current_diagnostic_snapshot()
                     if latest_diagnostic_snapshot is not None:
@@ -2104,7 +2270,13 @@ class StockAnalysisPipeline:
                 "analyzer": self.analyzer,
                 "search_service": self.search_service,
                 "force_refresh": force_refresh,
-                "allow_generate": getattr(self, "daily_market_context_allow_generate", True),
+                # The market review is a shared system output (design 1 / 9): only system jobs and the primary user
+                # generate it. A user's analysis only reads a same-day context that already exists, and goes on
+                # without one - the user's own model must never write what everyone else sees.
+                "allow_generate": (
+                    getattr(self, "daily_market_context_allow_generate", True)
+                    and not is_user_view(self.config)
+                ),
                 "target_date": target_date,
             }
             current_query_id = getattr(self, "query_id", None)
@@ -2854,9 +3026,13 @@ class StockAnalysisPipeline:
         news_result_count: Optional[int] = None,
         analysis_context_pack_overview: Optional[Dict[str, Any]] = None,
         market_phase_summary: Optional[Dict[str, Any]] = None,
+        news_evidence: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         构建分析上下文快照
+
+        快照同时是同交易日后续分析复用已采集输入的来源（``analysis_metadata_reuse``）：``news_evidence_present``
+        记录资讯是否真有证据，``metadata_reuse`` 记录本次分析复用了哪些输入、来自哪份报告及其原始采集时间。
         """
         snapshot = {
             "enhanced_context": self._without_runtime_prompt_context(enhanced_context),
@@ -2864,6 +3040,12 @@ class StockAnalysisPipeline:
             "realtime_quote_raw": self._safe_to_dict(realtime_quote),
             "chip_distribution_raw": self._safe_to_dict(chip_data),
         }
+        if isinstance(news_evidence, bool):
+            snapshot["news_evidence_present"] = news_evidence
+        reuse = getattr(self, "reused_metadata", None)
+        reuse_block = reuse.snapshot_block() if reuse is not None else None
+        if reuse_block is not None:
+            snapshot["metadata_reuse"] = reuse_block
         market_structure_context = enhanced_context.get("market_structure_context")
         if isinstance(market_structure_context, dict):
             snapshot["market_structure_context"] = market_structure_context
@@ -2928,8 +3110,12 @@ class StockAnalysisPipeline:
         context_snapshot: Dict[str, Any],
         portfolio_context: Optional[Dict[str, Any]] = None,
         analysis_target: Optional[AnalysisTarget] = None,
+        owner_user_id: Optional[str] = None,
     ) -> None:
-        """Best-effort DecisionSignal extraction after analysis history is saved."""
+        """Best-effort DecisionSignal extraction after analysis history is saved.
+
+        ``owner_user_id`` is set when the source report is private: its signals are then visible to that user only.
+        """
 
         assert (
             isinstance(source_report_id, int)
@@ -2961,6 +3147,7 @@ class StockAnalysisPipeline:
                 portfolio_context=portfolio_context,
                 profile_source="auto_default",
                 market_override=market_override,
+                **({"owner_user_id": owner_user_id} if owner_user_id else {}),
             )
             if isinstance(signal_result, dict):
                 summary = summarize_decision_signal(signal_result.get("item"))
@@ -3363,6 +3550,9 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None
         """
         logger.info(f"========== 开始处理 {code} ==========")
+        if is_user_view(getattr(self, "config", None)):
+            # Personal accounts have no push channel yet; never fall through to the server's own channels.
+            single_stock_notify = False
 
         from src.services.history_loader import set_frozen_target_date, reset_frozen_target_date
         frozen_td = self._resolve_resume_target_date(

@@ -389,13 +389,11 @@ def run_preopen_push(
 
 
 def _load_watchlist(config: Any) -> List[str]:
-    refresh = getattr(config, "refresh_stock_list", None)
-    if callable(refresh):
-        try:
-            refresh()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[PreopenPush] 刷新 STOCK_LIST 失败: %s", exc)
-    return list(getattr(config, "stock_list", None) or [])
+    """The scheduled pre-open push is a primary-user job in P2: its watchlist is the primary user's."""
+    from src.config import get_primary_user_id
+    from src.services.watchlist_service import WatchlistService
+
+    return WatchlistService(config=config).list_codes(get_primary_user_id())
 
 
 def _default_board_repo() -> Any:

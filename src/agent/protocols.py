@@ -160,6 +160,8 @@ class AgentContext:
     stock_code: str = ""
     stock_name: str = ""
     session_id: str = ""
+    # Acting user (session owner) handed to tools that read personal data.
+    user_id: Optional[str] = None
 
     # --- collected data (populated by data-fetching stages) ---
     data: Dict[str, Any] = field(default_factory=dict)

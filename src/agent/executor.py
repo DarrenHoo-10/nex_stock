@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from src.config import get_config
+from src.config import get_config, get_primary_user_id
 from src.agent.assistant_memory import MemoryInjection, build_memory_injection, retain_chat_turn
 from src.agent.chat_context import build_agent_chat_context_bundle, build_visible_chat_history
 from src.agent.llm_adapter import LLMToolAdapter
@@ -604,8 +604,13 @@ def prepare_agent_chat(
     scope_resolution: Optional[StockScopeResolution] = None,
     db_manager=None,
     source_snapshot: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
 ) -> PreparedAgentChat:
-    """Build the existing Chat prompt order without choosing an Agent backend."""
+    """Build the existing Chat prompt order without choosing an Agent backend.
+
+    ``user_id`` is the session owner whose notes feed the memory block (``None`` = primary user:
+    bots / CLI / legacy callers; the API passes the verified owner of the session).
+    """
     if scope_resolution is None:
         scope_resolution = resolve_stock_scope(
             message,
@@ -638,6 +643,7 @@ def prepare_agent_chat(
     system_prompt += build_chat_market_phase_section(stock_code, report_language)
     memory = build_memory_injection(
         message=message, effective_context=effective_context, db_manager=db_manager,
+        user_id=user_id or get_primary_user_id(),
     )
     if memory.section:
         system_prompt = system_prompt.rstrip() + "\n\n" + memory.section
@@ -739,7 +745,11 @@ class AgentExecutor:
         use_legacy_default_prompt: bool = False,
         max_steps: int = 10,
         timeout_seconds: Optional[float] = None,
+        user_id: Optional[str] = None,
     ):
+        # Acting user for personal-data tools and notes: ``None`` = primary user (CLI, bots, scheduled
+        # analysis), resolved once here and passed explicitly from then on.
+        self.user_id = user_id or get_primary_user_id()
         self.tool_registry = tool_registry
         self.llm_adapter = llm_adapter
         self.skill_instructions = skill_instructions
@@ -808,7 +818,7 @@ class AgentExecutor:
         from src.agent.conversation import conversation_manager
         from src.services.agent_chat_session_service import AgentChatSessionService
 
-        db, snapshot = conversation_manager.prepare_turn(session_id)
+        db, snapshot = conversation_manager.prepare_turn(session_id, user_id=self.user_id)
         config = getattr(self.llm_adapter, "_config", None) or get_config()
         scope_resolution, disposition = AgentChatSessionService(db).prepare_compatibility_turn(
             config, snapshot, message, context=context,
@@ -827,6 +837,7 @@ class AgentExecutor:
             db_manager=db,
             source_snapshot=snapshot,
             scope_resolution=scope_resolution,
+            user_id=self.user_id,
         )
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": prepared.system_prompt},
@@ -862,7 +873,7 @@ class AgentExecutor:
             if assistant_message_id is not None:
                 retain_chat_turn(
                     session_id=session_id, user_message_id=user_message_id, user_text=message,
-                    assistant_text=result.content, memory=prepared.memory,
+                    assistant_text=result.content, memory=prepared.memory, user_id=self.user_id,
                 )
                 self._persist_provider_trace(
                     session_id=session_id,
@@ -925,6 +936,7 @@ class AgentExecutor:
             progress_callback=progress_callback,
             max_wall_clock_seconds=self.timeout_seconds,
             stock_scope=stock_scope,
+            user_id=self.user_id,
         )
 
         model_str = loop_result.model

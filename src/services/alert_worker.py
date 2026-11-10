@@ -22,6 +22,7 @@ from src.agent.events import (
 )
 from data_provider.base import normalize_stock_code
 from data_provider.us_index_mapping import is_us_index_code
+from src.config import get_primary_user_id
 from src.analysis_context_pack_overview import (
     ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY,
     extract_analysis_context_pack_overview,
@@ -31,7 +32,7 @@ from src.market_phase_summary import (
     format_public_phase_pack_excerpt,
     render_market_phase_summary,
 )
-from src.services.alert_service import AlertService
+from src.services.alert_service import AlertService, max_enabled_rules_per_user
 from src.services.decision_signal_service import DecisionSignalService
 from src.services.decision_signal_summary import (
     format_decision_signal_excerpt,
@@ -60,6 +61,9 @@ class RuntimeAlertRule:
     cooldown_policy: Optional[Dict[str, Any]] = None
     effective_target: Optional[str] = None
     display_target: Optional[str] = None
+    # Owner of the rule; ``.env`` (legacy) rules belong to the primary user. ``None`` is resolved by
+    # ``AlertWorker._owner_of`` so hand-built rules keep acting as the primary user.
+    user_id: Optional[str] = None
 
 
 @dataclass
@@ -175,6 +179,12 @@ class AlertWorker:
 
             if record_status == "triggered":
                 stats["triggered"] += 1
+                if not self._owner_is_primary(runtime_rule):
+                    # No per-user notification channel yet (P3): keep the trigger record only and never
+                    # push another user's alert through the primary user's channels.
+                    if trigger_write.created:
+                        stats["notification_attempts"] += self._record_notification_skipped(runtime_rule, trigger_id)
+                    continue
                 if runtime_rule.source == "db":
                     cooldown_decision = self._check_db_cooldown(runtime_rule, trigger_id)
                     if cooldown_decision.suppressed:
@@ -182,7 +192,7 @@ class AlertWorker:
                         stats["notification_attempts"] += 1
                         continue
                     dispatch = self._send_notification_safely(runtime_rule, result)
-                    stats["notification_attempts"] += self._record_notification_attempts_safely(trigger_id, dispatch)
+                    stats["notification_attempts"] += self._record_notification_attempts_safely(self._owner_of(runtime_rule), trigger_id, dispatch)
                     if self._dispatch_has_real_channel_success(dispatch):
                         self._upsert_db_cooldown_safely(runtime_rule, result)
                         if cooldown_decision.fallback_key:
@@ -193,7 +203,7 @@ class AlertWorker:
                         stats["notified"] += 1
                 elif self._should_notify(runtime_rule.key):
                     dispatch = self._send_notification_safely(runtime_rule, result)
-                    stats["notification_attempts"] += self._record_notification_attempts_safely(trigger_id, dispatch)
+                    stats["notification_attempts"] += self._record_notification_attempts_safely(self._owner_of(runtime_rule), trigger_id, dispatch)
                     if bool(dispatch.success):
                         self._mark_notified(runtime_rule.key)
                         stats["notified"] += 1
@@ -203,45 +213,63 @@ class AlertWorker:
     def get_rule_sources(self, config: Any) -> Dict[str, int]:
         """Reuse polling dedup with request-local expansion caching and read-only holdings."""
         configured = len(self._load_legacy_rules(config))
+        # Legacy ``.env`` rules belong to the primary user and only dedupe against that user's DB rules.
         effective = sum(
-            rule.source == "legacy_env" for rule in self._load_runtime_rules(config, read_only=True)
+            rule.source == "legacy_env"
+            for rule in self._load_runtime_rules(config, read_only=True, only_user_id=get_primary_user_id())
         ) if configured else 0
         return {"legacy_configured": configured, "legacy_effective": effective}
 
-    def _load_runtime_rules(self, config: Any, *, read_only: bool = False) -> List[RuntimeAlertRule]:
+    def _load_runtime_rules(
+        self, config: Any, *, read_only: bool = False, only_user_id: Optional[str] = None,
+    ) -> List[RuntimeAlertRule]:
         runtime_rules: List[RuntimeAlertRule] = []
         seen_keys = set()
         # Source summaries share expansions only during this load. Polling and
         # dry runs retain their existing quote and portfolio snapshot behavior.
         target_expansion_cache = {} if read_only else None
 
-        for row in self.service.repo.list_enabled_rules(limit=ALERT_WORKER_RULE_LIMIT):
+        primary_user_id = get_primary_user_id()
+        # Fairness: every user contributes at most ``max_enabled_rules_per_user()`` rules and at most
+        # ``ALERT_WORKER_RULE_LIMIT`` expanded runtime rules, so one user can never push another's rules out.
+        expanded_per_user: Dict[str, int] = {}
+        for row in self.service.repo.list_all_enabled_rules(per_user_limit=max_enabled_rules_per_user()):
+            owner = str(getattr(row, "user_id", None) or primary_user_id)
+            if only_user_id is not None and owner != only_user_id:
+                continue
+            if expanded_per_user.get(owner, 0) >= ALERT_WORKER_RULE_LIMIT:
+                continue
             try:
                 cooldown_policy = self.service._load_json(row.cooldown_policy, default=None)
                 for payload in self.service.build_runtime_payloads(
                     row, config=config, include_overflow_payload=False, read_only=read_only,
                     target_expansion_cache=target_expansion_cache,
                 ):
-                    if len(runtime_rules) >= ALERT_WORKER_RULE_LIMIT:
+                    if expanded_per_user.get(owner, 0) >= ALERT_WORKER_RULE_LIMIT:
                         logger.warning(
-                            "[AlertWorker] Runtime rule limit reached at %s; skipping remaining expanded rules",
+                            "[AlertWorker] Runtime rule limit reached for user %s at %s; skipping remaining expanded rules",
+                            owner,
                             ALERT_WORKER_RULE_LIMIT,
                         )
                         break
+                    # Keys are the dedup / fingerprint identity: namespace other users' keys so equal
+                    # rules of two users never suppress each other. Primary keys stay as they were
+                    # (legacy ``.env`` rules dedupe against the primary user's DB rules only).
+                    runtime_key = payload.key if owner == primary_user_id else f"user:{owner}|{payload.key}"
                     runtime_rules.append(
                         RuntimeAlertRule(
-                            key=payload.key,
+                            key=runtime_key,
                             rule=payload.rule,
                             source="db",
                             severity=row.severity,
                             cooldown_policy=cooldown_policy,
                             effective_target=payload.effective_target,
                             display_target=payload.display_target,
+                            user_id=owner,
                         )
                     )
-                    seen_keys.add(payload.key)
-                if len(runtime_rules) >= ALERT_WORKER_RULE_LIMIT:
-                    break
+                    seen_keys.add(runtime_key)
+                    expanded_per_user[owner] = expanded_per_user.get(owner, 0) + 1
             except Exception as exc:
                 logger.warning("[AlertWorker] Skip invalid persisted alert rule %s: %s", getattr(row, "id", "?"), exc)
 
@@ -249,7 +277,9 @@ class AlertWorker:
             if key in seen_keys:
                 logger.info("[AlertWorker] Skip duplicate legacy alert rule: %s", key)
                 continue
-            runtime_rules.append(RuntimeAlertRule(key=key, rule=rule, source="legacy_env"))
+            runtime_rules.append(
+                RuntimeAlertRule(key=key, rule=rule, source="legacy_env", user_id=primary_user_id)
+            )
             seen_keys.add(key)
 
         return runtime_rules
@@ -303,6 +333,35 @@ class AlertWorker:
         canonical_params = json.dumps(parameters or {}, ensure_ascii=False, sort_keys=True)
         return f"{target_scope}:{target}:{alert_type}:{canonical_params}"
 
+    @staticmethod
+    def _owner_of(runtime_rule: RuntimeAlertRule) -> str:
+        return str(runtime_rule.user_id or get_primary_user_id())
+
+    def _owner_is_primary(self, runtime_rule: RuntimeAlertRule) -> bool:
+        return self._owner_of(runtime_rule) == get_primary_user_id()
+
+    def _record_notification_skipped(self, runtime_rule: RuntimeAlertRule, trigger_id: Optional[int]) -> int:
+        """Record that a non-primary user's trigger was not pushed (no personal channel until P3)."""
+        if trigger_id is None:
+            return 0
+        from src.notification import NotificationDispatchResult
+
+        logger.info(
+            "[AlertWorker] Alert for user %s on %s recorded without notification (no personal channel)",
+            self._owner_of(runtime_rule),
+            self._display_target(runtime_rule),
+        )
+        return self._record_notification_attempts_safely(
+            self._owner_of(runtime_rule),
+            trigger_id,
+            NotificationDispatchResult(
+                dispatched=False,
+                success=False,
+                status="no_channel",
+                message="user has no personal notification channel yet",
+            ),
+        )
+
     def _record_trigger(self, runtime_rule: RuntimeAlertRule, result: Dict[str, Any], status: str) -> TriggerWriteResult:
         try:
             rule_id = int(result.get("rule_id") or 0) or None
@@ -320,10 +379,11 @@ class AlertWorker:
             "status": status,
             "diagnostics": self._diagnostics_for_status(status, result, runtime_rule),
         }
+        owner = self._owner_of(runtime_rule)
         if self._should_deduplicate_trigger(runtime_rule, fields):
-            row, created = self.service.repo.create_trigger_if_absent(fields)
+            row, created = self.service.repo.create_trigger_if_absent(owner, fields)
         else:
-            row = self.service.repo.create_trigger(fields)
+            row = self.service.repo.create_trigger(owner, fields)
             created = True
         trigger_id = int(row.id) if row and row.id is not None else None
         return TriggerWriteResult(trigger_id=trigger_id, created=created)
@@ -414,36 +474,48 @@ class AlertWorker:
         if identity is None:
             return None
         stock_code, market = identity
+        # The rule's owner reads shared signals plus their own. A signal an alert creates carries that user's
+        # thresholds, and for a ``portfolio_holdings`` rule the stock is one of their holdings ("持仓 - X"), so it
+        # belongs to the owner alone (never to the shared pool). The owner is ``RuntimeAlertRule.user_id``: the
+        # inner rule object (``PriceAlert`` ...) has no ``user_id``.
+        rule_owner = self._owner_of(runtime_rule)
+        primary_user_id = get_primary_user_id()
         latest = self.decision_signal_service.get_latest_active(
             stock_code=stock_code,
             market=market,
             limit=1,
+            viewer_user_id=rule_owner,
         )
         items = latest.get("items") if isinstance(latest, dict) else None
         if items:
             return summarize_decision_signal(items[0])
 
-        created = self.decision_signal_service.create_signal(
-            self._alert_decision_signal_payload(
-                runtime_rule,
-                result,
-                stock_code=stock_code,
-                market=market,
-            )
+        payload = self._alert_decision_signal_payload(
+            runtime_rule,
+            result,
+            stock_code=stock_code,
+            market=market,
         )
+        if rule_owner != primary_user_id or self._rule_target_scope(runtime_rule) == "portfolio_holdings":
+            payload["owner_user_id"] = rule_owner
+        created = self.decision_signal_service.create_signal(payload)
         item = created.get("item") if isinstance(created, dict) else None
         return summarize_decision_signal(item)
+
+    @staticmethod
+    def _rule_target_scope(runtime_rule: RuntimeAlertRule) -> str:
+        rule = getattr(runtime_rule, "rule", runtime_rule)
+        metadata = getattr(rule, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return str(getattr(rule, "target_scope", None) or metadata.get("target_scope") or "").strip()
 
     def _symbol_identity_for_decision_signal(self, runtime_rule: RuntimeAlertRule) -> Optional[Tuple[str, str]]:
         rule = getattr(runtime_rule, "rule", runtime_rule)
         metadata = getattr(rule, "metadata", None)
         if not isinstance(metadata, dict):
             metadata = {}
-        target_scope = str(
-            getattr(rule, "target_scope", None)
-            or metadata.get("target_scope")
-            or ""
-        ).strip()
+        target_scope = self._rule_target_scope(runtime_rule)
         if target_scope in {"market", "portfolio_account"}:
             return None
         target = str(
@@ -595,7 +667,9 @@ class AlertWorker:
         target = self._effective_target(runtime_rule)
         if not target or target == "?":
             return None
-        cache_key = str(target).upper()
+        # The rule's owner may only see shared reports and their own private ones.
+        owner = self._owner_of(runtime_rule)
+        cache_key = f"{owner}|{str(target).upper()}"
         if cache_key in self._analysis_visibility_cache:
             return self._analysis_visibility_cache[cache_key]
         overview: Optional[Dict[str, Any]] = None
@@ -603,7 +677,11 @@ class AlertWorker:
             candidates = HistoryService._history_code_filter_candidates(target)
             records: List[Any] = []
             for candidate in candidates:
-                records.extend(self.service.db.get_analysis_history(code=candidate, days=30, limit=1))
+                records.extend(
+                    self.service.db.get_analysis_history(
+                        code=candidate, days=30, limit=1, viewer_user_id=owner
+                    )
+                )
             records = sorted(records, key=lambda item: getattr(item, "created_at", None) or datetime.min, reverse=True)
             if records:
                 overview = extract_analysis_context_pack_overview(getattr(records[0], "context_snapshot", None))
@@ -702,11 +780,12 @@ class AlertWorker:
 
     def _record_notification_attempts_safely(
         self,
+        user_id: str,
         trigger_id: Optional[int],
         dispatch: "NotificationDispatchResult",
     ) -> int:
         try:
-            return self._record_notification_attempts(trigger_id, dispatch)
+            return self._record_notification_attempts(user_id, trigger_id, dispatch)
         except Exception as exc:
             logger.warning(
                 "[AlertWorker] Failed to record alert notification attempt: %s",
@@ -714,7 +793,9 @@ class AlertWorker:
             )
             return 0
 
-    def _record_notification_attempts(self, trigger_id: Optional[int], dispatch: "NotificationDispatchResult") -> int:
+    def _record_notification_attempts(
+        self, user_id: str, trigger_id: Optional[int], dispatch: "NotificationDispatchResult",
+    ) -> int:
         channel_results = list(dispatch.channel_results or [])
         if not channel_results:
             channel_results = [self._synthetic_attempt_for_dispatch(dispatch)]
@@ -731,7 +812,7 @@ class AlertWorker:
                 "latency_ms": self._optional_int(item.latency_ms),
                 "diagnostics": self.service._sanitize_text(item.diagnostics or dispatch.message),
             }
-            self.service.repo.record_notification_attempt(fields)
+            self.service.repo.record_notification_attempt(user_id, fields)
             recorded += 1
         return recorded
 
@@ -791,6 +872,7 @@ class AlertWorker:
         now_dt = self._now_datetime()
         try:
             cooldown = self.service.repo.get_active_cooldown(
+                self._owner_of(runtime_rule),
                 rule_id=rule_id,
                 target=self._effective_target(runtime_rule),
                 severity=runtime_rule.severity,
@@ -809,7 +891,7 @@ class AlertWorker:
                     fallback_key=fallback_key,
                     fallback_ttl_seconds=cooldown_seconds,
                 )
-            self._record_cooldown_read_failure_suppression(trigger_id, exc)
+            self._record_cooldown_read_failure_suppression(runtime_rule, trigger_id, exc)
             return DBCooldownDecision(suppressed=True)
 
         if cooldown is None:
@@ -818,6 +900,7 @@ class AlertWorker:
         from src.notification import ChannelAttemptResult, NotificationDispatchResult
 
         self._record_notification_attempts_safely(
+            self._owner_of(runtime_rule),
             trigger_id,
             NotificationDispatchResult(
                 dispatched=False,
@@ -840,11 +923,14 @@ class AlertWorker:
         )
         return DBCooldownDecision(suppressed=True)
 
-    def _record_cooldown_read_failure_suppression(self, trigger_id: Optional[int], exc: Exception) -> None:
+    def _record_cooldown_read_failure_suppression(
+        self, runtime_rule: RuntimeAlertRule, trigger_id: Optional[int], exc: Exception,
+    ) -> None:
         from src.notification import ChannelAttemptResult, NotificationDispatchResult
 
         sanitized = self.service._sanitize_text(str(exc) or "cooldown read failed")
         self._record_notification_attempts_safely(
+            self._owner_of(runtime_rule),
             trigger_id,
             NotificationDispatchResult(
                 dispatched=False,
@@ -873,6 +959,7 @@ class AlertWorker:
         now_dt = self._now_datetime()
         try:
             self.service.repo.upsert_cooldown(
+                self._owner_of(runtime_rule),
                 rule_id=rule_id,
                 rule_key=runtime_rule.key,
                 target=self._effective_target(runtime_rule),

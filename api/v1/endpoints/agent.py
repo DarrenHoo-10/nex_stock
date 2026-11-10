@@ -14,11 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from api.deps import get_agent_chat_session_service
+from api.deps import CurrentUser, get_agent_chat_session_service, get_current_user
 from api.v1.schemas.assistant_notes import RecallStatus
 from api.v1.schemas.system_config import AgentBackendStatusResponse
-from src.config import get_agent_reasoning_effort, get_config, get_effective_agent_primary_model
+from src.config import get_agent_reasoning_effort, get_config, get_effective_agent_primary_model, get_primary_user_id
+from src.agent.conversation import is_bot_session_id
 from src.services.agent_chat_session_service import AgentChatSessionService
+from src.services.user_config_service import get_user_config, require_usable_model
 from src.llm.generation_params import REASONING_EFFORT_VALUES
 from src.services.agent_model_service import (
     AgentChatOverrideError,
@@ -26,7 +28,7 @@ from src.services.agent_model_service import (
     list_agent_model_deployments,
     resolve_model_context_window,
 )
-from src.storage import ChatSessionStateConflict
+from src.storage import ChatSessionNotFound, ChatSessionStateConflict
 
 # Tool name -> Chinese display name mapping
 TOOL_DISPLAY_NAMES: Dict[str, str] = {
@@ -58,7 +60,23 @@ _STREAM_IDLE_TIMEOUT_SECONDS = 300.0
 
 router = APIRouter()
 
-_ACTIVE_CODEX_STREAMS: Dict[str, threading.Event] = {}
+
+def _config_for(user: Any, *, need_model: bool = False):
+    """Configuration of the acting user: ``get_config()`` for the primary user (and callers without a
+    user context), the user's own read-only view for everybody else.
+
+    ``need_model=True`` is for routes that call a model: a non-primary user without a model of their own
+    gets 400 ``model_key_required`` before anything reaches a provider.
+    """
+    if not isinstance(user, CurrentUser) or user.user_id == get_primary_user_id():
+        return get_config()
+    config = get_user_config(user.user_id)
+    return require_usable_model(config) if need_model else config
+
+
+# Keyed by (user_id, request_id): a user can only cancel their own streams, and two users may reuse
+# the same client-chosen request id.
+_ACTIVE_CODEX_STREAMS: Dict[tuple, threading.Event] = {}
 _ACTIVE_CODEX_STREAMS_LOCK = threading.Lock()
 
 class ChatRequest(BaseModel):
@@ -132,12 +150,53 @@ def _public_chat_state(*, active_stock_context, session_state_version, session_g
     }
 
 
-def _prepare_chat_request(request, config, session_id, session_service):
-    """Prepare once against the session snapshot, then commit exactly one turn."""
+def _session_not_found() -> HTTPException:
+    """404 for a missing session and for one that belongs to another user: never distinguished."""
+    return HTTPException(
+        status_code=404,
+        detail={"error": ChatSessionNotFound.code, "message": "会话不存在"},
+    )
+
+
+def _read_session_id(session_service: AgentChatSessionService, session_id: str, user_id: str) -> str:
+    """Session id to read for ``user_id``: another user's session reads as one that does not exist.
+
+    The missing-id response of the read / delete / context / compact endpoints is an empty one (not a 404), so
+    a foreign id is served from a fresh id that cannot exist, giving exactly that response and no existence signal.
+    """
+    try:
+        session_service.require_session_access(session_id, user_id)
+    except ChatSessionNotFound:
+        return f"missing-{uuid.uuid4().hex}"
+    return session_id
+
+
+def _chat_session_id(request: "ChatRequest", user: CurrentUser) -> str:
+    """Session id of a chat request (a new one when none is given).
+
+    The chat bots own the ``{platform}_...`` / ``feishu:...`` id namespaces and act as the primary user; any other
+    user creating such an id would pre-empt the session the bot needs later.
+    """
+    if not request.session_id:
+        return str(uuid.uuid4())
+    if user.user_id != get_primary_user_id() and is_bot_session_id(request.session_id):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_error", "message": "session_id 使用了保留前缀，请换一个"},
+        )
+    return request.session_id
+
+
+def _prepare_chat_request(request, config, session_id, session_service, user_id):
+    """Prepare once against the session snapshot, then commit exactly one turn.
+
+    ``user_id`` is the authenticated user: the session is created for them or must already be theirs.
+    """
     resolved = session_service.prepare_session_turn(
         config, session_id, request.message, request.effective_skills,
         context=_build_agent_chat_context(request, config, None),
         expected_generation=request.session_generation,
+        user_id=user_id,
     )
     if resolved.clarification is not None:
         accepted = session_service.commit_user_turn(resolved)
@@ -204,9 +263,9 @@ class AgentModelsResponse(BaseModel):
 
 
 @router.get("/models", response_model=AgentModelsResponse)
-async def get_agent_models():
-    """Get configured Agent model deployments for frontend selection."""
-    config = get_config()
+async def get_agent_models(user: CurrentUser = Depends(get_current_user)):
+    """Get configured Agent model deployments for frontend selection (the user's own, never the system's)."""
+    config = _config_for(user)
     from src.agent.agent_backend import AgentBackendConfigError, resolve_agent_backend_id
 
     try:
@@ -243,12 +302,12 @@ def _apply_request_overrides(request: ChatRequest, config, backend_id: str):
 
 
 @router.get("/status", response_model=AgentBackendStatusResponse)
-async def get_agent_status():
+async def get_agent_status(user: CurrentUser = Depends(get_current_user)):
     """Return the current effective Chat backend status for the Chat page."""
-    config = get_config()
+    config = _config_for(user)
     payload = await asyncio.to_thread(_get_agent_chat_status, config)
     response = _agent_status_response(payload)
-    response.recall = await asyncio.to_thread(_get_recall_status, config)
+    response.recall = await asyncio.to_thread(_get_recall_status, config, user)
     return response
 
 
@@ -263,12 +322,15 @@ def _agent_status_response(payload: Dict[str, Any]) -> AgentBackendStatusRespons
     )
 
 
-def _get_recall_status(config) -> Optional[RecallStatus]:
-    """Long-term recall health; a weak dependency, so never fail the status call."""
+def _get_recall_status(config, user: Any = None) -> Optional[RecallStatus]:
+    """Long-term recall health of the acting user's memory bank; a weak dependency, so never fail the status call."""
     try:
-        from src.agent.recall import get_recall_service
+        from src.agent.recall import get_recall_service, get_user_recall_service
 
-        health = get_recall_service(config).health()
+        if isinstance(user, CurrentUser) and user.user_id != get_primary_user_id():
+            health = get_user_recall_service(user.user_id, config).health()
+        else:
+            health = get_recall_service(config).health()
         return RecallStatus(
             provider=health.provider_id,
             status=health.status,
@@ -330,6 +392,7 @@ async def get_strategies():
 async def agent_chat(
     request: ChatRequest,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Chat with the AI Agent without progress events.
@@ -338,7 +401,7 @@ async def agent_chat(
     events and request cancellation. The default LiteLLM Agent keeps this
     endpoint's existing behavior.
     """
-    config = get_config()
+    config = _config_for(user, need_model=True)
     backend_id = _select_agent_chat_backend(config)
     if backend_id == "codex_app_server":
         raise HTTPException(
@@ -350,11 +413,11 @@ async def agent_chat(
         )
     
     config = _apply_request_overrides(request, config, backend_id)
-    session_id = request.session_id or str(uuid.uuid4())
+    session_id = _chat_session_id(request, user)
 
     try:
         executor, turn, accepted, clarification = await asyncio.to_thread(
-            _prepare_chat_request, request, config, session_id, session_service,
+            _prepare_chat_request, request, config, session_id, session_service, user.user_id,
         )
         if clarification is not None:
             result = await asyncio.to_thread(_clarification_result, session_service, accepted, clarification, backend_id)
@@ -368,6 +431,8 @@ async def agent_chat(
             error=result.error,
             **_accepted_state_payload(accepted),
         )
+    except ChatSessionNotFound as exc:
+        raise _session_not_found() from exc
     except ChatSessionStateConflict as exc:
         raise HTTPException(status_code=409, detail={"error": exc.code, "message": str(exc)}) from exc
     except HTTPException:
@@ -402,18 +467,17 @@ async def list_chat_sessions(
     limit: int = 50,
     user_id: Optional[str] = None,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    """获取聊天会话列表
+    """获取当前用户的聊天会话列表（只返回本人创建的会话）
 
     Args:
         limit: Maximum number of sessions to return.
-        user_id: Optional platform-prefixed user identifier for session
-            isolation.  When provided, only sessions whose session_id
-            starts with this prefix are returned.  The value must
-            include the platform prefix, e.g. ``telegram_12345``,
-            ``feishu_ou_abc``.
+        user_id: Optional platform-prefixed session id prefix (legacy query-parameter name, kept for
+            compatibility): narrows the caller's OWN sessions to those whose session_id starts with
+            this prefix, e.g. ``telegram_12345``.  It never selects another user's sessions.
     """
-    sessions = session_service.list_sessions(limit, user_id)
+    sessions = session_service.list_sessions(limit, user_id, user_id=user.user_id)
     return SessionsResponse(sessions=sessions)
 
 
@@ -422,11 +486,13 @@ async def get_chat_session_messages(
     session_id: str,
     limit: int = 100,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    """获取单个会话的完整消息"""
+    """获取单个会话的完整消息（别人的会话与不存在的会话响应完全相同：空消息）"""
     detail = session_service.get_session_detail(
-        session_id,
+        _read_session_id(session_service, session_id, user.user_id),
         limit,
+        user.user_id,
     )
     return SessionMessagesResponse(
         session_id=session_id,
@@ -444,10 +510,14 @@ async def get_chat_session_messages(
 async def delete_chat_session(
     session_id: str,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    """删除指定会话"""
-    count = session_service.delete_session(session_id)
-    return {"deleted": count}
+    """删除指定会话（别人的会话与不存在的会话响应完全相同：deleted 为 0，且不会删除别人的会话）"""
+    try:
+        session_service.require_session_access(session_id, user.user_id)
+    except ChatSessionNotFound:
+        return {"deleted": 0}
+    return {"deleted": session_service.delete_session(session_id, user.user_id)}
 
 
 class ChatContextSummaryInfo(BaseModel):
@@ -478,10 +548,12 @@ class ChatCompactResponse(BaseModel):
     context: ChatContextInfoResponse
 
 
-def _context_info_response(session_id: str, config, model: Optional[str]) -> ChatContextInfoResponse:
+def _context_info_response(
+    session_id: str, config, model: Optional[str], read_session_id: Optional[str] = None,
+) -> ChatContextInfoResponse:
     from src.agent.chat_context import describe_chat_context
 
-    info = describe_chat_context(session_id, config)
+    info = describe_chat_context(read_session_id or session_id, config)
     effective_model = (model or "").strip() or get_effective_agent_primary_model(config) or None
     return ChatContextInfoResponse(
         session_id=session_id,
@@ -499,13 +571,19 @@ def _context_info_response(session_id: str, config, model: Optional[str]) -> Cha
 
 
 @router.get("/chat/sessions/{session_id}/context", response_model=ChatContextInfoResponse)
-async def get_chat_session_context(session_id: str, model: Optional[str] = None):
+async def get_chat_session_context(
+    session_id: str,
+    model: Optional[str] = None,
+    session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    user: CurrentUser = Depends(get_current_user),
+):
     """Conversation context of a session: history tokens, compression state and the model's context window.
 
     Read-only; calls no model. ``model`` (optional) only selects which model's context window is reported.
     """
-    config = get_config()
-    return await asyncio.to_thread(_context_info_response, session_id, config, model)
+    read_session_id = _read_session_id(session_service, session_id, user.user_id)
+    config = _config_for(user)
+    return await asyncio.to_thread(_context_info_response, session_id, config, model, read_session_id)
 
 
 class ChatCompactRequest(BaseModel):
@@ -513,13 +591,19 @@ class ChatCompactRequest(BaseModel):
 
 
 @router.post("/chat/sessions/{session_id}/compact", response_model=ChatCompactResponse)
-async def compact_chat_session(session_id: str, request: Optional[ChatCompactRequest] = None):
+async def compact_chat_session(
+    session_id: str,
+    request: Optional[ChatCompactRequest] = None,
+    session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    user: CurrentUser = Depends(get_current_user),
+):
     """Manually fold the session's older messages into its rolling summary (the last protected turns stay verbatim).
 
     Uses the same summary prompt as automatic compression and works even when
     ``AGENT_CONTEXT_COMPRESSION_ENABLED`` is off; later turns then carry the summary plus newer messages.
     """
-    config = get_config()
+    read_session_id = _read_session_id(session_service, session_id, user.user_id)
+    config = _config_for(user, need_model=True)
     backend_id = _select_agent_chat_backend(config)
     model = (request.model if request else None) or None
     config = _apply_request_overrides(ChatRequest(message="", model=model), config, backend_id)
@@ -533,7 +617,7 @@ async def compact_chat_session(session_id: str, request: Optional[ChatCompactReq
         from src.agent.chat_context import compact_chat_history
         from src.agent.llm_adapter import LLMToolAdapter
 
-        return compact_chat_history(session_id, LLMToolAdapter(config), config)
+        return compact_chat_history(read_session_id, LLMToolAdapter(config), config)
 
     try:
         result = await asyncio.to_thread(run)
@@ -544,7 +628,7 @@ async def compact_chat_session(session_id: str, request: Optional[ChatCompactReq
             status_code=502,
             detail={"error": "compaction_failed", "message": "摘要模型没有返回结果，会话未改动，请稍后重试"},
         )
-    context = await asyncio.to_thread(_context_info_response, session_id, config, model)
+    context = await asyncio.to_thread(_context_info_response, session_id, config, model, read_session_id)
     return ChatCompactResponse(
         status=result.status,
         summarized_message_count=result.summarized_message_count,
@@ -562,13 +646,21 @@ class SendChatRequest(BaseModel):
 
 
 @router.post("/chat/send")
-async def send_chat_to_notification(request: SendChatRequest):
+async def send_chat_to_notification(request: SendChatRequest, user: CurrentUser = Depends(get_current_user)):
     """
     Send chat session content to configured notification channels.
     Uses run_in_executor to avoid blocking the event loop.
     """
     from src.notification import NotificationService
 
+    if user.user_id != get_primary_user_id():
+        # Notification channels are the primary user's (.env) until per-user channels exist (P3):
+        # another user's chat must never be pushed to them.
+        return {
+            "success": False,
+            "error": "no_channels",
+            "message": "未配置通知渠道，请先在设置中配置",
+        }
     loop = asyncio.get_running_loop()
     success = await loop.run_in_executor(
         None,
@@ -645,12 +737,13 @@ class ResearchResponse(BaseModel):
 
 
 @router.post("/research", response_model=ResearchResponse)
-async def agent_research(request: ResearchRequest):
+async def agent_research(request: ResearchRequest, user: CurrentUser = Depends(get_current_user)):
     """Run a deep-research query via the ResearchAgent.
 
-    Similar to the ``/research`` bot command but exposed as a REST endpoint.
+    Similar to the ``/research`` bot command but exposed as a REST endpoint. Runs with the caller's own
+    model / search keys (400 ``model_key_required`` for a non-primary user without a model).
     """
-    config = get_config()
+    config = _config_for(user, need_model=True)
     if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
 
@@ -673,6 +766,7 @@ async def agent_research(request: ResearchRequest):
             tool_registry=registry,
             llm_adapter=llm_adapter,
             token_budget=budget,
+            **({"user_id": user.user_id} if isinstance(user, CurrentUser) else {}),
         )
 
         research_timeout = getattr(config, "agent_deep_research_timeout", 180)
@@ -710,6 +804,7 @@ async def agent_research(request: ResearchRequest):
 async def agent_chat_stream(
     request: ChatRequest,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Chat with the AI Agent, streaming progress via SSE.
@@ -726,19 +821,21 @@ async def agent_chat_stream(
       - done: analysis complete, contains 'content' and 'success'
       - error: error occurred, contains 'message'
     """
-    config = get_config()
+    config = _config_for(user, need_model=True)
     backend_id = _select_agent_chat_backend(config)
     config = _apply_request_overrides(request, config, backend_id)
 
-    session_id = request.session_id or str(uuid.uuid4())
+    session_id = _chat_session_id(request, user)
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
     cancel_event = threading.Event()
     request_id = request.request_id or str(uuid.uuid4())
 
+    stream_key = (user.user_id, request_id)
+
     if backend_id == "codex_app_server":
         with _ACTIVE_CODEX_STREAMS_LOCK:
-            if request_id in _ACTIVE_CODEX_STREAMS:
+            if stream_key in _ACTIVE_CODEX_STREAMS:
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -746,7 +843,7 @@ async def agent_chat_stream(
                         "message": "This Agent request is already running",
                     },
                 )
-            _ACTIVE_CODEX_STREAMS[request_id] = cancel_event
+            _ACTIVE_CODEX_STREAMS[stream_key] = cancel_event
 
     def progress_callback(event: dict):
         if backend_id == "codex_app_server" and cancel_event.is_set():
@@ -799,16 +896,17 @@ async def agent_chat_stream(
         try:
             try:
                 executor, turn, accepted, clarification = await asyncio.to_thread(
-                    _prepare_chat_request, request, config, session_id, session_service,
+                    _prepare_chat_request, request, config, session_id, session_service, user.user_id,
                 )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.error("Agent request preparation failed: %s", exc, exc_info=True)
+                known = isinstance(exc, (ChatSessionStateConflict, ChatSessionNotFound))
                 event = {
                     "type": "error",
-                    "message": str(exc) if isinstance(exc, ChatSessionStateConflict) else "Agent request was not accepted",
-                    "error_code": exc.code if isinstance(exc, ChatSessionStateConflict) else "request_not_accepted",
+                    "message": str(exc) if known else "Agent request was not accepted",
+                    "error_code": exc.code if known else "request_not_accepted",
                     "backend": backend_id,
                     "request_id": request_id,
                     "session_id": session_id,
@@ -883,8 +981,8 @@ async def agent_chat_stream(
             finally:
                 if backend_id == "codex_app_server":
                     with _ACTIVE_CODEX_STREAMS_LOCK:
-                        if _ACTIVE_CODEX_STREAMS.get(request_id) is cancel_event:
-                            _ACTIVE_CODEX_STREAMS.pop(request_id, None)
+                        if _ACTIVE_CODEX_STREAMS.get(stream_key) is cancel_event:
+                            _ACTIVE_CODEX_STREAMS.pop(stream_key, None)
 
     return StreamingResponse(
         event_generator(),
@@ -898,10 +996,10 @@ async def agent_chat_stream(
 
 
 @router.post("/chat/stream/{request_id}/cancel")
-async def cancel_agent_chat_stream(request_id: str):
-    """Signal cancellation while the original Codex SSE remains open."""
+async def cancel_agent_chat_stream(request_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Signal cancellation while the original Codex SSE remains open (own streams only)."""
     with _ACTIVE_CODEX_STREAMS_LOCK:
-        cancel_event = _ACTIVE_CODEX_STREAMS.get(request_id)
+        cancel_event = _ACTIVE_CODEX_STREAMS.get((user.user_id, request_id))
     if cancel_event is None:
         raise HTTPException(
             status_code=404,

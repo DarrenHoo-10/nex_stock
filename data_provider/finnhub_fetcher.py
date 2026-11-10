@@ -28,10 +28,11 @@ class FinnhubFetcher(BaseFetcher):
     name = "FinnhubFetcher"
     priority = 2
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None):
         from src.config import get_config
         config = get_config()
-        self._api_key = getattr(config, 'finnhub_api_key', None) or os.getenv('FINNHUB_API_KEY')
+        # An explicit key (a user's own credential) wins and is never read back from / written to the environment.
+        self._api_key = api_key or getattr(config, 'finnhub_api_key', None) or os.getenv('FINNHUB_API_KEY')
         if not self._api_key:
             logger.debug("[Finnhub] API key not configured, fetcher disabled")
 

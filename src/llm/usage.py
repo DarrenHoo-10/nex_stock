@@ -838,19 +838,27 @@ def _to_plain(value: Any) -> Dict[str, Any]:
     return result
 
 
-def _plain_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(k): _plain_value(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain_value(item) for item in value]
+# Provider usage payloads are a few levels deep; the cap stops objects whose model_dump()/dict() keeps
+# returning new objects (or self-referencing payloads) from recursing forever.
+_PLAIN_VALUE_MAX_DEPTH = 16
+
+
+def _plain_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
+    if _depth >= _PLAIN_VALUE_MAX_DEPTH:
+        return str(value)
+    depth = _depth + 1
+    if isinstance(value, Mapping):
+        return {str(k): _plain_value(v, depth) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_value(item, depth) for item in value]
     for method_name in ("model_dump", "dict"):
         method = getattr(value, method_name, None)
         if callable(method):
             try:
                 dumped = method()
-                return _plain_value(dumped)
+                return _plain_value(dumped, depth)
             except Exception:
                 pass
     return str(value)

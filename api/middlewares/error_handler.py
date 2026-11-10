@@ -98,6 +98,22 @@ def add_error_handlers(app) -> None:
             }
         )
     
+    from src.llm.credentials_guard import ModelKeyRequiredError
+    from src.utils.url_safety import UnsafeUrlError
+
+    @app.exception_handler(ModelKeyRequiredError)
+    async def model_key_required_handler(request: Request, exc: ModelKeyRequiredError):
+        """A non-primary user without a model of their own reached a model-backed route."""
+        return JSONResponse(status_code=400, content={"error": exc.code, "message": exc.message})
+
+    @app.exception_handler(UnsafeUrlError)
+    async def unsafe_url_handler(request: Request, exc: UnsafeUrlError):
+        """A user-supplied endpoint failed the call-time SSRF check."""
+        return JSONResponse(
+            status_code=400,
+            content={"error": exc.code, "message": exc.message, "detail": {"reason": exc.reason}},
+        )
+
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         """处理请求验证异常"""

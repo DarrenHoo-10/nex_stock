@@ -8,10 +8,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from api.deps import CurrentUser
 from api.v1.endpoints import agent
 from src.config import Config
 from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
 from src.services.agent_model_service import list_agent_model_deployments
+
+_PRIMARY_USER = CurrentUser(user_id="local", handle="local", display_name="local", role="admin", is_admin=True)
 
 
 def _build_config(**overrides):
@@ -391,7 +394,7 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
                     "api.v1.endpoints.agent._build_executor", wraps=agent._build_executor,
                 ) as mock_build_executor, patch.object(LiteLLMAgentBackend, "run", controlled_run):
                     payload = asyncio.run(agent.agent_chat(
-                        request, session_service=agent.AgentChatSessionService(db),
+                        request, session_service=agent.AgentChatSessionService(db), user=_PRIMARY_USER,
                     )).model_dump()
                 self.assertEqual(db.get_conversation_session_selected_skill_ids("empty-skills"), [])
                 self.assertEqual(len(db.get_conversation_messages("empty-skills")), 2)

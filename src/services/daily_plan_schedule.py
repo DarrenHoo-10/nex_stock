@@ -5,6 +5,9 @@ Same shape as ``board_pipeline_schedule``: ``build_daily_plan_jobs`` turns ``DAI
 schedule time(s) into daily-job entries for ``Scheduler.add_daily_job``; both scheduler owners use it (the Web/API
 ``RuntimeSchedulerService`` and the CLI ``--schedule`` loop in ``main.py``).
 
+In multi-user mode the scheduled run is the primary user's (their ``.env`` watchlist and plan account); other
+users trigger their own runs through the API until per-user scheduling lands.
+
 The plan run reuses ``SCHEDULE_TIME`` / ``SCHEDULE_TIMES`` (the Web settings page edits them as the plan's run
 time) but is a **separate job**: it runs in its own thread and never touches the legacy per-stock daily analysis
 that the same setting drives, so the two never block or replace each other. It runs once per A-share trading day
@@ -59,9 +62,12 @@ def run_scheduled_daily_plan(
             logger.info("[DailyPlan] %s 不是交易日，跳过", day)
             return {"status": "skipped", "reason": "not_trading_day", "trade_date": day.isoformat()}
         if service_factory is None:
+            from src.config import get_primary_user_id
             from src.services.daily_plan_service import DailyPlanService
 
-            service_factory = DailyPlanService
+            # P2: the scheduled run belongs to the primary user (per-user scheduling is P3).
+            def service_factory() -> Any:
+                return DailyPlanService(user_id=get_primary_user_id())
         from src.services.daily_plan_service import DailyPlanRunConflictError
 
         try:

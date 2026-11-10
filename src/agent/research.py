@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.runner import RunLoopResult, run_agent_loop
 from src.agent.tools.registry import ToolRegistry
+from src.config import get_primary_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,10 @@ class ResearchAgent:
         llm_adapter: LLMToolAdapter,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
         max_sub_questions: int = 5,
+        user_id: Optional[str] = None,
     ):
+        # Acting user for ``user_scoped`` tools (search with the user's own keys); None = the primary user.
+        self.user_id = user_id or get_primary_user_id()
         self.tool_registry = tool_registry
         self.llm_adapter = llm_adapter
         self.token_budget = token_budget
@@ -379,6 +383,7 @@ Token budget remaining: ~{remaining_budget}
                 llm_adapter=self.llm_adapter,
                 max_steps=4,
                 max_wall_clock_seconds=timeout_seconds,
+                user_id=self.user_id,
                 # NOTE: do not pass tool_call_timeout_seconds here — under the
                 # first-wins contract it would override the per-tool / category
                 # limits, letting one tool consume the whole sub-question budget.

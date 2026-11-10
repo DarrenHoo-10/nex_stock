@@ -1941,3 +1941,32 @@ class TestLLMUsageMigration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlainValueDepthCapTestCase(unittest.TestCase):
+    """Objects whose model_dump()/dict() keep returning new objects must not recurse forever."""
+
+    def test_mock_like_payload_terminates(self):
+        from unittest.mock import MagicMock
+
+        from src.llm.usage import _plain_value
+
+        result = _plain_value(MagicMock())
+        self.assertIsInstance(result, str)
+
+    def test_self_referencing_payload_terminates(self):
+        from src.llm.usage import _plain_value
+
+        payload = {"a": 1}
+        payload["self"] = payload
+        result = _plain_value(payload)
+        self.assertEqual(result["a"], 1)
+
+    def test_ordinary_nested_payload_is_unchanged(self):
+        from src.llm.usage import _plain_value
+
+        payload = {"usage": {"prompt_tokens": 3, "details": [{"cached": 1}, ("x", None)]}}
+        self.assertEqual(
+            _plain_value(payload),
+            {"usage": {"prompt_tokens": 3, "details": [{"cached": 1}, ["x", None]]}},
+        )

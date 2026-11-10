@@ -96,6 +96,19 @@ class DecisionSignalReview:
         return ", ".join(parts)
 
 
+def _memory_viewer() -> str:
+    """Memory reads shared reports / signals only.
+
+    Memory feeds past reports and signal reviews into an agent prompt, and the report that run produces is shared
+    unless it used personal data itself. A private report (one made with the user's holdings) therefore never
+    feeds memory, not even the memory of its own requester: its date, advice and outcome would reappear in a
+    report other people can read.
+    """
+    from src.storage import SHARED_ONLY_VIEWER_ID
+
+    return SHARED_ONLY_VIEWER_ID
+
+
 class AgentMemory:
     """Structured memory system for agent self-improvement.
 
@@ -143,7 +156,7 @@ class AgentMemory:
         try:
             from src.storage import get_db
             db = get_db()
-            records = db.get_analysis_history(code=stock_code, limit=limit)
+            records = db.get_analysis_history(code=stock_code, limit=limit, viewer_user_id=_memory_viewer())
             entries = []
             for r in records:
                 raw_result: Dict[str, Any] = {}
@@ -194,7 +207,7 @@ class AgentMemory:
             from src.services.decision_signal_outcome_service import (
                 DecisionSignalOutcomeService,
             )
-            payload = DecisionSignalOutcomeService().get_stock_review(stock_code)
+            payload = DecisionSignalOutcomeService().get_stock_review(stock_code, viewer_user_id=_memory_viewer())
             return DecisionSignalReview(
                 stock_code=str(payload.get("stock_code") or stock_code),
                 sample_size=int(payload.get("sample_size") or 0),

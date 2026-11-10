@@ -3,7 +3,7 @@ import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
-import type { AnalysisReport, HistoryItem, HistoryListResponse, ReportLanguage, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
+import type { AnalysisReport, AnalysisReuseInfo, HistoryItem, HistoryListResponse, ReportLanguage, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
 import { toAssetAwareCodeKey, type AssetAwareAssetType } from '../utils/stockCode';
 import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } from '../utils/validation';
@@ -30,6 +30,8 @@ type SubmitAnalysisOptions = {
   selectionSource?: SelectionSource;
   notify?: boolean;
   forceRefresh?: boolean;
+  /** Ignore reusable shared reports and generate a new one (needs the user's own model key). */
+  forceRegenerate?: boolean;
   skills?: string[];
   reportLanguage?: ReportLanguage;
 };
@@ -85,6 +87,8 @@ export interface StockPoolState {
   isLoadingMoreStockHistory: boolean;
   stockHistoryError: ParsedApiError | null;
   stockHistoryFilters: StockHistoryFilters;
+  /** How finished analyses relate to existing reports, by report `queryId` (reused report / reused inputs). */
+  analysisReuse: Record<string, AnalysisReuseInfo>;
   activeTasks: TaskInfo[];
   markdownDrawerOpen: boolean;
   stockBarItems: StockBarItem[];
@@ -98,10 +102,12 @@ export interface StockPoolState {
   openHistoryTrend: () => Promise<void>;
   closeHistoryTrend: () => void;
   setStockHistoryRange: (range: StockHistoryRange) => Promise<void>;
+  setStockHistoryMineOnly: (mineOnly: boolean) => Promise<void>;
   loadMoreStockHistory: () => Promise<void>;
   loadInitialHistory: () => Promise<void>;
   refreshHistory: (silent?: boolean) => Promise<void>;
   refreshHistoryForCompletedTask: (task: TaskInfo) => Promise<void>;
+  recordTaskReuse: (task: TaskInfo) => Promise<void>;
   loadMoreHistory: () => Promise<void>;
   loadMarketReviewHistory: () => Promise<void>;
   refreshMarketReviewHistory: (silent?: boolean) => Promise<void>;
@@ -162,6 +168,7 @@ const initialState = {
     model: 'all',
     sort: 'desc' as const,
   },
+  analysisReuse: {} as Record<string, AnalysisReuseInfo>,
   activeTasks: [] as TaskInfo[],
   markdownDrawerOpen: false,
   stockBarItems: [] as StockBarItem[],
@@ -193,6 +200,7 @@ function buildStockHistoryParams(stockCode: string, page: number, filters: Stock
     reportType?: 'market_review';
     startDate?: string;
     endDate?: string;
+    mineOnly?: boolean;
     page: number;
     limit: number;
   } = {
@@ -211,6 +219,10 @@ function buildStockHistoryParams(stockCode: string, page: number, filters: Stock
   } else if (filters.range === '90d') {
     params.startDate = getRecentStartDate(90);
     params.endDate = getTodayInShanghai();
+  }
+
+  if (filters.mineOnly) {
+    params.mineOnly = true;
   }
 
   return params;
@@ -662,6 +674,18 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     }
   },
 
+  setStockHistoryMineOnly: async (mineOnly) => {
+    set({
+      stockHistoryFilters: {
+        ...get().stockHistoryFilters,
+        mineOnly,
+      },
+    });
+    if (get().isHistoryTrendOpen) {
+      await fetchStockHistory(get, set, { reset: true });
+    }
+  },
+
   loadMoreStockHistory: async () => {
     const state = get();
     if (!state.isHistoryTrendOpen || state.isLoadingMoreStockHistory || !state.stockHistoryHasMore) {
@@ -678,7 +702,33 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     await fetchHistory(get, set, { reset: true, silent });
   },
 
+  recordTaskReuse: async (task) => {
+    if (task.reportType === 'market_review') {
+      return;
+    }
+    try {
+      const status = await analysisApi.getStatus(task.taskId);
+      const result = status.result;
+      if (!result?.queryId || (!result.reused && !result.metadataReusedFrom)) {
+        return;
+      }
+      set({
+        analysisReuse: {
+          ...get().analysisReuse,
+          [result.queryId]: {
+            reused: result.reused === true,
+            reusedReportId: result.reusedReportId ?? null,
+            metadataReusedFrom: result.metadataReusedFrom ?? null,
+          },
+        },
+      });
+    } catch {
+      // Best effort: the reuse badges are informational, the report itself is unaffected.
+    }
+  },
+
   refreshHistoryForCompletedTask: async (task) => {
+    void get().recordTaskReuse(task);
     await fetchHistory(get, set, {
       reset: true,
       silent: true,
@@ -892,6 +942,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     const originalQuery = (options?.originalQuery ?? state.query).trim();
     const notify = options?.notify ?? state.notify;
     const forceRefresh = options?.forceRefresh ?? false;
+    const forceRegenerate = options?.forceRegenerate ?? false;
     const skills = options?.skills;
 
     if (!stockCodeInput) {
@@ -931,6 +982,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         selectionSource,
         notify,
         forceRefresh,
+        ...(forceRegenerate && { forceRegenerate: true }),
         skills,
         ...(options?.reportLanguage !== undefined && { reportLanguage: options.reportLanguage }),
       });

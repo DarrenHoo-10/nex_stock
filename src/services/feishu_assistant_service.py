@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
 
+from src.config import get_primary_user_id
 from src.services.assistant_note_service import (
     GLOBAL_PAGE_TITLE,
     NOTE_TITLE_MAX_CHARS,
@@ -128,6 +129,7 @@ class FeishuAssistantService:
         try:
             executor, turn, accepted, clarification = _prepare_chat_request(
                 ChatRequest(message=text, session_id=session_id), config, session_id, session_service,
+                get_primary_user_id(),  # the Feishu bot acts as the primary user
             )
             if clarification is not None:
                 result = _clarification_result(session_service, accepted, clarification, backend_id)
@@ -151,7 +153,7 @@ class FeishuAssistantService:
     # -- memory: 记住 / 确认 / 取消 ---------------------------------------
 
     def _notes(self) -> AssistantNoteService:
-        return AssistantNoteService(self._get_db(), config=self._config)
+        return AssistantNoteService(self._get_db(), config=self._config, user_id=get_primary_user_id())
 
     def _handle_memory(self, session_id: str, text: str) -> Optional[AssistantAnswer]:
         normalized = text.strip(_TRAILING_PUNCT)
@@ -231,7 +233,7 @@ class FeishuAssistantService:
         try:
             from src.services.agent_chat_session_service import AgentChatSessionService
 
-            active = AgentChatSessionService(self._get_db()).get_session_detail(session_id, 0).active_stock_context
+            active = AgentChatSessionService(self._get_db()).get_session_detail(session_id, 0, get_primary_user_id()).active_stock_context
         except Exception as exc:
             logger.debug("[Feishu Assistant] active stock lookup failed: %s", exc)
             active = None

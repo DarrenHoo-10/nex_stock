@@ -36,6 +36,16 @@ from src.agent.provider_trace import (
     trace_model_matches,
 )
 from src.llm.errors import call_litellm_with_param_recovery
+from src.llm.credentials_guard import (
+    ModelKeyRequiredError,
+    UnsafeUrlError,
+    harden_user_model_list,
+    is_user_view,
+    require_explicit_credentials,
+    user_call_scope,
+    validate_user_deployments,
+    validate_user_endpoints,
+)
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
     GENERATION_ONLY_BACKEND_IDS,
@@ -481,7 +491,7 @@ class LLMToolAdapter:
                 logger.warning("Agent LLM: no Agent-safe channel deployments after Hermes filtering")
                 return
             self._router = Router(
-                model_list=model_list,
+                model_list=harden_user_model_list(config, model_list),
                 routing_strategy="simple-shuffle",
                 num_retries=2,
             )
@@ -519,7 +529,7 @@ class LLMToolAdapter:
             ]
             self._legacy_router_model_list = legacy_model_list
             self._router = Router(
-                model_list=legacy_model_list,
+                model_list=harden_user_model_list(config, legacy_model_list),
                 routing_strategy="simple-shuffle",
                 num_retries=2,
             )
@@ -608,6 +618,15 @@ class LLMToolAdapter:
             )
             logger.error(error_msg)
             return LLMResponse(content=error_msg, provider="error")
+        if is_user_view(config):
+            # A non-primary user's Router only holds their own deployments; make sure each is an allowed route
+            # with its own key and that the endpoints still resolve to public hosts.
+            try:
+                validate_user_deployments(config)
+                validate_user_endpoints(config)
+            except (ModelKeyRequiredError, UnsafeUrlError) as exc:
+                logger.error("Agent LLM refused for user view: %s", exc.message)
+                return LLMResponse(content=exc.message, provider="error")
         route_resolution = resolve_agent_litellm_route(config)
         models_to_try = route_resolution.models_to_try
         if not models_to_try:
@@ -770,35 +789,41 @@ class LLMToolAdapter:
         register_fallback_model_pricing(
             resolve_fallback_litellm_wire_models(model, recovery_model_list)
         )
+        # A user view's request never follows a redirect (user_call_scope); the system config is unchanged.
         if use_channel_router and self._router and model in _router_model_names:
             # Channel / YAML path: Router manages all models in its model_list
-            response = call_litellm_with_param_recovery(
-                lambda kwargs: self._router.completion(**kwargs),
-                model=model,
-                call_kwargs=call_kwargs,
-                model_list=recovery_model_list,
-                logger=logger,
-            )
+            with user_call_scope(self._config):
+                response = call_litellm_with_param_recovery(
+                    lambda kwargs: self._router.completion(**kwargs),
+                    model=model,
+                    call_kwargs=call_kwargs,
+                    model_list=recovery_model_list,
+                    logger=logger,
+                )
         elif self._router and model == agent_primary_model and not use_channel_router:
             # Legacy path: Router for primary model multi-key
-            response = call_litellm_with_param_recovery(
-                lambda kwargs: self._router.completion(**kwargs),
-                model=model,
-                call_kwargs=call_kwargs,
-                model_list=recovery_model_list,
-                logger=logger,
-            )
+            with user_call_scope(self._config):
+                response = call_litellm_with_param_recovery(
+                    lambda kwargs: self._router.completion(**kwargs),
+                    model=model,
+                    call_kwargs=call_kwargs,
+                    model_list=recovery_model_list,
+                    logger=logger,
+                )
         else:
             # Legacy/direct-env path: direct call (also handles direct-env
             # providers like groq/ or bedrock/ that are not in the Router
-            # model_list even when channel mode is active)
-            response = call_litellm_with_param_recovery(
-                lambda kwargs: litellm.completion(**kwargs),
-                model=model,
-                call_kwargs=call_kwargs,
-                model_list=recovery_model_list,
-                logger=logger,
-            )
+            # model_list even when channel mode is active). A non-primary user must send an allowed route
+            # with their own key: without one LiteLLM would read the provider variables of the server's environment.
+            require_explicit_credentials(self._config, call_kwargs, model=model)
+            with user_call_scope(self._config):
+                response = call_litellm_with_param_recovery(
+                    lambda kwargs: litellm.completion(**kwargs),
+                    model=model,
+                    call_kwargs=call_kwargs,
+                    model_list=recovery_model_list,
+                    logger=logger,
+                )
 
         return self._parse_litellm_response(
             response,

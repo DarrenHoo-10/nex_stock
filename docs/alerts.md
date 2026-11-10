@@ -6,7 +6,7 @@
 
 当前运行时告警由 `src/services/alert_worker.py` 中的后台 worker 统一调度，底层规则评估复用 `src/services/alert_service.py` 与 `src/agent/events.py` 中的 EventMonitor 规则模型。
 
-- 配置入口：`AGENT_EVENT_MONITOR_ENABLED`、`AGENT_EVENT_MONITOR_INTERVAL_MINUTES`、`AGENT_EVENT_ALERT_RULES_JSON`。
+- 配置入口：`AGENT_EVENT_MONITOR_ENABLED`、`AGENT_EVENT_MONITOR_INTERVAL_MINUTES`、`AGENT_EVENT_ALERT_RULES_JSON`、`ALERT_MAX_ENABLED_RULES_PER_USER`（每用户启用规则上限，见文末「多用户数据范围」）。
 - 运行入口：`main.py` 在 schedule 模式中注册 `agent_event_monitor` 后台任务；后台 worker 每轮读取持久化 active rules，并继续兼容 legacy `AGENT_EVENT_ALERT_RULES_JSON`。
 - 通知投递：触发后复用 `NotificationService.send(..., route_type="alert")`，继续遵守通知网关的 alert 路由配置。
 - Web/System 配置校验：`src/services/system_config_service.py` 会对 `AGENT_EVENT_ALERT_RULES_JSON` 做 JSON 与规则语义校验。
@@ -283,7 +283,7 @@ P6 在现有 Alert API、Web 告警中心和 `src/services/alert_worker.py` 评�
 | `target_scope` | `target` | 允许的 `alert_type` | 评估方式 |
 | --- | --- | --- | --- |
 | `single_symbol` | 股票代码 | P1 三类价格/成交量规则 + P5 技术指标 | 单规则单标的 |
-| `watchlist` | `default` | P1 三类价格/成交量规则 + P5 技术指标 | 每轮刷新并读取当前 `STOCK_LIST`，按股票代码展开 |
+| `watchlist` | `default` | P1 三类价格/成交量规则 + P5 技术指标 | 每轮读取规则所属用户的自选（主用户为 `.env` 的 `STOCK_LIST`，其他用户为 `user_watchlist`），按股票代码展开 |
 | `portfolio_holdings` | `all` 或 active account ID | P1 三类价格/成交量规则 + P5 技术指标 | 从持仓 snapshot 的非零持仓展开 symbol，按 symbol 去重 |
 | `portfolio_account` | `all` 或 active account ID | `portfolio_stop_loss`、`portfolio_concentration`、`portfolio_drawdown`、`portfolio_price_stale` | 账户级风险评估，不展开为单标的 |
 
@@ -351,7 +351,7 @@ P6 不做：
 - `analysis_context_pack_overview` 只来自 evaluator 已带 overview 或最近 30 天内的历史 snapshot。最近历史查询复用历史服务的代码变体候选，并以 best-effort + 批内短缓存方式执行；缺失或解析失败返回 `null`，不伪造 pack。
 - 告警通知只输出公开摘要：阶段标签、trigger source、partial-bar warning、数据质量等级和前两条 limitations。通知不得输出 raw context pack、Prompt、新闻正文、完整 diagnostics JSON、webhook URL、token 或持仓敏感细节。
 - Web 告警历史展示 phase badge、数据质量等级和 limitations 空态；旧触发记录缺少公开摘要时不影响列表读取。
-- #1390 P6 进一步复用 `DecisionSignal`：股票级真实触发会优先关联同标的 latest active 信号，并把低敏 `decision_signal_summary` 写入 diagnostics；无 active 信号时只创建最小 `source_type=alert/action=alert` 信号。`trace_id=alert-rule-<hash>` 只用于同源重试的 best-effort 幂等去重，不覆盖 active 信号；新建告警信号不写 `market_phase`，避免同一规则跨阶段重复创建。`market`、`portfolio_account`、overflow 或无法解析为具体股票的触发不会创建个股信号。
+- #1390 P6 进一步复用 `DecisionSignal`：股票级真实触发会优先关联同标的 latest active 信号，并把低敏 `decision_signal_summary` 写入 diagnostics；无 active 信号时只创建最小 `source_type=alert/action=alert` 信号。信号和读取 latest active 信号 / 最近报告上下文都以**规则所有者**的身份（`RuntimeAlertRule.user_id`）：非主用户的规则、以及任何人的 `portfolio_holdings` 规则（`watch_conditions` 含「持仓 - 代码」）创建的信号 `owner_user_id` 为所有者，只有所有者能读，不进入共享信号池。`trace_id=alert-rule-<hash>` 只用于同源重试的 best-effort 幂等去重，不覆盖 active 信号；新建告警信号不写 `market_phase`，避免同一规则跨阶段重复创建。`market`、`portfolio_account`、overflow 或无法解析为具体股票的触发不会创建个股信号。
 
 DecisionSignal 字段、脱敏、迁移与回滚边界见 [DecisionSignal 决策信号专题](decision-signals.md)。
 
@@ -437,6 +437,17 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 真实触发后会写入 `alert_notifications` 和 `alert_cooldowns`；DB 持久化规则按 `rule_id + target + data_source + data_timestamp` 对同一数据点做 best-effort 去重。legacy JSON 规则继续只使用进程内 fingerprint，不写持久化冷却。
 
 回滚 P8 只需 revert 文档、配置说明和 Web 文案改动；没有数据库迁移或用户数据清理。回滚早期 Phase 时，已创建的持久化规则不会自动删除，按下方 Phase 回滚说明处理。
+
+## 多用户数据范围（docs/design/multi-user.md，P2a）
+
+- 告警规则按用户隔离：`alert_rules.user_id` 标记归属，`/api/v1/alerts/*` 的规则、触发历史、通知记录和冷却状态只返回当前登录用户的数据；访问别人的规则 id 返回 404（与规则不存在时的响应体一致），客户端不传 `user_id`。
+- 触发、通知、冷却记录没有自己的 `user_id` 列，只能通过所属规则访问；删除规则会同时删除这些记录，避免 SQLite 复用 id 后挂到别人的新规则上。
+- `watchlist` / `portfolio_holdings` / `portfolio_account` 规则展开的是规则所有者的自选股和持仓账户（创建 `portfolio_*` 规则时校验账户属于当前用户）。
+- Worker 仍评估所有用户的启用规则，但 P2 阶段通知渠道只有 `.env` 里的那一份：只有主用户（`PRIMARY_USER_ID`）的规则会走现有渠道和冷却；其他用户的规则只写触发记录，并追加一条 `__no_channel__` 通知记录（该用户暂无个人渠道），不会推到主用户的渠道。按用户推送在 P3。
+- `AGENT_EVENT_ALERT_RULES_JSON`（legacy `.env` 规则）、没有 `rule_id` 的触发记录属于主用户；`rule_sources` 只对主用户返回非零值。
+- 不同用户的同名、同参数规则互不去重、互不触发冷却（非主用户的去重 key 带用户前缀）。
+- 每个用户可同时启用的规则数有上限 `ALERT_MAX_ENABLED_RULES_PER_USER`（默认 200，范围 1-1000，写在 `.env`，管理员级设置，不进设置页）：创建启用的规则、启用已停用的规则（`POST /rules/{id}/enable` 或 `PATCH` 带 `enabled: true`）超限时返回 400，`error` 为 `rule_limit_exceeded`；停用的规则不计数，编辑已启用的规则不受影响。Worker 每轮对每个用户各取最近更新的这么多条启用规则，规则展开后的运行时条数上限（代码常量 `ALERT_WORKER_RULE_LIMIT`，1000）也是按用户计算，所以一个用户的大量规则不会把别人的规则挤出评估。把上限调低后，已经超出的存量规则不会被删除或停用，但 Worker 只评估最近更新的前 N 条。
+- 升级到 P2a 时，迁移会删除孤儿提醒历史（所属规则已不存在的触发、冷却记录，以及所属触发已不存在的通知记录），否则它们会被之后复用同一个 id 的新规则继承；`.env` 兼容规则产生的、没有 `rule_id` 的记录保留。迁移前会先备份数据库。
 
 ## Phase 边界
 

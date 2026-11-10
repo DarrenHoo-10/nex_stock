@@ -919,6 +919,7 @@ class BacktestService:
                     and_(
                         BacktestResult.eval_window_days == eval_window_days,
                         BacktestResult.engine_version == engine_version,
+                        BacktestRepository.shared_result_condition(),
                     )
                 )
             ).scalars().all()
@@ -944,6 +945,7 @@ class BacktestService:
                             *code_conditions,
                             BacktestResult.eval_window_days == eval_window_days,
                             BacktestResult.engine_version == engine_version,
+                            BacktestRepository.shared_result_condition(),
                         )
                     )
                 ).scalars().all()

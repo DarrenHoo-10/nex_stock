@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { CurrentUserProvider } from '../../test-utils/currentUser';
+import { adminUser, regularUser } from '../../test-utils/currentUserFixtures';
+import type { CurrentUser } from '../../types/me';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import BacktestPage from '../BacktestPage';
 
@@ -404,5 +407,41 @@ describe('BacktestPage', () => {
     expect(screen.getByText('实际表现')).toBeInTheDocument();
     expect(screen.getByText('准确性')).toBeInTheDocument();
     expect(screen.getByText('1 日验证模式会用下一个交易日收盘表现校验 AI 预测。')).toBeInTheDocument();
+  });
+});
+
+describe('BacktestPage run action by role', () => {
+  function renderAs(user: CurrentUser | null) {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    return render(
+      <UiLanguageProvider>
+        <CurrentUserProvider user={user}>
+          <BacktestPage />
+        </CurrentUserProvider>
+      </UiLanguageProvider>,
+    );
+  }
+
+  it('hides the run controls from a regular user but still shows the results', async () => {
+    renderAs(regularUser);
+
+    expect(await screen.findByText('贵州茅台')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '运行回测' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '强制重跑' })).toBeNull();
+    expect(screen.getByTestId('backtest-run-admin-only')).toBeInTheDocument();
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an administrator', adminUser],
+    ['local mode', null],
+  ])('keeps the run controls for %s', async (_label, user) => {
+    renderAs(user);
+
+    fireEvent.click(await screen.findByRole('button', { name: '运行回测' }));
+
+    await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: '强制重跑' })).toBeInTheDocument();
+    expect(screen.queryByTestId('backtest-run-admin-only')).toBeNull();
   });
 });

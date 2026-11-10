@@ -24,7 +24,7 @@ except ModuleNotFoundError:
 
 import src.auth as auth
 from api.app import create_app
-from src.config import Config
+from src.config import Config, get_primary_user_id
 from src.repositories.alert_repo import AlertRepository
 from src.repositories.portfolio_repo import PortfolioRepository
 from src.services.alert_service import AlertService
@@ -395,6 +395,7 @@ class AlertApiTestCase(unittest.TestCase):
         now_dt = datetime.now()
         cooldown_until = now_dt + timedelta(minutes=5)
         repo.upsert_cooldown(
+            get_primary_user_id(),
             rule_id=created["id"],
             rule_key="single_symbol:600519:price_cross:{}",
             target="600519",
@@ -413,6 +414,7 @@ class AlertApiTestCase(unittest.TestCase):
 
         expired_at = datetime.now() - timedelta(minutes=5)
         repo.upsert_cooldown(
+            get_primary_user_id(),
             rule_id=created["id"],
             rule_key="single_symbol:600519:price_cross:{}",
             target="600519",
@@ -700,6 +702,7 @@ class AlertApiTestCase(unittest.TestCase):
         now_dt = datetime.now()
         cooldown_until = now_dt + timedelta(minutes=5)
         repo.upsert_cooldown(
+            get_primary_user_id(),
             rule_id=created["id"],
             rule_key="portfolio_account:all:portfolio_drawdown:{}|account:all",
             target="account:all",
@@ -1179,8 +1182,14 @@ class AlertApiTestCase(unittest.TestCase):
 
     def test_alert_cooldown_upsert_keeps_one_row_per_rule_target_severity(self) -> None:
         repo = AlertRepository(self.db)
+        owner = get_primary_user_id()
+        rule = repo.create_rule(owner, {
+            "name": "cooldown owner", "target_scope": "single_symbol", "target": "600519",
+            "alert_type": "price_cross", "parameters": "{}",
+        })
         first = repo.upsert_cooldown(
-            rule_id=1,
+            owner,
+            rule_id=rule.id,
             rule_key="single_symbol:600519:price_cross:{}",
             target="600519",
             severity="warning",
@@ -1189,7 +1198,8 @@ class AlertApiTestCase(unittest.TestCase):
             reason="first trigger",
         )
         second = repo.upsert_cooldown(
-            rule_id=1,
+            owner,
+            rule_id=rule.id,
             rule_key="single_symbol:600519:price_cross:{}",
             target="600519",
             severity="warning",

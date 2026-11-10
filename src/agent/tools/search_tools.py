@@ -8,6 +8,7 @@ Tools:
 """
 
 import logging
+from typing import Optional
 
 from src.agent.news_evidence import record_news_evidence
 from src.agent.tools.execution import get_tool_stock_identity
@@ -37,10 +38,29 @@ def _get_db():
     return get_db()
 
 
-def _get_search_service():
-    """Return shared SearchService singleton."""
+def _get_search_service(user_id: Optional[str] = None):
+    """Return the SearchService of the acting user.
+
+    The primary user (and context-less callers) share the process-wide service built from ``.env``. Every
+    other user searches with their own keys only; without any, the service reports ``is_available == False``
+    and the tool answers "no search engine" instead of spending the system's search quota.
+    """
     from src.search_service import get_search_service
-    return get_search_service()
+
+    if not user_id:
+        return get_search_service()
+    from src.services.user_config_service import resolve_user_config
+
+    return get_search_service(resolve_user_config(user_id))
+
+
+def _acting_search_service(user_id: Optional[str]):
+    """Shared service for the primary user / no user context, the user's own one for everybody else."""
+    from src.config import get_primary_user_id
+
+    if user_id and user_id != get_primary_user_id():
+        return _get_search_service(user_id)
+    return _get_search_service()
 
 
 def _canonical_search_code(stock_code: str) -> str:
@@ -108,9 +128,9 @@ def _persist_news_response(
         )
 
 
-def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
+def _handle_search_stock_news(stock_code: str, stock_name: str, user_id: Optional[str] = None) -> dict:
     """Search latest news for a stock."""
-    service = _get_search_service()
+    service = _acting_search_service(user_id)
     query_code, query_name = _resolve_search_subject(stock_code, stock_name)
 
     if not service.is_available:
@@ -174,6 +194,7 @@ search_stock_news_tool = ToolDefinition(
     ],
     handler=_handle_search_stock_news,
     category="search",
+    user_scoped=True,  # searches with the acting user's own keys (see _get_search_service)
     policy=_NEWS_READ_POLICY,
 )
 
@@ -182,9 +203,9 @@ search_stock_news_tool = ToolDefinition(
 # search_comprehensive_intel
 # ============================================================
 
-def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict:
+def _handle_search_comprehensive_intel(stock_code: str, stock_name: str, user_id: Optional[str] = None) -> dict:
     """Multi-dimensional intelligence search."""
-    service = _get_search_service()
+    service = _acting_search_service(user_id)
     query_code, query_name = _resolve_search_subject(stock_code, stock_name)
 
     if not service.is_available:
@@ -258,6 +279,7 @@ search_comprehensive_intel_tool = ToolDefinition(
     ],
     handler=_handle_search_comprehensive_intel,
     category="search",
+    user_scoped=True,  # searches with the acting user's own keys (see _get_search_service)
     policy=_INTEL_READ_POLICY,
 )
 
@@ -315,7 +337,7 @@ def _pool_news_hits(terms: list, days: int) -> list:
     return hits
 
 
-def _handle_search_market_news(keyword: str, days: int = 3) -> dict:
+def _handle_search_market_news(keyword: str, days: int = 3, user_id: Optional[str] = None) -> dict:
     """Market / theme news for a keyword: stored news pool first, web topic search as a fallback."""
     terms = _market_news_terms(keyword)
     if not terms:
@@ -336,7 +358,7 @@ def _handle_search_market_news(keyword: str, days: int = 3) -> dict:
     result["pool_results"] = pool_hits
 
     if len(pool_hits) < _MARKET_NEWS_MIN_POOL_HITS:
-        service = _get_search_service()
+        service = _acting_search_service(user_id)
         if not service.is_available:
             result["web_error"] = "未配置搜索引擎"
         else:
@@ -382,6 +404,7 @@ search_market_news_tool = ToolDefinition(
     ],
     handler=_handle_search_market_news,
     category="search",
+    user_scoped=True,  # searches with the acting user's own keys (see _get_search_service)
     policy=_MARKET_NEWS_POLICY,
 )
 

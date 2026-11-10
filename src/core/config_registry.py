@@ -76,6 +76,10 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     # are deployment-level values edited in .env, never through the settings form.
     "PRIMARY_USER_ID",
     "USER_SECRET_KEY",
+    # Per-user cap on enabled alert rules: a deployment-level fairness limit, edited in .env.
+    "ALERT_MAX_ENABLED_RULES_PER_USER",
+    # Per-user cap on concurrently running async analysis tasks (fair queue): a deployment-level fairness limit.
+    "ANALYSIS_MAX_CONCURRENT_PER_USER",
     # Optional FXMacroData authorization is read from the process environment
     # when a tool runs; it is not a Web settings or model-input field.
     "FXMACRODATA_API_KEY",
@@ -5169,6 +5173,11 @@ _USER_SCOPE_KEYS = frozenset({
 _DYNAMIC_LLM_CHANNEL_KEY_RE = re.compile(
     r"^LLM_[A-Z0-9]+(?:_[A-Z0-9]+)*_(?:API_KEYS?|BASE_URL|MODELS|PROTOCOL|API_SURFACE|ENABLED|EXTRA_HEADERS)$"
 )
+
+
+def get_user_scope_keys() -> frozenset:
+    """Every explicitly user-scoped key (registered or not); dynamic ``LLM_<NAME>_*`` keys are matched by pattern."""
+    return _USER_SCOPE_KEYS
 
 
 def infer_config_scope(key: str) -> str:

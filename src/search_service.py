@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Sequence, Tuple
 from itertools import cycle
 from urllib.parse import parse_qsl, unquote, urlparse
 import requests
@@ -43,7 +43,9 @@ from src.data.stock_mapping import (
     canonicalize_foreign_stock_code,
     foreign_stock_english_aliases,
 )
+from src.llm.credentials_guard import config_user_id, is_user_view
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
+from src.utils.url_safety import NO_REDIRECT_REQUESTS_KWARGS, is_public_https_url
 
 logger = logging.getLogger(__name__)
 
@@ -195,10 +197,10 @@ def _post_with_retry(url: str, *, headers: Dict[str, str], json: Dict[str, Any],
     reraise=True,
 )
 def _get_with_retry(
-    url: str, *, headers: Dict[str, str], params: Dict[str, Any], timeout: int
+    url: str, *, headers: Dict[str, str], params: Dict[str, Any], timeout: int, **request_options: Any
 ) -> requests.Response:
-    """GET with retry on transient SSL/network errors."""
-    return requests.get(url, headers=headers, params=params, timeout=timeout)
+    """GET with retry on transient SSL/network errors (``request_options`` go to ``requests.get`` as given)."""
+    return requests.get(url, headers=headers, params=params, timeout=timeout, **request_options)
 
 
 def fetch_url_content(url: str, timeout: int = 5) -> str:
@@ -1859,10 +1861,14 @@ class SearXNGSearchProvider(BaseSearchProvider):
         *,
         use_public_instances: bool = False,
         self_hosted_timeout_seconds: Optional[int] = None,
+        follow_redirects: bool = True,
     ):
         normalized_base_urls = [url.rstrip("/") for url in (base_urls or []) if url.strip()]
         super().__init__(normalized_base_urls, "SearXNG")
         self._base_urls = normalized_base_urls
+        # False for a non-primary user's service: their instance URLs (and the public instance list) are not
+        # trusted, and a redirect must not carry the request to another host (src/utils/url_safety.py).
+        self._request_options = {} if follow_redirects else dict(NO_REDIRECT_REQUESTS_KWARGS)
         if self_hosted_timeout_seconds and int(self_hosted_timeout_seconds) > 0:
             self._self_hosted_timeout_seconds = int(self_hosted_timeout_seconds)
         else:
@@ -2058,7 +2064,9 @@ class SearXNGSearchProvider(BaseSearchProvider):
             }
 
             request_get = _get_with_retry if retry_enabled else requests.get
-            response = request_get(search_url, headers=headers, params=params, timeout=timeout)
+            response = request_get(
+                search_url, headers=headers, params=params, timeout=timeout, **self._request_options
+            )
 
             if response.status_code != 200:
                 error_msg = self._parse_http_error(response)
@@ -2414,6 +2422,7 @@ class SearchService:
         searxng_timeout_seconds: Optional[int] = None,
         news_max_age_days: int = 3,
         news_strategy_profile: str = "short",
+        searxng_follow_redirects: bool = True,
     ):
         """
         初始化搜索服务
@@ -2427,6 +2436,7 @@ class SearchService:
             minimax_keys: MiniMax API Key 列表
             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
+            searxng_follow_redirects: 是否跟随 SearXNG 实例的重定向；非主用户（地址由用户填写）一律 False
             news_max_age_days: 新闻最大时效（天）
             news_strategy_profile: 新闻窗口策略档位（ultra_short/short/medium/long）
         """
@@ -2442,6 +2452,7 @@ class SearchService:
             "searxng_timeout_seconds": searxng_timeout_seconds,
             "news_max_age_days": int(news_max_age_days),
             "news_strategy_profile": news_strategy_profile,
+            "searxng_follow_redirects": bool(searxng_follow_redirects),
         }
         self._providers: List[BaseSearchProvider] = []
         self.news_max_age_days = max(1, news_max_age_days)
@@ -2492,6 +2503,7 @@ class SearchService:
             searxng_base_urls,
             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
             self_hosted_timeout_seconds=searxng_timeout_seconds,
+            follow_redirects=searxng_follow_redirects,
         )
         if searxng_provider.is_available:
             self._providers.append(searxng_provider)
@@ -4903,32 +4915,74 @@ class SearchService:
 # === 便捷函数 ===
 _search_service: Optional[SearchService] = None
 _search_service_lock = threading.Lock()
+# One service per non-primary user view: (config view it was built from, searxng urls, service).
+_user_search_services: Dict[str, Tuple[Any, Tuple[str, ...], SearchService]] = {}
 
 
-def get_search_service() -> SearchService:
-    """获取搜索服务单例"""
+def searxng_urls_for_config(config: Any) -> List[str]:
+    """SearXNG instances ``config`` may call.
+
+    The system config is trusted as-is. A non-primary user's instances are URLs they typed, so each one is
+    re-checked right now (public https host, DNS answer included - it may have changed since the setting was
+    saved) and an unsafe one is dropped; the user then simply has fewer search providers.
+    """
+    urls = list(getattr(config, "searxng_base_urls", None) or [])
+    if not is_user_view(config):
+        return urls
+    safe: List[str] = []
+    for url in urls:
+        if is_public_https_url(url):
+            safe.append(url)
+        else:
+            logger.warning("Skipping SearXNG instance of user %s: not a public https URL", config_user_id(config))
+    return safe
+
+
+def _build_search_service(config: Any, searxng_urls: Sequence[str]) -> SearchService:
+    return SearchService(
+        bocha_keys=config.bocha_api_keys,
+        tavily_keys=config.tavily_api_keys,
+        anspire_keys=config.anspire_api_keys,
+        brave_keys=config.brave_api_keys,
+        serpapi_keys=config.serpapi_keys,
+        minimax_keys=config.minimax_api_keys,
+        searxng_base_urls=list(searxng_urls),
+        searxng_public_instances_enabled=config.searxng_public_instances_enabled,
+        searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
+        news_max_age_days=config.news_max_age_days,
+        news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
+        searxng_follow_redirects=not is_user_view(config),
+    )
+
+
+def get_search_service(config: Any = None) -> SearchService:
+    """获取搜索服务单例
+
+    ``config=None`` (or the system config) returns the process-wide service built from ``.env``. A non-primary
+    user's view returns that user's own service (their keys only; without any search key it reports
+    ``is_available == False`` and callers skip realtime search), cached per view.
+    """
     global _search_service
-    
+
+    if config is not None and is_user_view(config):
+        user_id = config_user_id(config)
+        urls = tuple(searxng_urls_for_config(config))
+        with _search_service_lock:
+            cached = _user_search_services.get(user_id)
+            if cached is not None and cached[0] is config and cached[1] == urls:
+                return cached[2]
+        service = _build_search_service(config, urls)
+        with _search_service_lock:
+            _user_search_services[user_id] = (config, urls, service)
+        return service
+
     if _search_service is None:
         with _search_service_lock:
             if _search_service is None:
                 from src.config import get_config
-                config = get_config()
-                
-                _search_service = SearchService(
-                    bocha_keys=config.bocha_api_keys,
-                    tavily_keys=config.tavily_api_keys,
-                    anspire_keys=config.anspire_api_keys,
-                    brave_keys=config.brave_api_keys,
-                    serpapi_keys=config.serpapi_keys,
-                    minimax_keys=config.minimax_api_keys,
-                    searxng_base_urls=config.searxng_base_urls,
-                    searxng_public_instances_enabled=config.searxng_public_instances_enabled,
-                    searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
-                    news_max_age_days=config.news_max_age_days,
-                    news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
-                )
-    
+                system_config = get_config()
+                _search_service = _build_search_service(system_config, system_config.searxng_base_urls)
+
     return _search_service
 
 
@@ -4937,6 +4991,7 @@ def reset_search_service() -> None:
     global _search_service
     with _search_service_lock:
         _search_service = None
+        _user_search_services.clear()
 
 
 if __name__ == "__main__":

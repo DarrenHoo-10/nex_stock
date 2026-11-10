@@ -678,13 +678,17 @@ class DataFetcherManager:
     _fundamental_timeout_lock = RLock()
     _fundamental_timed_out_workers: Dict[Tuple[str, str], int] = {}
 
-    def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
+    def __init__(self, fetchers: Optional[List[BaseFetcher]] = None, *, config: Optional[Any] = None):
         """
         初始化管理器
-        
+
         Args:
             fetchers: 数据源列表（可选，默认按优先级自动创建）
+            config: 用户配置视图（``get_user_config``）。给定时，数据源 Token / Key 取自该视图（用户没配的回退到
+                系统层，视图里已经处理），而数据源优先级、复权方式、超时等口径始终取系统配置，取到的数据照常进共享
+                缓存。不修改 ``os.environ`` 或任何全局单例；``None`` 与以前完全一样（全部取系统配置）
         """
+        self._credentials_config = config
         self._fetchers: List[BaseFetcher] = []
         self._fetchers_lock = RLock()
         self._fetchers_by_name: Dict[str, BaseFetcher] = {}
@@ -1487,7 +1491,8 @@ class DataFetcherManager:
         from src.config import get_config
 
         config = get_config()
-        api_key = (getattr(config, "tickflow_api_key", None) or "").strip()
+        credentials = getattr(self, "_credentials_config", None) or config
+        api_key = (getattr(credentials, "tickflow_api_key", None) or "").strip()
 
         if not hasattr(self, "_tickflow_lock") or self._tickflow_lock is None:
             self._tickflow_lock = RLock()
@@ -1824,6 +1829,11 @@ class DataFetcherManager:
         from .longbridge_fetcher import LongbridgeFetcher
         from .futu_fetcher import FutuFetcher
         config = get_config()
+        # 数据源凭据（Token / Key）可来自用户配置视图；其余一切口径（优先级、复权、批量、超时）始终取系统配置。
+        credentials = getattr(self, "_credentials_config", None)
+        user_credentials = credentials is not None
+        if credentials is None:
+            credentials = config
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
         tencent = TencentFetcher()
@@ -1833,13 +1843,22 @@ class DataFetcherManager:
         yfinance = YfinanceFetcher()
         optional_fetchers: List[BaseFetcher] = []
 
-        tushare_token = (getattr(config, "tushare_token", None) or "").strip()
+        tushare_token = (getattr(credentials, "tushare_token", None) or "").strip()
         if tushare_token:
-            optional_fetchers.append(TushareFetcher())  # 会根据 Token 配置自动调整优先级
+            if user_credentials:
+                # 用户自己的 Token：链路位置与系统配置一致（系统配了 Token 才提升为最高优先级）
+                optional_fetchers.append(
+                    TushareFetcher(
+                        token=tushare_token,
+                        boost_priority=bool((getattr(config, "tushare_token", None) or "").strip()),
+                    )
+                )
+            else:
+                optional_fetchers.append(TushareFetcher())  # 会根据 Token 配置自动调整优先级
         else:
             logger.debug("[数据源初始化] 跳过未配置的 TushareFetcher")
 
-        tickflow_api_key = (getattr(config, "tickflow_api_key", None) or "").strip()
+        tickflow_api_key = (getattr(credentials, "tickflow_api_key", None) or "").strip()
         if tickflow_api_key:
             optional_fetchers.append(
                 TickFlowFetcher(
@@ -1853,7 +1872,7 @@ class DataFetcherManager:
         else:
             logger.debug("[data source init] skip TickFlowFetcher because TICKFLOW_API_KEY is not configured")
 
-        biying_licence = getattr(config, "biying_licence", None)
+        biying_licence = getattr(credentials, "biying_licence", None)
         if isinstance(biying_licence, str) and biying_licence.strip():
             from .biying_fetcher import BiyingFetcher
 
@@ -1866,7 +1885,7 @@ class DataFetcherManager:
         else:
             logger.debug("[data source init] skip BiyingFetcher because BIYING_LICENCE is not configured")
 
-        mx_apikey = getattr(config, "mx_apikey", None)
+        mx_apikey = getattr(credentials, "mx_apikey", None)
         if not isinstance(mx_apikey, str):
             mx_apikey = ""
         mx_apikey = mx_apikey.strip()
@@ -1892,17 +1911,19 @@ class DataFetcherManager:
         else:
             logger.debug("[数据源初始化] 跳过未配置的 FutuFetcher")
 
-        finnhub_api_key = (getattr(config, "finnhub_api_key", None) or "").strip()
+        finnhub_api_key = (getattr(credentials, "finnhub_api_key", None) or "").strip()
         if finnhub_api_key:
             from .finnhub_fetcher import FinnhubFetcher
-            optional_fetchers.append(FinnhubFetcher())
+            optional_fetchers.append(FinnhubFetcher(api_key=finnhub_api_key) if user_credentials else FinnhubFetcher())
         else:
             logger.debug("[数据源初始化] 跳过未配置的 FinnhubFetcher")
 
-        alphavantage_api_key = (getattr(config, "alphavantage_api_key", None) or "").strip()
+        alphavantage_api_key = (getattr(credentials, "alphavantage_api_key", None) or "").strip()
         if alphavantage_api_key:
             from .alphavantage_fetcher import AlphaVantageFetcher
-            optional_fetchers.append(AlphaVantageFetcher())
+            optional_fetchers.append(
+                AlphaVantageFetcher(api_key=alphavantage_api_key) if user_credentials else AlphaVantageFetcher()
+            )
         else:
             logger.debug("[数据源初始化] 跳过未配置的 AlphaVantageFetcher")
 

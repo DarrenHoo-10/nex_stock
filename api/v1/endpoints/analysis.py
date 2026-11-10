@@ -30,7 +30,7 @@ from typing import Optional, Union, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from api.deps import get_config_dep, require_admin
+from api.deps import CurrentUser, get_config_dep, get_current_user, require_admin
 from api.v1.errors import api_error
 from api.v1.schemas.analysis import (
     AnalyzeRequest,
@@ -58,7 +58,9 @@ from api.v1.schemas.history import (
 from api.v1.schemas.run_flow import RunFlowSnapshot
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.data.stock_index_loader import resolve_index_stock_code
-from src.config import Config
+from src.config import Config, get_primary_user_id
+from src.llm.credentials_guard import ModelKeyRequiredError
+from src.utils.url_safety import UnsafeUrlError
 from src.core.market_review_lock import (
     MarketReviewExecutionLock as _MarketReviewExecutionLock,
     market_review_lock_path,
@@ -85,6 +87,7 @@ from src.services.task_queue import (
     get_task_queue,
     DuplicateTaskError,
     TaskStatus as TaskStatusEnum,
+    task_visible_to,
 )
 from src.services.analysis_service import asset_type_from_canonical_code
 from src.services.run_diagnostics import build_run_diagnostic_summary
@@ -105,6 +108,109 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SUPPORTED_FREE_TEXT_RE = re.compile(r"^[A-Za-z0-9.*\-+\u3400-\u9fff\s]+$")
+
+
+def _requester_user_id(user: Any) -> Optional[str]:
+    """The requester when it is a non-primary user, else ``None`` (the primary user is the system config).
+
+    Non-primary requests run with the requester's own config view. Whether they may start is decided per
+    request by :func:`_require_model_or_reusable_reports`: a model of their own, or every report already exists.
+    """
+    if not isinstance(user, CurrentUser) or user.user_id == get_primary_user_id():
+        return None
+    return user.user_id
+
+
+def _viewer_id(user: Any) -> Optional[str]:
+    """The requesting user's id for read scoping (``None`` for direct, non-HTTP calls without a resolved user)."""
+    return user.user_id if isinstance(user, CurrentUser) else None
+
+
+def _viewer_kwargs(user: Any) -> Dict[str, Any]:
+    """Queue read kwargs that limit task lists / stats to the requester's own tasks."""
+    viewer = _viewer_id(user)
+    return {"viewer_user_id": viewer} if viewer is not None else {}
+
+
+def _own_task(task_queue: Any, task_id: str, user: Any) -> Any:
+    """The task ``task_id`` when it exists and belongs to the requester, else ``None``.
+
+    Another user's task id behaves exactly like a missing one (no 403, no hint that it exists).
+    """
+    task = task_queue.get_task(task_id)
+    if task is not None and not task_visible_to(task, _viewer_id(user)):
+        return None
+    return task
+
+
+def _metadata_reuse_requested(request: Any) -> bool:
+    """Whether a (re-)analysis may take the already collected inputs of the same stock / trading date.
+
+    Only ``force_regenerate``/``force_refresh`` demand fresh data; every other request (holdings, another
+    strategy, a push request ...) that has to analyse again still skips the fetching of inputs that exist.
+    """
+    return getattr(request, "force_regenerate", False) is not True and getattr(request, "force_refresh", False) is not True
+
+
+def _reuse_requested(request: Any, *, is_primary: bool) -> bool:
+    """Whether a plain request may be answered directly from an existing shared report.
+
+    Direct reuse never applies to ``force_regenerate``/``force_refresh`` or an analysis phase override (they
+    change what the report says). Requested ``skills`` do not block it: the report must have been produced with
+    the same effective strategy set (matched by fingerprint in the lookup, together with the requester's own
+    ``AGENT_SKILLS``). A request that asks for a push notification (the primary user's default) always
+    generates: a reused report has nothing new to push.
+    """
+    if not _metadata_reuse_requested(request):
+        return False
+    if (getattr(request, "analysis_phase", "auto") or "auto") != "auto":
+        return False
+    if is_primary and getattr(request, "notify", True) is not False:
+        return False
+    return True
+
+
+def _require_model_or_reusable_reports(
+    user_id: Optional[str],
+    request: Any,
+    codes: list,
+    targets: list,
+) -> None:
+    """Gate in front of a non-primary analysis: they need a model of their own, or every report already exists.
+
+    A user with a usable model always passes (their endpoints are re-validated). A user without one passes only
+    when every requested stock has a shared report they could reuse *directly* (same effective strategy set,
+    model channel, language ...; no model call happens then); any miss, including a request that would only
+    reuse collected inputs, is refused with ``model_key_required``: re-analysing needs the user's own key.
+    """
+    if user_id is None:
+        return
+    from src.services.report_reuse_service import find_reusable_report
+    from src.services.user_config_service import get_user_config, has_usable_model, require_usable_model
+
+    config = get_user_config(user_id)
+    if has_usable_model(config):
+        require_usable_model(config)
+        return
+    if _reuse_requested(request, is_primary=False):
+        from src.enums import ReportType
+
+        report_type = ReportType.from_str(getattr(request, "report_type", "detailed")).value
+        language = normalize_report_language(getattr(request, "report_language", None), default="") or None
+        if codes and all(
+            find_reusable_report(
+                stock_code=code,
+                report_type=report_type,
+                config=config,
+                report_language=language,
+                analysis_target=targets[idx] if idx < len(targets) else None,
+                skills=getattr(request, "skills", None),
+            )
+            is not None
+            for idx, code in enumerate(codes)
+        ):
+            return
+    require_usable_model(config)  # raises ModelKeyRequiredError: no model of their own and nothing to reuse
 
 
 def _get_task_trace_id(task: Any) -> Optional[str]:
@@ -158,7 +264,7 @@ def _with_request_report_language(config: Config, report_language: Optional[str]
         return config
 
     scoped_config = copy.copy(config)
-    scoped_config.report_language = normalized
+    object.__setattr__(scoped_config, "report_language", normalized)
     return scoped_config
 
 
@@ -344,7 +450,8 @@ def _resolve_analysis_input(raw_value: str):
 )
 def trigger_analysis(
         request: AnalyzeRequest,
-        config: Config = Depends(get_config_dep)
+        config: Config = Depends(get_config_dep),
+        user: CurrentUser = Depends(get_current_user),
 ) -> Union[AnalysisResultResponse, JSONResponse]:
     """
     触发股票分析
@@ -369,6 +476,9 @@ def trigger_analysis(
         HTTPException: 409 - 股票正在分析中
         HTTPException: 500 - 分析失败
     """
+    # 非主用户任务按发起人的配置视图执行；是否能开跑（自己的模型 Key，或要的报告都已存在可复用）在下面核对
+    requester_id = _requester_user_id(user)
+
     # 校验请求参数
     stock_codes = []
     if request.stock_code:
@@ -430,6 +540,8 @@ def trigger_analysis(
         reason = target.unsupported_reason or f"不支持的目标: {code}"
         raise api_error(400, "validation_error", reason)
 
+    _require_model_or_reusable_reports(requester_id, request, stock_codes, unique_targets)
+
     # Sync mode only supports single-stock analysis.
     if not request.async_mode:
         if len(stock_codes) > 1:
@@ -444,10 +556,21 @@ def trigger_analysis(
             code, target = rejected_entries[0]
             reason = target.unsupported_reason or f"不支持的目标: {code}"
             raise api_error(400, "validation_error", reason)
-        return _handle_sync_analysis(stock_codes[0], request, analysis_target=unique_targets[0] if unique_targets else None)
+        return _handle_sync_analysis(
+            stock_codes[0], request,
+            analysis_target=unique_targets[0] if unique_targets else None,
+            user_id=requester_id,
+            allow_reuse=_reuse_requested(request, is_primary=requester_id is None),
+            reuse_metadata=_metadata_reuse_requested(request),
+        )
 
     # Async mode submits one task per stock.
-    return _handle_async_analysis_batch(stock_codes, request, analysis_targets=unique_targets, rejected_entries=rejected_entries)
+    return _handle_async_analysis_batch(
+        stock_codes, request, analysis_targets=unique_targets, rejected_entries=rejected_entries,
+        user_id=requester_id,
+        allow_reuse=_reuse_requested(request, is_primary=requester_id is None),
+        reuse_metadata=_metadata_reuse_requested(request),
+    )
 
 
 def _handle_async_analysis_batch(
@@ -455,6 +578,9 @@ def _handle_async_analysis_batch(
     request: AnalyzeRequest,
     analysis_targets: Optional[list] = None,
     rejected_entries: Optional[list] = None,
+    user_id: Optional[str] = None,
+    allow_reuse: bool = False,
+    reuse_metadata: bool = False,
 ) -> JSONResponse:
     """
     Handle asynchronous analysis requests, including batch submission.
@@ -467,6 +593,9 @@ def _handle_async_analysis_batch(
         rejected_entries: optional list of ``(code, target)`` pairs that were
             explicitly rejected (e.g. unregistered CSI); returned in the
             ``rejected`` field for batch requests only.
+        user_id: non-primary requester recorded on each task (``None`` = primary user).
+        allow_reuse: the worker may answer from an existing shared report instead of calling the model.
+        reuse_metadata: a worker that has to analyse may reuse the same-day inputs of an earlier analysis.
     """
     task_queue = get_task_queue()
     
@@ -499,6 +628,13 @@ def _handle_async_analysis_batch(
     )
     if report_language:
         submit_kwargs["report_language"] = report_language
+    if allow_reuse:
+        submit_kwargs["allow_reuse"] = True
+    if reuse_metadata:
+        submit_kwargs["reuse_metadata"] = True
+    if user_id:
+        submit_kwargs["user_id"] = user_id
+        submit_kwargs["notify"] = False  # personal accounts have no push channel; never use the system's
     if skills is not None:
         submit_kwargs["skills"] = skills
     # 仅当存在非 None 的结构化 target（如指数）时才传递，保持纯股票请求
@@ -586,6 +722,9 @@ def _handle_sync_analysis(
     stock_code: str,
     request: AnalyzeRequest,
     analysis_target: Optional[Any] = None,
+    user_id: Optional[str] = None,
+    allow_reuse: bool = False,
+    reuse_metadata: bool = False,
 ) -> AnalysisResultResponse:
     """
     处理同步分析请求
@@ -609,12 +748,17 @@ def _handle_sync_analysis(
             analysis_phase=request.analysis_phase,
             report_language=getattr(request, "report_language", None),
             analysis_target=analysis_target,
+            **({"user_id": user_id} if user_id else {}),
+            **({"allow_reuse": True} if allow_reuse else {}),
+            **({"reuse_metadata": True} if reuse_metadata else {}),
         )
 
         if result is None:
             error_message = service.last_error or f"分析股票 {stock_code} 失败"
             raise api_error(500, "analysis_failed", error_message)
 
+        # A reused report keeps its own query_id (the key of every history lookup)
+        query_id = result.get("query_id") or query_id
         # 构建报告结构
         report_data = result.get("report", {})
         context_snapshot, fundamental_snapshot, raw_result_snapshot = _load_sync_fundamental_sources(
@@ -638,10 +782,15 @@ def _handle_sync_analysis(
             stock_name=result.get("stock_name"),
             report=report.model_dump() if report else None,
             diagnostic_summary=result.get("diagnostic_summary"),
-            created_at=datetime.now().isoformat()
+            created_at=datetime.now().isoformat(),
+            **({"reused": True, "reused_report_id": result.get("reused_report_id")} if result.get("reused") else {}),
+            **(
+                {"metadata_reused_from": result.get("metadata_reused_from")}
+                if result.get("metadata_reused_from") else {}
+            ),
         )
 
-    except HTTPException:
+    except (HTTPException, ModelKeyRequiredError, UnsafeUrlError):
         raise
     except Exception as e:
         logger.error(f"分析失败: {e}", exc_info=True)
@@ -668,6 +817,7 @@ def _handle_sync_analysis(
 def trigger_market_review(
     request: Optional[MarketReviewRequest] = Body(None),
     config: Config = Depends(get_config_dep),
+    user: CurrentUser = Depends(get_current_user),
 ) -> MarketReviewAccepted:
     """Trigger market review from Web/API without blocking the request."""
     request = request or MarketReviewRequest()
@@ -703,6 +853,7 @@ def trigger_market_review(
             message="大盘复盘任务已提交",
             task_id=task_id,
             region=effective_region,
+            **({"user_id": _requester_user_id(user)} if _requester_user_id(user) else {}),
         )
     except Exception:
         _release_market_review_lock(lock_token)
@@ -737,6 +888,7 @@ def get_task_list(
         description="筛选状态：pending, processing, completed, failed, cancel_requested, cancelled（支持逗号分隔多个）"
     ),
     limit: int = Query(20, description="返回数量限制", ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> TaskListResponse:
     """
     获取分析任务列表
@@ -751,7 +903,7 @@ def get_task_list(
     task_queue = get_task_queue()
     
     # 获取所有任务
-    all_tasks = task_queue.list_all_tasks(limit=limit)
+    all_tasks = task_queue.list_all_tasks(limit=limit, **_viewer_kwargs(user))
     
     # 状态筛选
     if status:
@@ -759,7 +911,7 @@ def get_task_list(
         all_tasks = [t for t in all_tasks if t.status.value in status_list]
     
     # 统计信息
-    stats = task_queue.get_task_stats()
+    stats = task_queue.get_task_stats(**_viewer_kwargs(user))
     
     # 转换为 Schema
     task_infos = [
@@ -806,9 +958,9 @@ def get_task_list(
     summary="任务状态 SSE 流",
     description="通过 Server-Sent Events 实时推送任务状态变化"
 )
-async def task_stream():
+async def task_stream(user: CurrentUser = Depends(get_current_user)):
     """
-    SSE 任务状态流
+    SSE 任务状态流（只推送请求人自己的任务事件）
     
     事件类型：
     - connected: 连接成功
@@ -830,7 +982,7 @@ async def task_stream():
         yield _format_sse_event("connected", {"message": "Connected to task stream"})
         
         # 发送当前进行中的任务
-        pending_tasks = task_queue.list_pending_tasks()
+        pending_tasks = task_queue.list_pending_tasks(**_viewer_kwargs(user))
         for task in pending_tasks:
             yield _format_sse_event("task_created", task.to_dict())
         
@@ -842,6 +994,9 @@ async def task_stream():
                 try:
                     # 等待事件，超时发送心跳
                     event = await asyncio.wait_for(event_queue.get(), timeout=30)
+                    viewer = _viewer_id(user)
+                    if viewer is not None and event.get("owner") != viewer:
+                        continue  # another user's task event: never leaves the server
                     yield _format_sse_event(event["type"], event["data"])
                 except asyncio.TimeoutError:
                     # 心跳
@@ -885,12 +1040,17 @@ def _load_history_run_flow_by_query_id(
     code: Optional[str] = None,
     report_type: Optional[str] = None,
     fail_open: bool = False,
+    viewer_user_id: Optional[str] = None,
 ) -> Optional[RunFlowSnapshot]:
     try:
         from src.storage import DatabaseManager
         from src.services.history_service import HistoryService
 
-        service = HistoryService(DatabaseManager.get_instance())
+        service = (
+            HistoryService(DatabaseManager.get_instance(), viewer_user_id=viewer_user_id)
+            if viewer_user_id is not None
+            else HistoryService(DatabaseManager.get_instance())
+        )
         return service.resolve_and_get_run_flow(
             query_id,
             code=code,
@@ -918,7 +1078,7 @@ def _load_history_run_flow_by_query_id(
     summary="获取分析任务运行流",
     description="根据 task_id 查询任务数据流/信息流快照；活跃任务缺少诊断时返回骨架流。",
 )
-def get_task_run_flow(task_id: str) -> RunFlowSnapshot:
+def get_task_run_flow(task_id: str, user: CurrentUser = Depends(get_current_user)) -> RunFlowSnapshot:
     """
     查询分析任务运行流。
 
@@ -926,7 +1086,8 @@ def get_task_run_flow(task_id: str) -> RunFlowSnapshot:
     to hydrate from persisted history diagnostics using the same task_id/query_id.
     """
     task_queue = get_task_queue()
-    task = task_queue.get_task(task_id)
+    task = _own_task(task_queue, task_id, user)
+    history_viewer_kwargs = _viewer_kwargs(user)  # {} for direct calls without a resolved user
 
     if task:
         if task.status == TaskStatusEnum.COMPLETED:
@@ -941,13 +1102,14 @@ def get_task_run_flow(task_id: str) -> RunFlowSnapshot:
                 code=task_stock_code,
                 report_type=task_report_type,
                 fail_open=True,
+                **history_viewer_kwargs,
             )
             if history_snapshot is not None:
                 return history_snapshot
         return build_task_run_flow_snapshot(task)
 
     try:
-        history_snapshot = _load_history_run_flow_by_query_id(task_id)
+        history_snapshot = _load_history_run_flow_by_query_id(task_id, **history_viewer_kwargs)
         if history_snapshot is not None:
             return history_snapshot
     except Exception as e:
@@ -1168,7 +1330,7 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
     summary="查询分析任务状态",
     description="根据 task_id 查询单个任务的状态"
 )
-def get_analysis_status(task_id: str) -> TaskStatus:
+def get_analysis_status(task_id: str, user: CurrentUser = Depends(get_current_user)) -> TaskStatus:
     """
     查询分析任务状态
     
@@ -1183,9 +1345,9 @@ def get_analysis_status(task_id: str) -> TaskStatus:
     Raises:
         HTTPException: 404 - 任务不存在
     """
-    # 1. 先从任务队列查询
+    # 1. 先从任务队列查询（别人的任务 id 与不存在的 id 完全一样）
     task_queue = get_task_queue()
-    task = task_queue.get_task(task_id)
+    task = _own_task(task_queue, task_id, user)
     
     if task:
         result: Optional[AnalysisResultResponse] = None
@@ -1230,7 +1392,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
     try:
         from src.storage import DatabaseManager
         db = DatabaseManager.get_instance()
-        records = db.get_analysis_history(query_id=task_id, limit=1)
+        records = db.get_analysis_history(query_id=task_id, limit=1, **_viewer_kwargs(user))
 
         if records:
             record = records[0]

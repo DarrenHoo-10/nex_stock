@@ -12,6 +12,12 @@ from src.agent.tools.data_tools import _handle_get_portfolio_snapshot
 
 
 class _FakePortfolioService:
+    created_for: list = []
+
+    def __init__(self, **kwargs):
+        # The tool must bind the service to the acting user it was given.
+        self.created_for.append(kwargs.get("user_id"))
+
     def get_portfolio_snapshot(self, **_kwargs):
         return {
             "as_of": "2026-03-15",
@@ -98,12 +104,13 @@ class TestGetPortfolioSnapshotTool(unittest.TestCase):
     @patch("src.services.portfolio_service.PortfolioService", _FakePortfolioService)
     @patch("src.services.portfolio_risk_service.PortfolioRiskService", _FakeRiskService)
     def test_default_returns_compact_snapshot_and_risk(self) -> None:
-        result = _handle_get_portfolio_snapshot(account_id=1)
+        result = _handle_get_portfolio_snapshot(user_id="user-1", account_id=1)
         self.assertEqual(result["status"], "ok")
         self.assertIn("snapshot", result)
         self.assertIn("risk", result)
         self.assertEqual(result["risk"]["status"], "ok")
 
+        self.assertEqual(_FakePortfolioService.created_for[-1], "user-1")
         account = result["snapshot"]["accounts"][0]
         self.assertIn("top_positions", account)
         self.assertNotIn("positions", account)
@@ -114,6 +121,7 @@ class TestGetPortfolioSnapshotTool(unittest.TestCase):
     @patch("src.services.portfolio_risk_service.PortfolioRiskService", _FakeRiskService)
     def test_include_positions_and_disable_risk(self) -> None:
         result = _handle_get_portfolio_snapshot(
+            user_id="user-1",
             account_id=1,
             include_positions=True,
             include_risk=False,
@@ -124,7 +132,7 @@ class TestGetPortfolioSnapshotTool(unittest.TestCase):
         self.assertIn("positions", account)
         self.assertNotIn("risk", result)
 
-        invalid = _handle_get_portfolio_snapshot(as_of="2026/03/15")
+        invalid = _handle_get_portfolio_snapshot(user_id="user-1", as_of="2026/03/15")
         self.assertIn("error", invalid)
         self.assertIn("YYYY-MM-DD", invalid["error"])
 

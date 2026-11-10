@@ -54,6 +54,8 @@ def _create_hindsight(config: Any) -> RecallProvider:
         bank_id=_read(config, "hindsight_bank_id", "") or "",
         api_key=_read(config, "hindsight_api_key", None),
         timeout_s=resolve_recall_timeout_s(config),
+        # Only the per-user settings of a user-supplied server (``user_recall_settings``) turn this off.
+        allow_redirects=bool(_read(config, "hindsight_allow_redirects", True)),
     )
 
 

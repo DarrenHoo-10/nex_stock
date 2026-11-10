@@ -1304,6 +1304,7 @@ class Config:
     assistant_note_inject_max_chars: int = 3000  # 笔记注入提示词的总长度上限
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
+    alert_max_enabled_rules_per_user: int = 200  # Per-user cap on enabled alert rules (create / enable); the worker evaluates at most this many per user
 
     # === 通知配置（可同时配置多个，全部推送）===
     
@@ -1493,6 +1494,7 @@ class Config:
     
     # === 系统配置 ===
     max_workers: int = 3  # 低并发防封禁
+    analysis_max_concurrent_per_user: int = 1  # Async analysis slots each user is guaranteed while others wait (work-conserving fair queue); MAX_WORKERS stays the global cap
     debug: bool = False
     http_proxy: Optional[str] = None  # HTTP 代理 (例如: http://127.0.0.1:10809)
     https_proxy: Optional[str] = None # HTTPS 代理
@@ -1665,9 +1667,20 @@ class Config:
             raise AttributeError(f"Config user view is read-only; cannot set {name!r}")
         object.__setattr__(self, name, value)
 
-    def freeze_as_user_view(self) -> None:
-        """Make this instance read-only (per-user config views are shared between requests)."""
+    def freeze_as_user_view(self, user_id: Optional[str] = None) -> None:
+        """Make this instance read-only (per-user config views are shared between requests).
+
+        ``user_id`` is the owner of the view; model / search / usage code reads it back through
+        ``user_view_id`` to know that the config belongs to a non-primary user.
+        """
         object.__setattr__(self, "_user_view_frozen", True)
+        object.__setattr__(self, "_user_view_id", user_id)
+
+    @property
+    def user_view_id(self) -> Optional[str]:
+        """Owner of this per-user view; ``None`` for the system config (the primary user's)."""
+        value = self.__dict__.get("_user_view_id")
+        return value if isinstance(value, str) and value else None
 
     # 单例实例存储
     _instance: Optional['Config'] = None
@@ -2489,6 +2502,13 @@ class Config:
                 minimum=1,
             ),
             agent_event_alert_rules_json=env.get('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            alert_max_enabled_rules_per_user=parse_env_int(
+                env.get('ALERT_MAX_ENABLED_RULES_PER_USER'),
+                200,
+                field_name='ALERT_MAX_ENABLED_RULES_PER_USER',
+                minimum=1,
+                maximum=1000,
+            ),
             wechat_webhook_url=env.get('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=env.get('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=env.get('FEISHU_WEBHOOK_SECRET'),
@@ -2740,6 +2760,13 @@ class Config:
             log_dir=env.get('LOG_DIR', './logs'),
             log_level=env.get('LOG_LEVEL', 'INFO'),
             max_workers=parse_env_int(env.get('MAX_WORKERS'), 3, field_name='MAX_WORKERS', minimum=1),
+            analysis_max_concurrent_per_user=parse_env_int(
+                env.get('ANALYSIS_MAX_CONCURRENT_PER_USER'),
+                1,
+                field_name='ANALYSIS_MAX_CONCURRENT_PER_USER',
+                minimum=1,
+                maximum=20,
+            ),
             debug=env.get('DEBUG', 'false').lower() == 'true',
             config_validate_mode=env.get('CONFIG_VALIDATE_MODE', 'warn').lower(),
             primary_user_id=(env.get('PRIMARY_USER_ID') or '').strip() or DEFAULT_PRIMARY_USER_ID,

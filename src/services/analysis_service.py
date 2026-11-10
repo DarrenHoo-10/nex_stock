@@ -15,6 +15,7 @@ import copy
 import uuid
 from typing import Optional, Dict, Any, Callable, List
 
+from src.llm.credentials_guard import ModelKeyRequiredError
 from src.repositories.analysis_repo import AnalysisRepository
 from src.report_language import (
     get_sentiment_label,
@@ -32,6 +33,9 @@ from src.services.run_diagnostics import (
     reset_run_diagnostic_context,
 )
 from src.services.empty_news import empty_news_disclosure
+from src.services.user_config_service import require_usable_model, resolve_user_config
+from src.utils.data_processing import parse_json_field
+from src.utils.url_safety import UnsafeUrlError
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,9 @@ class AnalysisService:
         portfolio_context: Optional[Dict[str, Any]] = None,
         report_language: Optional[str] = None,
         analysis_target: Optional[Any] = None,
+        user_id: Optional[str] = None,
+        allow_reuse: bool = False,
+        reuse_metadata: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析
@@ -102,7 +109,14 @@ class AnalysisService:
             analysis_phase: 请求的分析阶段覆盖（auto/premarket/intraday/postmarket）
             analysis_target: 可选的结构化分析目标（指数目标贯穿到 pipeline，
                 否则指数会退化为股票语义）
-            
+            user_id: 发起分析的用户（``None`` = 主用户）。非主用户使用自己的配置视图（模型 / 搜索 Key、
+                Agent 持仓读取），没有可用模型时抛出 ``ModelKeyRequiredError``；不发送系统推送渠道
+            allow_reuse: 允许直接复用已有的共享报告（同股票 / 交易日 / 模型渠道 / 策略集 / 语言 / 报告类型，见
+                ``report_reuse_service``）；命中时不调用模型，也不需要模型 Key。``force_refresh``、
+                ``portfolio_context``（持仓）和非 ``auto`` 的 ``analysis_phase`` 会关闭直接复用
+            reuse_metadata: 需要重新分析时，复用同股票同交易日更早一次分析已采集的输入（行情 / 筹码 / 基本面 /
+                市场结构 / 资讯，见 ``analysis_metadata_reuse``），不复用任何结论。``force_refresh`` 会关闭
+
         Returns:
             分析结果字典，包含:
             - stock_code: 股票代码
@@ -112,7 +126,7 @@ class AnalysisService:
         try:
             self.last_error = None
             # 导入分析相关模块
-            from src.config import get_config
+            from src.config import get_config, get_primary_user_id
             from src.core.pipeline import StockAnalysisPipeline
             from src.enums import ReportType
             
@@ -129,13 +143,47 @@ class AnalysisService:
                     trigger_source=query_source or "api",
                 )
             
-            # 获取配置
+            # 获取配置：主用户 / 无用户上下文 = 系统配置；其他用户 = 本人的配置视图
             config = get_config()
+            pipeline_user_kwargs: Dict[str, Any] = {}
+            if user_id and user_id != get_primary_user_id():
+                config = resolve_user_config(user_id)
+                pipeline_user_kwargs["user_id"] = user_id
+                send_notification = False  # 个人推送渠道尚未开放，绝不落到系统渠道
             normalized_report_language = normalize_report_language(report_language, default="")
             if normalized_report_language:
                 config = copy.copy(config)
-                config.report_language = normalized_report_language
-            
+                object.__setattr__(config, "report_language", normalized_report_language)
+
+            # 共享报告直接复用：命中就直接返回已有报告（不调用模型、不需要 Key）。带持仓、指定分析阶段、
+            # 强制刷新的请求永远重新分析；持仓报告只属于发起人，不会被直接复用，也不会被直接给别人
+            if allow_reuse and not force_refresh and not portfolio_context and (analysis_phase or "auto") == "auto":
+                reused = self._reuse_existing_report(
+                    stock_code=stock_code,
+                    report_type=report_type,
+                    config=config,
+                    report_language=normalized_report_language or None,
+                    analysis_target=analysis_target,
+                    skills=skills,
+                )
+                if reused is not None:
+                    return reused
+
+            # 需要真正生成报告：非主用户必须有自己的模型（没有就拒绝，永远不落到系统 Key）
+            require_usable_model(config)
+
+            # 不能直接复用报告时，仍复用同股票同交易日更早一次分析已采集的输入；来源只取共享报告和
+            # 请求人自己的报告，绝不取别人的私有报告。没有来源就照常取数
+            metadata = None
+            if reuse_metadata and not force_refresh:
+                from src.services.analysis_metadata_reuse import load_reusable_metadata
+
+                metadata = load_reusable_metadata(
+                    stock_code=stock_code,
+                    viewer_user_id=pipeline_user_kwargs.get("user_id") or get_primary_user_id(),
+                    analysis_target=analysis_target,
+                )
+
             # 创建分析流水线
             pipeline = StockAnalysisPipeline(
                 config=config,
@@ -146,6 +194,8 @@ class AnalysisService:
                 analysis_skills=skills,
                 analysis_phase=analysis_phase,
                 portfolio_context=portfolio_context,
+                **pipeline_user_kwargs,
+                **({"reused_metadata": metadata} if metadata is not None else {}),
             )
             
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)
@@ -171,8 +221,13 @@ class AnalysisService:
                 return None
             
             # 构建响应
-            return self._build_analysis_response(result, query_id, report_type=rt.value)
-            
+            response = self._build_analysis_response(result, query_id, report_type=rt.value)
+            if metadata is not None and metadata.used:
+                response["metadata_reused_from"] = metadata.source_report_id
+            return response
+
+        except (ModelKeyRequiredError, UnsafeUrlError):
+            raise
         except Exception as e:
             self.last_error = str(e)
             logger.error(f"分析股票 {stock_code} 失败: {e}", exc_info=True)
@@ -180,8 +235,53 @@ class AnalysisService:
         finally:
             reset_run_diagnostic_context(locals().get("diag_token"))
     
+    def _reuse_existing_report(
+        self,
+        *,
+        stock_code: str,
+        report_type: str,
+        config: Any,
+        report_language: Optional[str],
+        analysis_target: Optional[Any],
+        skills: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Analysis response built from an existing shared report, or ``None`` when nothing can be reused."""
+        from src.enums import ReportType
+        from src.services.history_service import HistoryService
+        from src.services.report_reuse_service import find_reusable_report
+
+        rt = ReportType.from_str(report_type)
+        record = find_reusable_report(
+            stock_code=stock_code,
+            report_type=rt.value,
+            config=config,
+            report_language=report_language,
+            analysis_target=analysis_target,
+            skills=skills,
+        )
+        if record is None:
+            return None
+        try:
+            raw_result = parse_json_field(getattr(record, "raw_result", None))
+            result = HistoryService()._rebuild_analysis_result(
+                raw_result if isinstance(raw_result, dict) else {}, record
+            )
+            if result is None:
+                return None
+            # The report keeps its own query_id: it is the key every history / detail lookup uses.
+            response = self._build_analysis_response(
+                result, getattr(record, "query_id", None) or uuid.uuid4().hex, report_type=rt.value
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable stored report is a miss, not a failure
+            logger.warning("复用已有报告失败，改为重新生成: %s (%s)", stock_code, exc)
+            return None
+        response["reused"] = True
+        response["reused_report_id"] = getattr(record, "id", None)
+        logger.info("复用共享报告: %s report_id=%s", stock_code, getattr(record, "id", None))
+        return response
+
     def _build_analysis_response(
-        self, 
+        self,
         result: Any, 
         query_id: str,
         report_type: str = "detailed",

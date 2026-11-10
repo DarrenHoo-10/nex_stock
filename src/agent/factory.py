@@ -552,7 +552,108 @@ def resolve_skill_prompt_state(config=None, skills: Optional[List[str]] = None) 
     )
 
 
-def build_agent_executor(config=None, skills: Optional[List[str]] = None):
+def analysis_uses_agent(config, request_skills: Optional[List[str]]) -> tuple[bool, str]:
+    """Whether a stock analysis runs through the Agent pipeline, and why (``""`` when it does not).
+
+    ``AGENT_MODE`` is an explicit opt-in; request skills and configured skills (other than ``all``) switch the
+    Agent pipeline on automatically. The pipeline and the strategy fingerprint share this single rule.
+    """
+    if getattr(config, "agent_mode", False):
+        return True, "agent_mode"
+    if request_skills:
+        return True, "request_skills"
+    configured = getattr(config, "agent_skills", [])
+    if configured and configured != ["all"]:
+        return True, "configured_skills"
+    return False, ""
+
+
+def _skill_content_digest(skill) -> dict:
+    """The parts of a skill that shape a report (a changed definition is a different strategy)."""
+    return {
+        "name": str(getattr(skill, "name", "")),
+        "display_name": str(getattr(skill, "display_name", "")),
+        "description": str(getattr(skill, "description", "")),
+        "instructions": str(getattr(skill, "instructions", "")),
+        "category": str(getattr(skill, "category", "")),
+        "core_rules": list(getattr(skill, "core_rules", None) or []),
+        "required_tools": sorted(getattr(skill, "required_tools", None) or []),
+        "allowed_tools": sorted(getattr(skill, "allowed_tools", None) or []),
+        "execution_context": str(getattr(skill, "execution_context", "")),
+        "preferred_model": str(getattr(skill, "preferred_model", "")),
+    }
+
+
+def compute_strategy_fingerprint(config, request_skills: Optional[List[str]] = None) -> Optional[str]:
+    """Digest of the effective strategy set an analysis with ``config`` / ``request_skills`` runs with.
+
+    The set is resolved exactly like :func:`resolve_skill_prompt_state` does (request skills, else the config
+    view's ``AGENT_SKILLS``, else the default skill) so a personal ``AGENT_SKILLS`` counts. Each skill enters with
+    a digest of its definition, next to how the set is applied: the classic or the Agent pipeline and, when a
+    multi-agent specialist run lets the skill router pick skills at run time, the routing inputs.
+
+    The router's own pick (``AGENT_SKILL_ROUTING=auto``) depends on the stock's technical regime, which is
+    only known after the run. The same stock on the same trading date yields the same regime, so the fingerprint
+    covers the routing *inputs* (``route=auto`` + the catalogue digests) rather than the realised pick: two runs
+    that resolved to the same fingerprint make the same routing decision.
+
+    ``None`` = the set cannot be resolved; such a report is never reused directly.
+    """
+    try:
+        import hashlib
+        import json
+
+        from src.agent.skills.defaults import get_default_active_skill_ids
+
+        skill_manager = get_skill_manager(config)
+        catalog = list(skill_manager.list_skills())
+        by_name = {str(getattr(skill, "name", "")).strip(): skill for skill in catalog}
+        available = {name for name in by_name if name}
+        configured = getattr(config, "agent_skills", None)
+        if configured == []:
+            configured = None
+        selected, _explicit = _resolve_selected_skill_ids(
+            requested_skills=request_skills,
+            configured_skills=configured,
+            default_skills=get_default_active_skill_ids(catalog, available_skill_ids=available or None),
+            available_skill_ids=available,
+        )
+        if "all" in selected:
+            selected = sorted(available)
+        uses_agent, _reason = analysis_uses_agent(config, request_skills)
+
+        routing = None
+        pipeline = "classic"
+        if uses_agent:
+            arch = str(getattr(config, "agent_arch", "single"))
+            mode = str(getattr(config, "agent_orchestrator_mode", "standard"))
+            mode = "specialist" if mode in {"strategy", "skill"} else mode
+            pipeline = f"agent/{arch}/{mode}" if arch == "multi" else "agent/single"
+            if arch == "multi" and mode == "specialist" and not request_skills:
+                routing = str(getattr(config, "agent_skill_routing", "auto"))
+        payload = {
+            "pipeline": pipeline,
+            "routing": routing,
+            "skills": [
+                _skill_content_digest(by_name[name]) if name in by_name else {"name": name}
+                for name in sorted(set(selected))
+            ],
+        }
+        if routing == "auto":
+            # the router may pick any catalogue skill: a changed catalogue is a different routing decision
+            payload["catalogue"] = [_skill_content_digest(by_name[name]) for name in sorted(available)]
+        elif routing == "manual":
+            from src.agent.skills.router import SkillRouter
+
+            payload["manual_pick"] = SkillRouter._get_manual_skills(max_count=4, config=config)
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+    except Exception as exc:  # noqa: BLE001 - an unresolvable strategy set just disables direct reuse
+        logger.warning("[AgentFactory] strategy fingerprint unavailable: %s", exc)
+        return None
+
+
+def build_agent_executor(config=None, skills: Optional[List[str]] = None, user_id: Optional[str] = None):
     """Build and return a configured AgentExecutor (or future orchestrator).
 
     When ``AGENT_ARCH=multi``, this returns an orchestrator that manages
@@ -565,6 +666,9 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         skills: Skill ids to activate.  When *None* falls back to
                 ``config.agent_skills``; if that is also empty falls back to
                 the central default skill set.
+        user_id: Acting user for personal-data tools and notes. ``None`` = the primary
+                user (CLI, bots, scheduled analysis); callers acting for a user pass it
+                explicitly.
 
     Returns:
         A ready-to-call :class:`src.agent.executor.AgentExecutor` instance.
@@ -601,6 +705,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
             llm_adapter,
             skill_manager,
             technical_skill_policy=prompt_state.technical_skill_policy,
+            user_id=user_id,
         )
 
     from src.agent.executor import AgentExecutor
@@ -624,11 +729,16 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
             0,
             field_name="agent_orchestrator_timeout_s",
         ),
+        user_id=user_id,
     )
 
 
-def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
-    """Build the backend-neutral executor used only by Agent Chat endpoints."""
+def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None, user_id: Optional[str] = None):
+    """Build the backend-neutral executor used only by Agent Chat endpoints.
+
+    ``user_id`` (``None`` = primary user) is the acting user of turns prepared without a resolved
+    session turn; API turns use the verified session owner carried by the resolved turn.
+    """
     if config is None:
         from src.config import get_config
 
@@ -649,7 +759,7 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
             "Codex Agent currently supports single-agent Chat only",
         )
     if backend_id == "litellm" and arch == "multi":
-        return build_agent_executor(config, skills=skills)
+        return build_agent_executor(config, skills=skills, user_id=user_id)
 
     # Pass ``config`` explicitly so a reloaded ``Config`` instance observes
     # the new per-category timeout map (see ``build_agent_executor`` for the
@@ -685,10 +795,14 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
             0,
             field_name="agent_orchestrator_timeout_s",
         ),
+        user_id=user_id,
     )
 
 
-def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technical_skill_policy: str = ""):
+def _build_orchestrator(
+    config, registry, llm_adapter, skill_manager, *, technical_skill_policy: str = "",
+    user_id: Optional[str] = None,
+):
     """Build and return an :class:`AgentOrchestrator` (multi-agent mode).
 
     The orchestrator presents the same ``run()`` / ``chat()`` interface as
@@ -712,6 +826,7 @@ def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technic
         mode=mode,
         skill_manager=skill_manager,
         config=config,
+        user_id=user_id,
     )
 
 

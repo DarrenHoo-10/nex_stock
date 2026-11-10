@@ -22,6 +22,7 @@ from src.agent.provider_trace import (
     strip_trace_metadata,
     trace_model_matches,
 )
+from src.llm.credentials_guard import config_user_id
 from src.llm.usage import should_persist_usage_telemetry
 from src.storage import ChatSessionStateConflict, DatabaseManager, get_db, persist_llm_usage
 
@@ -365,6 +366,7 @@ def _build_visible_history_state(
                 usage,
                 getattr(response, "model", "") or get_effective_agent_primary_model(config) or "unknown",
                 call_type="agent",
+                **({"user_id": config_user_id(config)} if config_user_id(config) else {}),
             )
         if not saved:
             current = db.read_chat_session_snapshot(session_id)
@@ -704,6 +706,7 @@ def compact_chat_history(
             usage,
             getattr(response, "model", "") or get_effective_agent_primary_model(config) or "unknown",
             call_type="agent",
+            **({"user_id": config_user_id(config)} if config_user_id(config) else {}),
         )
     if not saved:
         raise ChatSessionStateConflict()

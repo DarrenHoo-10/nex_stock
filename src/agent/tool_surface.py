@@ -173,6 +173,17 @@ class ToolSurface:
                 arguments=arguments,
             )
 
+        if tool_def.user_scoped and not ctx.user_id:
+            return self._error_result(
+                tool_name=tool_name,
+                code="user_context_required",
+                message="Tool call requires the acting user.",
+                started_at=started_at,
+                context=ctx,
+                retriable=False,
+                arguments=arguments,
+            )
+
         timeout = ctx.timeout_seconds
         if (
             ctx.deadline is None
@@ -196,10 +207,11 @@ class ToolSurface:
             if access is not None:
                 ctx = replace(ctx, stock_identity=access.identity, analysis_target=access.target)
                 arguments = dict(arguments, stock_code=access.identity.stock_code)
+            call_arguments = dict(arguments, user_id=ctx.user_id) if tool_def.user_scoped else arguments
             if controlled_execution or access is not None:
-                result = _execute_with_control(tool_def, arguments, ctx)
+                result = _execute_with_control(tool_def, call_arguments, ctx)
             else:
-                result = tool_def.handler(**arguments)
+                result = tool_def.handler(**call_arguments)
         except ToolExecutionCancelled:
             return self._error_result(
                 tool_name=tool_name,

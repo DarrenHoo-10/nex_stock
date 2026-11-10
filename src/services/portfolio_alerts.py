@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from src.services.portfolio_risk_service import PortfolioRiskService
 from src.services.portfolio_service import PortfolioService
+from src.services.watchlist_service import WatchlistService
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ class PortfolioRiskAlert:
     metadata: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
     stock_code: str = ""
+    # Owner of the persisted rule; the account/holdings it reads belong to this user.
+    user_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         effective_target = self.metadata.get("effective_target") or portfolio_effective_target(self.target)
@@ -112,13 +115,18 @@ def normalize_batch_target_scope_target(target_scope: str, target: str) -> str:
     return target_text
 
 
-def ensure_active_portfolio_account(target: str, *, portfolio_service: Optional[PortfolioService] = None) -> None:
-    """Validate that an explicit portfolio account target exists and is active."""
+def ensure_active_portfolio_account(
+    target: str,
+    *,
+    user_id: str,
+    portfolio_service: Optional[PortfolioService] = None,
+) -> None:
+    """Validate that an explicit portfolio account target exists, is active and belongs to ``user_id``."""
 
     if str(target or "").strip() == "all":
         return
     account_id = _positive_int_target(target)
-    service = portfolio_service or PortfolioService()
+    service = portfolio_service or PortfolioService(user_id=user_id)
     accounts = service.list_accounts(include_inactive=False)
     active_ids = {int(item.get("id")) for item in accounts if item.get("id") is not None}
     if account_id not in active_ids:
@@ -130,21 +138,22 @@ def expand_symbol_targets(
     target_scope: str,
     target: str,
     config: Any,
+    user_id: str,
     portfolio_service: Optional[PortfolioService] = None,
     read_only: bool = False,
 ) -> tuple[List[ExpandedSymbolTarget], int]:
-    """Expand watchlist or portfolio holdings into concrete, de-duplicated symbols.
+    """Expand ``user_id``'s watchlist or portfolio holdings into concrete, de-duplicated symbols.
 
     Returns ``(targets, overflow_count)``. The returned targets are already capped
     by ``EXPANDED_TARGET_SOFT_CAP``.
     """
 
     if target_scope == "watchlist":
-        symbols = _watchlist_symbols(config)
+        symbols = _watchlist_symbols(user_id, config)
         display_prefix = "自选股"
     elif target_scope == "portfolio_holdings":
         symbols = _portfolio_holding_symbols(
-            target=target, portfolio_service=portfolio_service, read_only=read_only,
+            target=target, user_id=user_id, portfolio_service=portfolio_service, read_only=read_only,
         )
         display_prefix = "持仓"
     else:
@@ -207,6 +216,7 @@ def make_portfolio_risk_payload(
             "display_target": display_target,
         },
         description=data.get("name") or data["alert_type"],
+        user_id=data.get("user_id"),
     )
     return RuntimeAlertPayload(
         key=f"{parent_key}|{effective_target}",
@@ -237,10 +247,12 @@ def evaluate_portfolio_risk_alert(
     portfolio_service: Optional[PortfolioService] = None,
     risk_service: Optional[PortfolioRiskService] = None,
 ) -> Dict[str, Any]:
-    """Evaluate an account-level portfolio alert."""
+    """Evaluate an account-level portfolio alert against the rule owner's accounts."""
 
     account_id = None if rule.target == "all" else _positive_int_target(rule.target)
-    service = portfolio_service or PortfolioService()
+    if portfolio_service is None and risk_service is None and not rule.user_id:
+        raise ValueError("portfolio alert rule has no owner (user_id)")
+    service = portfolio_service or PortfolioService(user_id=rule.user_id)
     risk = risk_service or PortfolioRiskService(portfolio_service=service)
 
     if rule.alert_type == "portfolio_price_stale":
@@ -337,23 +349,20 @@ def aggregate_dry_run_results(rule_id: int, target_scope: str, results: List[Dic
     }
 
 
-def _watchlist_symbols(config: Any) -> List[str]:
-    refresh = getattr(config, "refresh_stock_list", None)
-    if callable(refresh):
-        try:
-            refresh()
-        except Exception as exc:
-            logger.warning("[portfolio_alerts] Failed to refresh watchlist symbols: %s", exc)
-    return list(getattr(config, "stock_list", []) or [])
+def _watchlist_symbols(user_id: str, config: Any = None) -> List[str]:
+    # ``config`` is the Config the caller was built with: the primary user's STOCK_LIST is read from it.
+    service = WatchlistService(config=config) if config is not None else WatchlistService()
+    return list(service.list_codes(user_id))
 
 
 def _portfolio_holding_symbols(
     *,
     target: str,
+    user_id: str,
     portfolio_service: Optional[PortfolioService],
     read_only: bool = False,
 ) -> List[str]:
-    service = portfolio_service or PortfolioService()
+    service = portfolio_service or PortfolioService(user_id=user_id)
     account_id = None if target == "all" else _positive_int_target(target)
     snapshot = service.get_portfolio_snapshot(account_id=account_id, cost_method="fifo", read_only=read_only)
     symbols: List[str] = []

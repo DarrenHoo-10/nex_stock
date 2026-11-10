@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from data_provider.base import canonical_stock_code
 from src.analysis_context_pack_overview import extract_analysis_context_pack_overview
+from src.config import get_primary_user_id
 from src.repositories.portfolio_repo import PortfolioRepository
 from src.services.alert_service import AlertService
 from src.services.history_service import HistoryService
@@ -39,7 +40,10 @@ class StockProfileService:
         intelligence_service: Optional[IntelligenceService] = None,
         portfolio_repository: Optional[PortfolioRepository] = None,
         alert_service: Optional[AlertService] = None,
+        user_id: Optional[str] = None,
     ):
+        # Whose holdings the portfolio block reads; None = primary user (CLI/bot/MCP/legacy callers).
+        self.user_id = user_id if user_id else get_primary_user_id()
         self.stock_service = stock_service
         self.history_service = history_service
         self.intelligence_service = intelligence_service
@@ -231,7 +235,7 @@ class StockProfileService:
     def _portfolio_block(self, code: str, *, market: str) -> Dict[str, Any]:
         try:
             profile_identity = resolve_daily_stock_identity(code, market_hint=market)
-            identities = self._portfolio_repository().list_cached_position_identities()
+            identities = self._portfolio_repository().list_cached_position_identities(user_id=self.user_id)
             matches = []
             for position_market, symbol in identities:
                 normalized_market = str(position_market or "").strip().lower()
@@ -432,7 +436,8 @@ class StockProfileService:
 
     def _history_service(self) -> HistoryService:
         if self.history_service is None:
-            self.history_service = HistoryService()
+            # The profile belongs to ``self.user_id``: shared reports plus their own private ones.
+            self.history_service = HistoryService(viewer_user_id=self.user_id)
         return self.history_service
 
     def _intelligence_service(self) -> IntelligenceService:
@@ -447,7 +452,7 @@ class StockProfileService:
 
     def _alert_service(self) -> AlertService:
         if self.alert_service is None:
-            self.alert_service = AlertService()
+            self.alert_service = AlertService(user_id=self.user_id)
         return self.alert_service
 
     @staticmethod

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+from src.config import get_primary_user_id
 from src.core.trading_calendar import MarketPhase
 from src.repositories.decision_signal_repo import (
     DecisionSignalCreateResult,
@@ -188,8 +189,8 @@ class DecisionSignalService:
             duplicate=result.duplicate,
         )
 
-    def get_signal(self, signal_id: int) -> Dict[str, Any]:
-        row = self.repo.get(signal_id)
+    def get_signal(self, signal_id: int, viewer_user_id: Optional[str] = None) -> Dict[str, Any]:
+        row = self.repo.get(signal_id, **self._viewer_kwargs(viewer_user_id))
         if row is None:
             raise DecisionSignalNotFoundError(f"Decision signal not found: {signal_id}")
         return self._serialize(row)
@@ -213,10 +214,13 @@ class DecisionSignalService:
         expires_to: Optional[Any] = None,
         holding_only: bool = False,
         account_id: Optional[int] = None,
+        holding_user_id: Optional[str] = None,
         stock_identities: Optional[List[Tuple[str, str]]] = None,
         page: int = 1,
         page_size: int = 20,
+        viewer_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """List signals; ``viewer_user_id`` limits them to shared ones plus the viewer's own private ones."""
         safe_page = max(1, int(page))
         safe_page_size = max(1, min(int(page_size), 100))
         market_norm = self._normalize_optional_market(market)
@@ -254,7 +258,9 @@ class DecisionSignalService:
             if not stock_identity_filters:
                 return {"items": [], "total": 0, "page": safe_page, "page_size": safe_page_size}
         elif holding_only:
-            held_identities = self._cached_holding_identities(account_id=account_id)
+            if not holding_user_id:
+                raise ValueError("holding_user_id is required when holding_only is set")
+            held_identities = self._cached_holding_identities(user_id=holding_user_id, account_id=account_id)
             if market_norm:
                 held_identities = {
                     identity for identity in held_identities if identity[0] == market_norm
@@ -287,6 +293,7 @@ class DecisionSignalService:
             expires_to=expires_to_dt,
             page=safe_page,
             page_size=safe_page_size,
+            **self._viewer_kwargs(viewer_user_id),
         )
         if total == 0 and self._should_backfill_history_bound_analysis_signal(
             stock_code=stock_code,
@@ -306,7 +313,7 @@ class DecisionSignalService:
             stock_identities=stock_identity_filters,
             holding_only=holding_only,
         ):
-            self._backfill_analysis_signal_from_history(source_report_id_norm)
+            self._backfill_analysis_signal_from_history(source_report_id_norm, viewer_user_id=viewer_user_id)
             rows, total = self.repo.list(
                 stock_codes=stock_codes,
                 stock_identities=stock_identity_filters,
@@ -325,6 +332,7 @@ class DecisionSignalService:
                 expires_to=expires_to_dt,
                 page=safe_page,
                 page_size=safe_page_size,
+                **self._viewer_kwargs(viewer_user_id),
             )
         return {
             "items": [self._serialize(row) for row in rows],
@@ -339,6 +347,7 @@ class DecisionSignalService:
         stock_code: str,
         market: Optional[str] = None,
         limit: int = 1,
+        viewer_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         market_norm = self._normalize_optional_market(market)
         rows = self.repo.get_latest_active(
@@ -347,6 +356,7 @@ class DecisionSignalService:
             ],
             market=market_norm,
             limit=limit,
+            **self._viewer_kwargs(viewer_user_id),
         )
         return {
             "items": [self._serialize(row) for row in rows],
@@ -362,9 +372,10 @@ class DecisionSignalService:
         status: str,
         metadata: Optional[Any] = None,
         replace_metadata: bool = False,
+        viewer_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         status_norm = self._normalize_enum(status, SIGNAL_STATUSES, "status")
-        existing = self.repo.get(signal_id)
+        existing = self.repo.get(signal_id, **self._viewer_kwargs(viewer_user_id))
         if existing is None:
             raise DecisionSignalNotFoundError(f"Decision signal not found: {signal_id}")
         if status_norm == "active" and (
@@ -394,6 +405,11 @@ class DecisionSignalService:
         if row is None:
             raise DecisionSignalNotFoundError(f"Decision signal not found: {signal_id}")
         return self._serialize(row)
+
+    @staticmethod
+    def _viewer_kwargs(viewer_user_id: Optional[str]) -> Dict[str, Any]:
+        """Repository kwargs for the viewing user; omitted for system callers (unrestricted)."""
+        return {"viewer_user_id": viewer_user_id} if viewer_user_id is not None else {}
 
     @staticmethod
     def _should_backfill_history_bound_analysis_signal(
@@ -445,11 +461,16 @@ class DecisionSignalService:
             )
         )
 
-    def _backfill_analysis_signal_from_history(self, source_report_id: int) -> None:
-        """Best-effort lazy extraction for reports saved before DecisionSignal existed."""
+    def _backfill_analysis_signal_from_history(
+        self, source_report_id: int, viewer_user_id: Optional[str] = None,
+    ) -> None:
+        """Best-effort lazy extraction for reports saved before DecisionSignal existed.
+
+        A request can only trigger it for a report it may see (``viewer_user_id``; ``None`` = a system caller).
+        """
 
         try:
-            record = self.db.get_analysis_history_by_id(source_report_id)
+            record = self.db.get_analysis_history_by_id(source_report_id, viewer_user_id=viewer_user_id)
             if record is None or getattr(record, "report_type", None) == "market_review":
                 return
 
@@ -511,6 +532,12 @@ class DecisionSignalService:
                 query_source="history",
                 report_type=str(getattr(record, "report_type", "") or "simple"),
                 profile_source="backfill_defaulted",
+                # A private report's signals belong to its requester, never to the shared pool.
+                owner_user_id=(
+                    (getattr(record, "requester_user_id", None) or get_primary_user_id())
+                    if getattr(record, "is_private", None)
+                    else None
+                ),
             )
             if payload is None:
                 return
@@ -725,6 +752,7 @@ class DecisionSignalService:
             actions=sorted(opposing_actions),
             decision_profile=row.decision_profile,
             exclude_signal_id=row.id,
+            owner_user_id=row.owner_user_id,  # a signal is only superseded by one of the very same owner
         )
         for newer_row in newer_rows:
             if not self._is_prior_signal(row, newer_row, reference_at=newer_row.created_at):
@@ -863,6 +891,9 @@ class DecisionSignalService:
             "status": self._normalize_optional_enum(payload.get("status"), SIGNAL_STATUSES, "status") or "active",
             "expires_at": expires_at,
             "metadata_json": self._json_dumps(metadata),
+            "owner_user_id": self._optional_identity_text(
+                payload.get("owner_user_id"), "owner_user_id", max_length=64
+            ),
         }
         if created_at is not None:
             fields["created_at"] = created_at
@@ -965,6 +996,7 @@ class DecisionSignalService:
             actions=sorted(opposing_actions),
             decision_profile=row.decision_profile,
             exclude_signal_id=row.id,
+            owner_user_id=getattr(row, "owner_user_id", None),
         )
         for old_row in old_rows:
             if not self._is_prior_signal(old_row, row, reference_at=reference_at):
@@ -1074,8 +1106,8 @@ class DecisionSignalService:
             return "partial"
         return "minimal"
 
-    def _cached_holding_identities(self, *, account_id: Optional[int]) -> set[Tuple[str, str]]:
-        identities = self.portfolio_repo.list_cached_position_identities(account_id=account_id)
+    def _cached_holding_identities(self, *, user_id: str, account_id: Optional[int]) -> set[Tuple[str, str]]:
+        identities = self.portfolio_repo.list_cached_position_identities(user_id=user_id, account_id=account_id)
         normalized: set[Tuple[str, str]] = set()
         for market, symbol in identities:
             if not str(symbol or "").strip():

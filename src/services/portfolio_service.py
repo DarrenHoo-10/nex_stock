@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
-from src.config import get_config
+from src.config import get_config, get_primary_user_id
 from src.repositories.portfolio_repo import (
     DuplicateTradeDedupHashError,
     DuplicateTradeUidError,
@@ -84,6 +84,10 @@ class PortfolioConflictError(Exception):
     """Raised when request conflicts with existing portfolio state."""
 
 
+class PortfolioAccountNotFoundError(ValueError):
+    """The account is missing, inactive or owned by another user (indistinguishable on purpose)."""
+
+
 class PortfolioOversellError(ValueError):
     """Raised when a sell would exceed the available position quantity."""
 
@@ -126,8 +130,15 @@ class _ResolvedPositionPrice:
 class PortfolioService:
     """Business logic for account CRUD, event writes, and snapshot replay."""
 
-    def __init__(self, repo: Optional[PortfolioRepository] = None):
+    def __init__(self, repo: Optional[PortfolioRepository] = None, user_id: Optional[str] = None):
+        """Bind the service to one owner.
+
+        ``user_id`` is the account owner every read/write is scoped to (API endpoints pass the
+        authenticated user). ``None`` means the primary user (``PRIMARY_USER_ID``), which is how the CLI,
+        bots, MCP and other context-less entry points act; it is resolved once here and never re-read.
+        """
         self.repo = repo or PortfolioRepository()
+        self.user_id = user_id if user_id else get_primary_user_id()
 
     # ------------------------------------------------------------------
     # Account CRUD
@@ -147,6 +158,7 @@ class PortfolioService:
         market_norm = self._normalize_market(market)
         base_currency_norm = self._normalize_currency(base_currency)
         row = self.repo.create_account(
+            user_id=self.user_id,
             name=name_norm,
             broker=(broker or "").strip() or None,
             market=market_norm,
@@ -156,7 +168,7 @@ class PortfolioService:
         return self._account_to_dict(row)
 
     def list_accounts(self, include_inactive: bool = False) -> List[Dict[str, Any]]:
-        rows = self.repo.list_accounts(include_inactive=include_inactive)
+        rows = self.repo.list_accounts(self.user_id, include_inactive=include_inactive)
         return [self._account_to_dict(r) for r in rows]
 
     def update_account(
@@ -189,13 +201,13 @@ class PortfolioService:
         if not fields:
             raise ValueError("No fields provided for update")
 
-        row = self.repo.update_account(account_id, fields)
+        row = self.repo.update_account(account_id, self.user_id, fields)
         if row is None:
             return None
         return self._account_to_dict(row)
 
     def deactivate_account(self, account_id: int) -> bool:
-        return self.repo.deactivate_account(account_id)
+        return self.repo.deactivate_account(account_id, self.user_id)
 
     # ------------------------------------------------------------------
     # Event writes
@@ -542,7 +554,7 @@ class PortfolioService:
             if account.market != "cn" or account.base_currency != "CNY":
                 raise ValueError("Holdings snapshot requires a cn/CNY account")
             return int(account.id)
-        for row in self.repo.list_accounts(include_inactive=False):
+        for row in self.repo.list_accounts(self.user_id, include_inactive=False):
             if row.market == "cn" and row.base_currency == "CNY":
                 return int(row.id)
         created = self.create_account(name="默认账户", broker=None, market="cn", base_currency="CNY")
@@ -852,15 +864,15 @@ class PortfolioService:
 
     def delete_trade_event(self, trade_id: int) -> bool:
         with self.repo.portfolio_write_session() as session:
-            return self.repo.delete_trade_in_session(session=session, trade_id=trade_id)
+            return self.repo.delete_trade_in_session(session=session, trade_id=trade_id, user_id=self.user_id)
 
     def delete_cash_ledger_event(self, entry_id: int) -> bool:
         with self.repo.portfolio_write_session() as session:
-            return self.repo.delete_cash_ledger_in_session(session=session, entry_id=entry_id)
+            return self.repo.delete_cash_ledger_in_session(session=session, entry_id=entry_id, user_id=self.user_id)
 
     def delete_corporate_action_event(self, action_id: int) -> bool:
         with self.repo.portfolio_write_session() as session:
-            return self.repo.delete_corporate_action_in_session(session=session, action_id=action_id)
+            return self.repo.delete_corporate_action_in_session(session=session, action_id=action_id, user_id=self.user_id)
 
     def list_trade_events(
         self,
@@ -892,6 +904,7 @@ class PortfolioService:
                 raise ValueError("side must be buy or sell")
 
         rows, total = self.repo.query_trades(
+            user_id=self.user_id,
             account_id=account_id,
             date_from=date_from,
             date_to=date_to,
@@ -930,6 +943,7 @@ class PortfolioService:
                 raise ValueError("direction must be in or out")
 
         rows, total = self.repo.query_cash_ledger(
+            user_id=self.user_id,
             account_id=account_id,
             date_from=date_from,
             date_to=date_to,
@@ -974,6 +988,7 @@ class PortfolioService:
                 raise ValueError("action_type must be cash_dividend or split_adjustment")
 
         rows, total = self.repo.query_corporate_actions(
+            user_id=self.user_id,
             account_id=account_id,
             date_from=date_from,
             date_to=date_to,
@@ -1009,7 +1024,7 @@ class PortfolioService:
             account = self._require_active_account(account_id)
             account_rows = [account]
         else:
-            account_rows = self.repo.list_accounts(include_inactive=False)
+            account_rows = self.repo.list_accounts(self.user_id, include_inactive=False)
 
         accounts_payload: List[Dict[str, Any]] = []
         aggregate_currency = "CNY"
@@ -1153,7 +1168,7 @@ class PortfolioService:
         if account_id is not None:
             account_rows = [self._require_active_account(account_id)]
         else:
-            account_rows = self.repo.list_accounts(include_inactive=False)
+            account_rows = self.repo.list_accounts(self.user_id, include_inactive=False)
 
         summary = {
             "as_of": as_of_date.isoformat(),
@@ -2139,19 +2154,32 @@ class PortfolioService:
             return None
         return value
 
+    def require_active_account(self, account_id: int) -> Any:
+        """Return the caller's active account.
+
+        Raises ``PortfolioAccountNotFoundError`` for an unknown id *and* for another user's account (the two
+        are indistinguishable on purpose), and a plain ``ValueError`` for the caller's own inactive account.
+        """
+        return self._require_active_account(account_id)
+
     def _require_active_account(self, account_id: int) -> Any:
-        account = self.repo.get_account(account_id, include_inactive=False)
-        if account is None:
-            raise ValueError(f"Active account not found: {account_id}")
-        return account
+        account = self.repo.get_account(account_id, self.user_id, include_inactive=True)
+        return self._check_active_account(account, account_id)
 
     def _require_active_account_in_session(self, *, session: Any, account_id: int) -> Any:
         account = self.repo.get_account_in_session(
             session=session,
             account_id=account_id,
-            include_inactive=False,
+            user_id=self.user_id,
+            include_inactive=True,
         )
+        return self._check_active_account(account, account_id)
+
+    @staticmethod
+    def _check_active_account(account: Any, account_id: int) -> Any:
         if account is None:
+            raise PortfolioAccountNotFoundError(f"Account not found: {account_id}")
+        if not account.is_active:
             raise ValueError(f"Active account not found: {account_id}")
         return account
 

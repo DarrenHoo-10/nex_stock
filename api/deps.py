@@ -145,10 +145,10 @@ def get_board_anomaly_service():
     return BoardAnomalyService()
 
 
-def get_daily_plan_service():
-    """Lazily build the daily plan service; 503 while the module is unavailable."""
+def get_daily_plan_service(user: CurrentUser = Depends(get_current_user)):
+    """Lazily build the daily plan service bound to the acting user; 503 while the module is unavailable."""
     try:
         from src.services.daily_plan_service import DailyPlanService
     except ImportError as exc:
         raise _daily_plan_unavailable() from exc
-    return DailyPlanService()
+    return DailyPlanService(user_id=user.user_id)

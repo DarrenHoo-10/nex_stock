@@ -17,6 +17,10 @@ from src.config import Config
 from src.services.agent_chat_session_service import AgentChatSessionService
 from src.storage import DatabaseManager
 
+from api.deps import CurrentUser
+
+_PRIMARY_USER = CurrentUser(user_id="local", handle="local", display_name="local", role="admin", is_admin=True)
+
 
 @pytest.fixture(autouse=True)
 def isolated_api_database(tmp_path: Path):
@@ -93,6 +97,7 @@ async def _collect_stream_events(request: "agent_endpoint.ChatRequest") -> list[
     response = await agent_endpoint.agent_chat_stream(
         request,
         session_service=AgentChatSessionService(),
+        user=_PRIMARY_USER,
     )
     return [
         json.loads(chunk.removeprefix("data: ").strip())
@@ -451,6 +456,7 @@ def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> N
                     context={"stock_code": "AAPL"},
                 ),
                 session_service=AgentChatSessionService(),
+                user=_PRIMARY_USER,
             )
             iterator = response.body_iterator
             first = json.loads((await anext(iterator)).removeprefix("data: ").strip())
@@ -528,6 +534,7 @@ def test_stream_all_invalid_skills_inherit_without_clearing_state(tmp_path: Path
                     skills=["old_technical"],
                 ),
                 session_service=session_service,
+                user=_PRIMARY_USER,
             )
             events = [
                 json.loads(chunk.removeprefix("data: ").strip())
@@ -565,6 +572,7 @@ def test_codex_stream_skill_resolution_failure_emits_error_and_unregisters_reque
                         request_id=request_id,
                     ),
                     session_service=session_service,
+                    user=_PRIMARY_USER,
                 )
                 return [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in response.body_iterator]
             events = asyncio.run(exercise())
@@ -572,10 +580,10 @@ def test_codex_stream_skill_resolution_failure_emits_error_and_unregisters_reque
         assert events[0]["error_code"] == "request_not_accepted"
 
         with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
-            assert request_id not in agent_endpoint._ACTIVE_CODEX_STREAMS
+            assert ("local", request_id) not in agent_endpoint._ACTIVE_CODEX_STREAMS
     finally:
         with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
-            agent_endpoint._ACTIVE_CODEX_STREAMS.pop(request_id, None)
+            agent_endpoint._ACTIVE_CODEX_STREAMS.pop(("local", request_id), None)
 
 
 @pytest.mark.parametrize("failure", ["context preparation failed", "database write failed"])
@@ -590,6 +598,7 @@ def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(f
             response = await agent_endpoint.agent_chat_stream(
                 agent_endpoint.ChatRequest(message="question", session_id="failed-session"),
                 session_service=AgentChatSessionService(),
+                user=_PRIMARY_USER,
             )
             return [
                 json.loads(chunk.removeprefix("data: ").strip())
@@ -611,6 +620,7 @@ def test_server_selects_actual_backend_for_stream() -> None:
             response = await agent_endpoint.agent_chat_stream(
                 agent_endpoint.ChatRequest(message="分析 AAPL", session_id="actual-backend"),
                 session_service=AgentChatSessionService(),
+                user=_PRIMARY_USER,
             )
             iterator = response.body_iterator
             first = json.loads((await anext(iterator)).removeprefix("data: ").strip())
@@ -633,6 +643,7 @@ def test_agent_chat_stream_cancels_backend_when_generator_closes() -> None:
             response = await agent_endpoint.agent_chat_stream(
                 agent_endpoint.ChatRequest(message="question", session_id="cancel-session"),
                 session_service=AgentChatSessionService(),
+                user=_PRIMARY_USER,
             )
             iterator = response.body_iterator
             accepted = json.loads((await anext(iterator)).removeprefix("data: ").strip())
@@ -647,21 +658,21 @@ def test_agent_chat_stream_cancels_backend_when_generator_closes() -> None:
 def test_codex_stop_waits_for_cleanup_and_emits_one_terminal_event() -> None:
     cancel_event = threading.Event()
     with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
-        agent_endpoint._ACTIVE_CODEX_STREAMS["cancel-request"] = cancel_event
+        agent_endpoint._ACTIVE_CODEX_STREAMS[("local", "cancel-request")] = cancel_event
     try:
-        assert asyncio.run(agent_endpoint.cancel_agent_chat_stream("cancel-request")) == {
+        assert asyncio.run(agent_endpoint.cancel_agent_chat_stream("cancel-request", user=_PRIMARY_USER)) == {
             "accepted": True,
             "request_id": "cancel-request",
         }
         assert cancel_event.is_set()
     finally:
         with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
-            agent_endpoint._ACTIVE_CODEX_STREAMS.pop("cancel-request", None)
+            agent_endpoint._ACTIVE_CODEX_STREAMS.pop(("local", "cancel-request"), None)
 
 
 def test_codex_stop_rejects_unknown_or_finished_request() -> None:
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(agent_endpoint.cancel_agent_chat_stream("missing-request"))
+        asyncio.run(agent_endpoint.cancel_agent_chat_stream("missing-request", user=_PRIMARY_USER))
     assert getattr(exc_info.value, "status_code", None) == 404
 
 

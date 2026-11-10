@@ -6,6 +6,7 @@ import { agentApi } from '../../api/agent';
 import type { ChatContextInfo } from '../../api/agent';
 import { getParsedApiError } from '../../api/error';
 import { PlanIcon } from '../../components/plan/PlanIcon';
+import { ModelKeyBanner } from '../../components/auth/ModelKeyBanner';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
 import { describeProgress } from '../../components/plan/assistant/assistantContext';
 import { formatTokens, relativeTime } from '../../components/plan/assistant/assistantFormat';
@@ -289,6 +290,7 @@ const AssistantPage: React.FC = () => {
   return (
     <>
       <PlanPageHeader title={title} subtitle="和助手聊股票、板块和持仓，会话会保存在历史里" hideAssistant />
+      <ModelKeyBanner variant="plan" />
       <div className="grid2 asst-layout">
         <aside className="win side asst-side" aria-label="历史会话">
           <div className="asst-side-head">

@@ -18,7 +18,7 @@ import re
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, Depends
 
-from api.deps import get_system_config_service
+from api.deps import CurrentUser, get_current_user, get_system_config_service
 
 from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
@@ -49,9 +49,13 @@ from src.services.import_parser import (
 from src.services.stock_service import StockService
 from src.services.stock_profile_service import InvalidStockProfileCode, StockProfileService
 from src.services.run_diagnostics import sanitize_diagnostic_text
-from src.services.stock_list_parser import split_stock_list
 from src.services.system_config_service import SystemConfigService
+from src.services.user_config_service import get_user_config, require_usable_model
+from src.services.watchlist_service import WatchlistService
 from data_provider.base import normalize_stock_code
+from src.config import get_primary_user_id
+from src.llm.credentials_guard import ModelKeyRequiredError
+from src.utils.url_safety import UnsafeUrlError
 
 logger = logging.getLogger(__name__)
 
@@ -59,29 +63,6 @@ router = APIRouter()
 
 # 须在 /{stock_code} 路由之前定义
 ALLOWED_MIME_STR = ", ".join(ALLOWED_MIME)
-
-
-def _read_watchlist_codes(service: SystemConfigService) -> list:
-    """Read STOCK_LIST codes as-is (no normalization)."""
-    config_data = service.get_config(include_schema=False)
-    stock_list_str = ""
-    for item in config_data.get("items", []):
-        if item.get("key") == "STOCK_LIST":
-            stock_list_str = str(item.get("value", ""))
-            break
-    return split_stock_list(stock_list_str)
-
-
-def _write_watchlist_codes(service: SystemConfigService, codes: list) -> None:
-    """Persist stock codes to STOCK_LIST as-is (no normalization)."""
-    config_data = service.get_config(include_schema=False)
-    config_version = config_data.get("config_version", "")
-    service.update(
-        config_version=config_version,
-        items=[{"key": "STOCK_LIST", "value": ",".join(codes)}],
-        mask_token="******",
-        reload_now=True,
-    )
 
 
 # Stock code validation patterns (aligned with frontend validateStockCode)
@@ -123,14 +104,6 @@ def _validate_and_normalize_stock_code(code: str) -> str:
     return normalize_stock_code(stripped)
 
 
-def _watchlist_match_key(code: str) -> str:
-    """Return the equivalence key used for watchlist add/remove matching."""
-    normalized = normalize_stock_code(code.strip())
-    if re.fullmatch(r"\d{5}", normalized):
-        return f"HK{normalized}"
-    return normalized.upper()
-
-
 @router.post(
     "/extract-from-image",
     response_model=ExtractFromImageResponse,
@@ -145,12 +118,18 @@ def _watchlist_match_key(code: str) -> str:
 def extract_from_image(
     file: Optional[UploadFile] = File(None, description="图片文件（表单字段名 file）"),
     include_raw: bool = Query(False, description="是否在结果中包含原始 LLM 响应"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ExtractFromImageResponse:
     """
     从上传的图片中提取股票代码（使用 Vision LLM）。
 
     表单字段请使用 file 上传图片。优先级：Gemini / Anthropic / OpenAI（首个可用）。
+    非主用户使用自己的模型 Key；没有时返回 400 ``model_key_required``。
     """
+    # Gate before the upload is even read: a user without a model of their own never reaches a provider.
+    vision_config = None
+    if isinstance(user, CurrentUser) and user.user_id != get_primary_user_id():
+        vision_config = require_usable_model(get_user_config(user.user_id))
     if not file or not file.filename:
         raise HTTPException(
             status_code=400,
@@ -188,7 +167,10 @@ def extract_from_image(
         )
 
     try:
-        items, raw_text = extract_stock_codes_from_image(data, content_type)
+        if vision_config is not None:
+            items, raw_text = extract_stock_codes_from_image(data, content_type, config=vision_config)
+        else:
+            items, raw_text = extract_stock_codes_from_image(data, content_type)
         extract_items = [
             ExtractItem(code=code, name=name, confidence=conf) for code, name, conf in items
         ]
@@ -198,6 +180,8 @@ def extract_from_image(
             items=extract_items,
             raw_text=raw_text if include_raw else None,
         )
+    except (ModelKeyRequiredError, UnsafeUrlError):
+        raise  # mapped to 400 model_key_required / unsafe_url by the global error handlers
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": "extract_failed", "message": str(e)})
     except Exception as e:
@@ -334,13 +318,14 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取自选队列",
-    description="返回当前 STOCK_LIST 配置中的所有股票代码。",
+    description="返回当前用户的自选股票代码（主用户即 STOCK_LIST 配置，其他用户存数据库）。",
 )
 def get_watchlist(
     service: SystemConfigService = Depends(get_system_config_service),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WatchlistResponse:
     try:
-        codes = _read_watchlist_codes(service)
+        codes = WatchlistService(config_service=service).list_codes(user.user_id)
         return WatchlistResponse(stock_codes=codes, message=f"当前自选 {len(codes)} 只股票")
     except Exception as e:
         logger.error(f"获取自选队列失败: {e}", exc_info=True)
@@ -359,19 +344,16 @@ def get_watchlist(
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="加入自选队列",
-    description="将指定股票代码加入 STOCK_LIST。",
+    description="将指定股票代码加入当前用户的自选。",
 )
 def add_to_watchlist(
     request: WatchlistRequest,
     service: SystemConfigService = Depends(get_system_config_service),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WatchlistResponse:
     try:
-        validated = _validate_and_normalize_stock_code(request.stock_code)
-        codes = _read_watchlist_codes(service)
-        existing_keys = [_watchlist_match_key(c) for c in codes]
-        if _watchlist_match_key(validated) not in existing_keys:
-            codes.append(request.stock_code.strip())
-            _write_watchlist_codes(service, codes)
+        _validate_and_normalize_stock_code(request.stock_code)
+        codes, _ = WatchlistService(config_service=service).add(user.user_id, request.stock_code)
         return WatchlistResponse(stock_codes=codes, message=f"已加入 {request.stock_code.strip()}")
     except HTTPException:
         raise
@@ -392,21 +374,16 @@ def add_to_watchlist(
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="从自选队列删除",
-    description="从 STOCK_LIST 中移除指定股票代码。",
+    description="从当前用户的自选中移除指定股票代码。",
 )
 def remove_from_watchlist(
     request: WatchlistRequest,
     service: SystemConfigService = Depends(get_system_config_service),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WatchlistResponse:
     try:
-        validated = _validate_and_normalize_stock_code(request.stock_code)
-        codes = _read_watchlist_codes(service)
-        existing_keys = [_watchlist_match_key(c) for c in codes]
-        requested_key = _watchlist_match_key(validated)
-        if requested_key in existing_keys:
-            idx = existing_keys.index(requested_key)
-            codes.pop(idx)
-            _write_watchlist_codes(service, codes)
+        _validate_and_normalize_stock_code(request.stock_code)
+        codes, _ = WatchlistService(config_service=service).remove(user.user_id, request.stock_code)
         return WatchlistResponse(stock_codes=codes, message=f"已移除 {request.stock_code.strip()}")
     except HTTPException:
         raise
@@ -431,12 +408,13 @@ def remove_from_watchlist(
 def get_stock_profile(
     stock_code: str,
     history_days: int = Query(60, ge=1, le=365, description="日线历史天数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockProfileResponse:
     """Return partial profile data without failing on one optional block."""
     _validate_and_normalize_stock_code(stock_code)
     try:
         return StockProfileResponse(
-            **StockProfileService().get_profile(stock_code, history_days=history_days)
+            **StockProfileService(user_id=user.user_id).get_profile(stock_code, history_days=history_days)
         )
     except InvalidStockProfileCode:
         raise HTTPException(

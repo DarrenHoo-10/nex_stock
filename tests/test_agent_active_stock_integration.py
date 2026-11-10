@@ -323,6 +323,7 @@ def test_convergence_real_quote_route_retains_target_and_rejects_wrong_provider(
 
 
 def test_convergence_real_news_handler_ignores_model_subject_name(db, chat_stock_index, monkeypatch):
+    from src.config import get_primary_user_id
     from src.agent.factory import get_tool_registry
     from src.agent.tools import execution, search_tools
     from src.services.agent_chat_session_service import AgentChatSessionService
@@ -341,6 +342,7 @@ def test_convergence_real_news_handler_ignores_model_subject_name(db, chat_stock
     result = execution.execute_runner_tool_call(
         tool_call=SimpleNamespace(name="search_stock_news", arguments={"stock_code": "600519", "stock_name": "宁德时代"}),
         tool_registry=get_tool_registry(), stock_scope=turn.stock_scope,
+        user_id=get_primary_user_id(),  # search tools are user_scoped: they search with the acting user's keys
     )
     assert result[5] is None and result[2] is True
     assert calls == [("600519", "贵州茅台")]

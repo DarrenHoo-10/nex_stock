@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 
 from src.enums import ReportType
+from src.config import get_primary_user_id
 from src.storage import get_db
 from bot.models import BotMessage
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
@@ -159,7 +160,10 @@ class TaskService:
     ) -> List[Dict[str, Any]]:
         """获取分析历史记录"""
         db = get_db()
-        records = db.get_analysis_history(code=code, query_id=query_id, days=days, limit=limit)
+        # Bots / CLI act as the primary user: shared reports plus the primary user's own private ones.
+        records = db.get_analysis_history(
+            code=code, query_id=query_id, days=days, limit=limit, viewer_user_id=get_primary_user_id()
+        )
         return [r.to_dict() for r in records]
 
     def _run_analysis(

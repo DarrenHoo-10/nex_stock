@@ -26,7 +26,7 @@ def test_every_operation_is_a_native_tool(operation):
     assert tool.to_openai_tool()["function"]["parameters"] == operation.input_schema
     assert tool.to_mcp_descriptor()["inputSchema"] == operation.input_schema
     assert registry.validate_tool_policies(strict=True) == []
-    result = registry.execute(tool.name)
+    result = registry.execute(tool.name, user_id="local")
     assert result["records"][0]["val"] == 1.25
     assert result["data"]["data"][0]["announcement_datetime"] == 1000000000
     assert "utm_source=daily_stock_analysis" in result["provider_url"]
@@ -151,7 +151,7 @@ def test_native_multi_agent_filter_keeps_specialist_macro_tools(specialist):
     if specialist == "intel":
         assert set(filtered.list_names()) == set(fxmacrodata_tool_names())
     for name in filtered.list_names():
-        assert filtered.execute(name)["records"][0]["val"] == 1.25
+        assert filtered.execute(name, user_id="local")["records"][0]["val"] == 1.25
 
 
 def test_specialist_selection_rejects_unknown_operation():

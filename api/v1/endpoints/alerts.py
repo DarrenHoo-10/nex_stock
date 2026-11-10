@@ -6,8 +6,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from api.deps import CurrentUser, get_current_user
 from api.v1.schemas.alerts import (
     AlertDeleteResponse,
     AlertNotificationListResponse,
@@ -19,7 +20,7 @@ from api.v1.schemas.alerts import (
     AlertTriggerListResponse,
 )
 from api.v1.schemas.common import ErrorResponse
-from src.config import get_config
+from src.config import get_config, get_primary_user_id
 from src.services.alert_worker import AlertWorker
 from src.services.alert_service import (
     AlertNotFoundError,
@@ -61,8 +62,11 @@ def _internal_error(message: str, exc: Exception) -> HTTPException:
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Create alert rule",
 )
-def create_rule(request: AlertRuleCreateRequest) -> AlertRuleItem:
-    service = AlertService()
+def create_rule(
+    request: AlertRuleCreateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> AlertRuleItem:
+    service = AlertService(user_id=user.user_id)
     try:
         return AlertRuleItem(**service.create_rule(request.model_dump()))
     except UnsupportedAlertTypeError as exc:
@@ -87,11 +91,18 @@ def list_rules(
     source: Optional[str] = Query(None, description="Optional source filter"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> AlertRuleListResponse:
-    service = AlertService()
+    service = AlertService(user_id=user.user_id)
     try:
+        # ``.env`` (legacy) rules are the primary user's; other users have none.
+        rule_sources = (
+            AlertWorker(service=service).get_rule_sources(get_config())
+            if user.user_id == get_primary_user_id()
+            else {"legacy_configured": 0, "legacy_effective": 0}
+        )
         return AlertRuleListResponse(
-            rule_sources=AlertWorker(service=service).get_rule_sources(get_config()),
+            rule_sources=rule_sources,
             **service.list_rules(
                 enabled=enabled,
                 alert_type=alert_type,
@@ -112,8 +123,8 @@ def list_rules(
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Get alert rule",
 )
-def get_rule(rule_id: int) -> AlertRuleItem:
-    service = AlertService()
+def get_rule(rule_id: int, user: CurrentUser = Depends(get_current_user)) -> AlertRuleItem:
+    service = AlertService(user_id=user.user_id)
     try:
         return AlertRuleItem(**service.get_rule(rule_id))
     except AlertNotFoundError as exc:
@@ -128,8 +139,12 @@ def get_rule(rule_id: int) -> AlertRuleItem:
     responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Update alert rule",
 )
-def update_rule(rule_id: int, request: AlertRuleUpdateRequest) -> AlertRuleItem:
-    service = AlertService()
+def update_rule(
+    rule_id: int,
+    request: AlertRuleUpdateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> AlertRuleItem:
+    service = AlertService(user_id=user.user_id)
     try:
         payload = request.model_dump(exclude_unset=True)
         return AlertRuleItem(**service.update_rule(rule_id, payload))
@@ -149,8 +164,8 @@ def update_rule(rule_id: int, request: AlertRuleUpdateRequest) -> AlertRuleItem:
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Delete alert rule",
 )
-def delete_rule(rule_id: int) -> AlertDeleteResponse:
-    service = AlertService()
+def delete_rule(rule_id: int, user: CurrentUser = Depends(get_current_user)) -> AlertDeleteResponse:
+    service = AlertService(user_id=user.user_id)
     try:
         if not service.delete_rule(rule_id):
             raise AlertNotFoundError(f"Alert rule not found: {rule_id}")
@@ -164,15 +179,17 @@ def delete_rule(rule_id: int) -> AlertDeleteResponse:
 @router.post(
     "/rules/{rule_id}/enable",
     response_model=AlertRuleItem,
-    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Enable alert rule",
 )
-def enable_rule(rule_id: int) -> AlertRuleItem:
-    service = AlertService()
+def enable_rule(rule_id: int, user: CurrentUser = Depends(get_current_user)) -> AlertRuleItem:
+    service = AlertService(user_id=user.user_id)
     try:
         return AlertRuleItem(**service.enable_rule(rule_id, True))
     except AlertNotFoundError as exc:
         raise _not_found(exc)
+    except AlertServiceError as exc:
+        raise _bad_request(exc, error=exc.error_code)
     except Exception as exc:
         raise _internal_error("Enable alert rule failed", exc)
 
@@ -183,8 +200,8 @@ def enable_rule(rule_id: int) -> AlertRuleItem:
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Disable alert rule",
 )
-def disable_rule(rule_id: int) -> AlertRuleItem:
-    service = AlertService()
+def disable_rule(rule_id: int, user: CurrentUser = Depends(get_current_user)) -> AlertRuleItem:
+    service = AlertService(user_id=user.user_id)
     try:
         return AlertRuleItem(**service.enable_rule(rule_id, False))
     except AlertNotFoundError as exc:
@@ -199,8 +216,8 @@ def disable_rule(rule_id: int) -> AlertRuleItem:
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Dry-run alert rule",
 )
-def test_rule(rule_id: int) -> AlertRuleTestResponse:
-    service = AlertService()
+def test_rule(rule_id: int, user: CurrentUser = Depends(get_current_user)) -> AlertRuleTestResponse:
+    service = AlertService(user_id=user.user_id)
     try:
         return AlertRuleTestResponse(**service.test_rule(rule_id))
     except AlertNotFoundError as exc:
@@ -221,8 +238,9 @@ def list_triggers(
     status: Optional[str] = Query(None, description="Optional status filter"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> AlertTriggerListResponse:
-    service = AlertService()
+    service = AlertService(user_id=user.user_id)
     try:
         return AlertTriggerListResponse(
             **service.list_triggers(
@@ -249,8 +267,9 @@ def list_notifications(
     success: Optional[bool] = Query(None, description="Optional success filter"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> AlertNotificationListResponse:
-    service = AlertService()
+    service = AlertService(user_id=user.user_id)
     try:
         return AlertNotificationListResponse(
             **service.list_notifications(
