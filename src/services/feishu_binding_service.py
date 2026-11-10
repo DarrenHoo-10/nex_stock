@@ -26,7 +26,7 @@ from src.repositories.feishu_binding_repo import FeishuBindingRepository
 
 logger = logging.getLogger(__name__)
 
-SESSION_PREFIX = "feishu"
+SESSION_PREFIX = "feishu"  # one of src.agent.conversation.BOT_SESSION_PLATFORMS
 TARGET_SOURCE_BINDING = "binding"
 TARGET_SOURCE_CONFIG = "config"
 CHAT_TYPE_P2P = "p2p"

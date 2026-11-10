@@ -288,13 +288,17 @@ class NotificationService(
     注意：所有已配置的渠道都会收到推送
     """
 
-    def __init__(self, source_message: Optional[BotMessage] = None):
+    def __init__(self, source_message: Optional[BotMessage] = None, *, config: Optional[Config] = None):
         """
         初始化通知服务
 
         检测所有已配置的渠道，推送时会向所有渠道发送
+
+        ``config`` 仅用于个人推送渠道（``src/services/user_notification_service.py``）：传入该用户的通知配置视图，
+        渠道与报告偏好都取自它，不读全局配置。不传则与以前一致（系统 ``.env`` 渠道）。
         """
-        config = get_config()
+        self._explicit_config = config
+        config = config if config is not None else get_config()
         self._config = config
         self._source_message = source_message
         self._context_channels: List[str] = []
@@ -342,6 +346,11 @@ class NotificationService(
             channel_names.extend(self._context_channels)
             logger.info(f"已配置 {len(channel_names)} 个通知渠道：{', '.join(channel_names)}")
 
+    def _cfg(self) -> Config:
+        """Config for report rendering: the explicit (personal) config, else the live global one."""
+        explicit = getattr(self, "_explicit_config", None)
+        return explicit if explicit is not None else get_config()
+
     def _normalize_report_type(self, report_type: Any) -> ReportType:
         """Normalize string/enum input into ReportType."""
         if isinstance(report_type, ReportType):
@@ -360,7 +369,7 @@ class NotificationService(
             if language:
                 return normalize_report_language(language)
 
-        return normalize_report_language(getattr(get_config(), "report_language", "zh"))
+        return normalize_report_language(getattr(self._cfg(), "report_language", "zh"))
 
     def _get_labels(self, payload: Optional[Any] = None) -> Dict[str, str]:
         return get_report_labels(self._get_report_language(payload))
@@ -373,7 +382,7 @@ class NotificationService(
 
     def _get_history_compare_context(self, results: List[AnalysisResult]) -> Dict[str, Any]:
         """Fetch and cache history comparison data for markdown rendering."""
-        config = get_config()
+        config = self._cfg()
         history_compare_n = getattr(config, 'report_history_compare_n', 0)
         if history_compare_n <= 0 or not results:
             return {"history_by_code": {}}
@@ -1280,7 +1289,7 @@ class NotificationService(
         Returns:
             Markdown 格式的决策仪表盘日报
         """
-        config = get_config()
+        config = self._cfg()
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
 
@@ -1644,7 +1653,7 @@ class NotificationService(
         Returns:
             精简版决策仪表盘
         """
-        config = get_config()
+        config = self._cfg()
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
         if getattr(config, 'report_renderer_enabled', False) and results:
@@ -1921,7 +1930,7 @@ class NotificationService(
             report_date = datetime.now().strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
-        config = get_config()
+        config = self._cfg()
         if getattr(config, 'report_renderer_enabled', False) and results:
             from src.services.report_renderer import render
             out = render(

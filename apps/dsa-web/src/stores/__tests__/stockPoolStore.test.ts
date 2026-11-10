@@ -27,6 +27,7 @@ vi.mock('../../api/analysis', async () => {
     analysisApi: {
       analyzeAsync: vi.fn(),
       getTasks: vi.fn(),
+      getStatus: vi.fn(),
     },
   };
 });
@@ -1444,5 +1445,113 @@ describe('stockPoolStore', () => {
     const finalState = useStockPoolStore.getState();
     expect(finalState.stockBarItems).toEqual(latestItems);
     expect(finalState.stockBarRefreshFailed).toBe(false);
+  });
+});
+
+describe('multi-user analysis store behaviour', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useStockPoolStore.getState().resetDashboardState();
+  });
+
+  it('sends force_regenerate only when asked to', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({ taskId: 't-1', stockCode: '600519', status: 'pending' } as never);
+
+    await useStockPoolStore.getState().submitAnalysis({ stockCode: '600519', selectionSource: 'manual' });
+    expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0][0]).not.toHaveProperty('forceRegenerate');
+
+    await useStockPoolStore.getState().submitAnalysis({
+      stockCode: '600519',
+      selectionSource: 'manual',
+      forceRegenerate: true,
+    });
+    expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[1][0]).toMatchObject({ forceRegenerate: true });
+  });
+
+  it('keeps the model_key_required code on the surfaced analysis error', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockRejectedValue({
+      response: { status: 400, data: { error: 'model_key_required', message: 'No model configured' } },
+    });
+
+    await useStockPoolStore.getState().submitAnalysis({ stockCode: '600519', selectionSource: 'manual' });
+
+    const { error, isAnalyzing } = useStockPoolStore.getState();
+    expect(error?.code).toBe('model_key_required');
+    expect(isAnalyzing).toBe(false);
+  });
+
+  it('records a reused report and reused inputs by the report query id when a task completes', async () => {
+    vi.mocked(analysisApi.getStatus).mockResolvedValueOnce({
+      taskId: 'task-1',
+      status: 'completed',
+      result: {
+        queryId: 'q-shared',
+        stockCode: '600519',
+        stockName: '贵州茅台',
+        createdAt: '2026-11-09T09:00:00',
+        report: historyReport as never,
+        reused: true,
+        reusedReportId: 41,
+      },
+    });
+    vi.mocked(analysisApi.getStatus).mockResolvedValueOnce({
+      taskId: 'task-2',
+      status: 'completed',
+      result: {
+        queryId: 'q-fresh',
+        stockCode: '000001',
+        stockName: '平安银行',
+        createdAt: '2026-11-09T09:00:00',
+        report: historyReport as never,
+        metadataReusedFrom: 40,
+      },
+    });
+
+    await useStockPoolStore.getState().recordTaskReuse(createTask({ taskId: 'task-1' }));
+    await useStockPoolStore.getState().recordTaskReuse(createTask({ taskId: 'task-2', stockCode: '000001' }));
+
+    expect(useStockPoolStore.getState().analysisReuse).toEqual({
+      'q-shared': { reused: true, reusedReportId: 41, metadataReusedFrom: null },
+      'q-fresh': { reused: false, reusedReportId: null, metadataReusedFrom: 40 },
+    });
+  });
+
+  it('records nothing for an ordinary analysis, a market review or a failed status lookup', async () => {
+    vi.mocked(analysisApi.getStatus).mockResolvedValueOnce({
+      taskId: 'task-1',
+      status: 'completed',
+      result: {
+        queryId: 'q-plain',
+        stockCode: '600519',
+        stockName: '贵州茅台',
+        createdAt: '2026-11-09T09:00:00',
+        report: historyReport as never,
+      },
+    });
+    await useStockPoolStore.getState().recordTaskReuse(createTask());
+
+    await useStockPoolStore.getState().recordTaskReuse(createTask({ reportType: 'market_review' }));
+    expect(analysisApi.getStatus).toHaveBeenCalledTimes(1);
+
+    vi.mocked(analysisApi.getStatus).mockRejectedValueOnce(new Error('gone'));
+    await useStockPoolStore.getState().recordTaskReuse(createTask({ taskId: 'task-9' }));
+
+    expect(useStockPoolStore.getState().analysisReuse).toEqual({});
+  });
+
+  it('asks the history endpoint for mine_only only after the filter is switched on', async () => {
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport as never);
+    vi.mocked(historyApi.getList).mockResolvedValue({ total: 1, page: 1, limit: 20, items: [historyItem] });
+    useStockPoolStore.setState({ selectedReport: historyReport as never });
+
+    await useStockPoolStore.getState().openHistoryTrend();
+    expect(vi.mocked(historyApi.getList).mock.calls.at(-1)?.[0]).not.toHaveProperty('mineOnly');
+
+    await useStockPoolStore.getState().setStockHistoryMineOnly(true);
+    expect(vi.mocked(historyApi.getList).mock.calls.at(-1)?.[0]).toMatchObject({ stockCode: '600519', mineOnly: true });
+    expect(useStockPoolStore.getState().stockHistoryFilters.mineOnly).toBe(true);
+
+    await useStockPoolStore.getState().setStockHistoryMineOnly(false);
+    expect(vi.mocked(historyApi.getList).mock.calls.at(-1)?.[0]).not.toHaveProperty('mineOnly');
   });
 });

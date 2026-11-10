@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional, Tuple, Type
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
-from api.deps import get_daily_plan_service
+from api.deps import CurrentUser, get_current_user, get_daily_plan_service
 from api.v1.errors import api_error
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.daily_plan import (
@@ -23,6 +23,11 @@ from api.v1.schemas.daily_plan import (
     StockPlan,
     StockPlanListResponse,
 )
+
+from src.config import get_primary_user_id
+from src.llm.credentials_guard import ModelKeyRequiredError
+from src.services.user_config_service import get_user_config, require_usable_model
+from src.utils.url_safety import UnsafeUrlError
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +65,7 @@ def _map_exception(message: str, exc: Exception) -> HTTPException:
 def _call(message: str, fn: Callable[[], Any]) -> Any:
     try:
         return fn()
-    except HTTPException:
+    except (HTTPException, ModelKeyRequiredError, UnsafeUrlError):
         raise
     except Exception as exc:
         raise _map_exception(message, exc)
@@ -212,7 +217,14 @@ def get_run(
     responses={409: {"model": ErrorResponse}, **_ERROR_RESPONSES},
     summary="手动运行次日计划",
 )
-def trigger_run(service: Any = Depends(get_daily_plan_service)) -> PlanRun:
+def trigger_run(
+    service: Any = Depends(get_daily_plan_service),
+    user: CurrentUser = Depends(get_current_user),
+) -> PlanRun:
+    # The run uses the caller's own model and POSITION_* rules; a non-primary user without a model of their
+    # own gets 400 model_key_required (viewing existing plans keeps working).
+    if isinstance(user, CurrentUser) and user.user_id != get_primary_user_id():
+        require_usable_model(get_user_config(user.user_id))
     return _call(
         "Trigger plan run failed",
         lambda: PlanRun.model_validate(service.trigger_run()),

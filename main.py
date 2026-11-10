@@ -1961,6 +1961,10 @@ def main() -> int:
             extra_daily_jobs.extend(build_daily_plan_jobs(config, config_provider=_reload_runtime_config))
             extra_daily_jobs.extend(build_preopen_push_jobs(config, config_provider=_reload_runtime_config))
             extra_daily_jobs.extend(build_news_daily_jobs(config, config_provider=_reload_runtime_config))
+            # Multi-user mode: one dynamic job group per kind for the non-primary users' own plan / pre-open times.
+            from src.services.user_scheduled_runs import build_user_schedule_jobs
+
+            extra_daily_jobs.extend(build_user_schedule_jobs(config, config_provider=_reload_runtime_config))
             if extra_daily_jobs:
                 schedule_kwargs["extra_daily_jobs"] = extra_daily_jobs
             if hasattr(config, "schedule_times"):

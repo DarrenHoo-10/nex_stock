@@ -191,13 +191,24 @@ class TushareFetcher(TushareMarketDataMixin, BaseFetcher):
     # 声明可服务的基本面捆绑市场；基本面补充链（base.py）据此把它纳入兜底候选
     fundamental_bundle_markets = {"cn"}
 
-    def __init__(self, rate_limit_per_minute: int = 80):
+    def __init__(
+        self,
+        rate_limit_per_minute: int = 80,
+        *,
+        token: Optional[str] = None,
+        boost_priority: Optional[bool] = None,
+    ):
         """
         初始化 TushareFetcher
 
         Args:
             rate_limit_per_minute: 每分钟最大请求数（默认80，Tushare免费配额）
+            token: 显式 Token（用户自己的凭据）；缺省读取系统配置的 ``TUSHARE_TOKEN``。不写入任何全局状态
+            boost_priority: 显式 Token 时是否提升为最高优先级；缺省按"有 Token 即提升"。用户 Token 传入系统层
+                是否配置了 Token，使数据源链顺序与系统配置一致
         """
+        self._token_override = token
+        self._boost_override = boost_priority
         self.rate_limit_per_minute = rate_limit_per_minute
         self._call_count = 0  # 当前分钟内的调用次数
         self._minute_start: Optional[float] = None  # 当前计数周期开始时间
@@ -221,14 +232,14 @@ class TushareFetcher(TushareMarketDataMixin, BaseFetcher):
         这里直接使用内置 HTTP client，避免运行时强依赖 tushare SDK，
         从而减少 Docker / PyInstaller / 多虚拟环境场景下因缺包导致的初始化失败。
         """
-        config = get_config()
+        token = self._token_override if self._token_override is not None else get_config().tushare_token
 
-        if not config.tushare_token:
+        if not token:
             logger.warning("Tushare Token 未配置，此数据源不可用")
             return
 
         try:
-            self._api = self._build_api_client(config.tushare_token)
+            self._api = self._build_api_client(token)
             logger.info("Tushare API 初始化成功")
         except Exception as e:
             logger.error(f"Tushare API 初始化失败: {e}")
@@ -265,9 +276,13 @@ class TushareFetcher(TushareMarketDataMixin, BaseFetcher):
         Returns:
             优先级数字（0=最高，数字越大优先级越低）
         """
-        config = get_config()
+        token_configured = bool(
+            self._token_override if self._token_override is not None else get_config().tushare_token
+        )
+        if self._boost_override is not None:
+            token_configured = token_configured and self._boost_override
 
-        if config.tushare_token and self._api is not None:
+        if token_configured and self._api is not None:
             # Token 配置且 API 初始化成功，提升为最高优先级
             logger.info("✅ 检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升为最高 (Priority -1)")
             return -1

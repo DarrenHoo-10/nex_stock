@@ -28,6 +28,7 @@ from src.agent.recall.base import (
     RecallQuery,
     RecallTurn,
 )
+from src.utils.url_safety import NO_REDIRECT_REQUESTS_KWARGS
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,15 @@ class HindsightRecallProvider:
         api_key: Optional[str] = None,
         timeout_s: float = 2.0,
         session: Optional[requests.Session] = None,
+        allow_redirects: bool = True,
     ) -> None:
         self._base_url = (base_url or "").strip().rstrip("/")
         self._bank_id = (bank_id or "").strip()
         self._api_key = (api_key or "").strip() or None
         self._timeout_s = float(timeout_s)
         self._session = session or requests.Session()
+        # False for a user-supplied server: a redirect must not carry the request (and the bearer key) to another host.
+        self._request_options = {} if allow_redirects else dict(NO_REDIRECT_REQUESTS_KWARGS)
 
     @property
     def configured(self) -> bool:
@@ -78,7 +82,7 @@ class HindsightRecallProvider:
             raise RecallError("Hindsight is not configured (HINDSIGHT_BASE_URL / HINDSIGHT_BANK_ID)")
         try:
             return self._session.request(
-                method, url, headers=self._headers(), json=json_body, timeout=timeout,
+                method, url, headers=self._headers(), json=json_body, timeout=timeout, **self._request_options,
             )
         except requests.RequestException as exc:
             raise RecallError(f"Hindsight request failed: {type(exc).__name__}") from exc

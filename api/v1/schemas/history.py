@@ -43,6 +43,13 @@ class HistoryItem(BaseModel):
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
     volume_ratio: Optional[float] = Field(None, description="分析时量比")
     turnover_rate: Optional[float] = Field(None, description="分析时换手率")
+    requester_user_id: Optional[str] = Field(None, description="报告发起人（用户中心 userId）")
+    requester_name: Optional[str] = Field(None, description="报告发起人的显示名（尽力而为）")
+    is_mine: Optional[bool] = Field(None, description="是否由当前用户发起")
+    is_private: Optional[bool] = Field(
+        None,
+        description="私有报告：带个人上下文（持仓等）生成，只有发起人能看到",
+    )
     model_used: Optional[str] = Field(
         None,
         description="分析历史记录中的模型快照，仅用于展示历史元数据；不参与模型配置或运行时路由决策",
@@ -152,6 +159,13 @@ class ReportMeta(BaseModel):
     market_phase_summary: Optional[MarketPhaseSummary] = Field(
         None,
         description="本次分析市场阶段低敏摘要",
+    )
+    requester_user_id: Optional[str] = Field(None, description="报告发起人（用户中心 userId）")
+    requester_name: Optional[str] = Field(None, description="报告发起人的显示名（尽力而为）")
+    is_mine: Optional[bool] = Field(None, description="是否由当前用户发起")
+    is_private: Optional[bool] = Field(
+        None,
+        description="私有报告：带个人上下文（持仓等）生成，只有发起人能看到",
     )
     asset_type: Optional[Literal["stock", "index"]] = Field(
         None,

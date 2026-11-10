@@ -62,9 +62,9 @@ NEXT_DATE = date(2026, 11, 9)  # END_DATE is a Friday
 def db():
     DatabaseManager.reset_instance()
     manager = DatabaseManager(db_url="sqlite:///:memory:")
-    service_module._ACTIVE["run_id"] = None
+    service_module._ACTIVE.clear()
     yield manager
-    service_module._ACTIVE["run_id"] = None
+    service_module._ACTIVE.clear()
     DatabaseManager.reset_instance()
 
 
@@ -742,7 +742,7 @@ def test_run_left_running_by_a_dead_process_is_reported_failed(db):
     seed_stock(db, "000988", uptrend(48.35))
     service = make_service(db, make_config(["000988"]), model=False, spawn=lambda fn: None)
     first = service.trigger_run()
-    service_module._ACTIVE["run_id"] = None  # the process that owned it is gone
+    service_module._ACTIVE.clear()  # the process that owned it is gone
     latest = service.get_latest_run()
     assert latest["id"] == first["id"] and latest["status"] == "failed"
     assert service.trigger_run()["id"] != first["id"]
@@ -758,7 +758,7 @@ def test_failed_run_is_recorded_when_the_work_blows_up(db):
     seed_stock(db, "000988", uptrend(48.35))
     run = service.trigger_run()
     assert run["status"] == "failed" and run["finished_at"]
-    assert service_module._ACTIVE["run_id"] is None
+    assert service_module._ACTIVE == {}
 
 
 # ---------------------------------------------------------------------------- endpoints

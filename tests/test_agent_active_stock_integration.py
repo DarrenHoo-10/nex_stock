@@ -323,6 +323,7 @@ def test_convergence_real_quote_route_retains_target_and_rejects_wrong_provider(
 
 
 def test_convergence_real_news_handler_ignores_model_subject_name(db, chat_stock_index, monkeypatch):
+    from src.config import get_primary_user_id
     from src.agent.factory import get_tool_registry
     from src.agent.tools import execution, search_tools
     from src.services.agent_chat_session_service import AgentChatSessionService
@@ -341,6 +342,7 @@ def test_convergence_real_news_handler_ignores_model_subject_name(db, chat_stock
     result = execution.execute_runner_tool_call(
         tool_call=SimpleNamespace(name="search_stock_news", arguments={"stock_code": "600519", "stock_name": "宁德时代"}),
         tool_registry=get_tool_registry(), stock_scope=turn.stock_scope,
+        user_id=get_primary_user_id(),  # search tools are user_scoped: they search with the acting user's keys
     )
     assert result[5] is None and result[2] is True
     assert calls == [("600519", "贵州茅台")]
@@ -1196,6 +1198,7 @@ def test_actual_chat_api_clarification_accepts_without_analysis_or_compression(a
     client, requests, config = actual_chat_api
     config.agent_context_compression_enabled = True
     config.agent_context_compression_trigger_tokens = 1
+    config.agent_context_compression_trigger_ratio = 0  # fixed trigger only: a known model window would apply the default ratio
     def forbidden(*_args, **_kwargs):
         pytest.fail("fixed clarification entered analysis preparation or a model")
     monkeypatch.setattr(chat_context, "_generate_summary", forbidden)
@@ -1505,14 +1508,17 @@ def test_chat_schema_failure_does_not_publish_half_initialized_manager_and_can_r
     with sqlite3.connect(path) as interrupted:
         columns = {row[1] for row in interrupted.execute("PRAGMA table_info(conversation_session_states)")}
         assert "active_stock_code" in columns and "active_stock_canonical_id" not in columns
-        assert interrupted.execute("SELECT * FROM conversation_session_states").fetchone() == (
-            "existing", '["technical"]', "2026-01-01", "2026-01-01", None,
-        )
+        # Explicit columns: the multi-user migration (which runs first) adds ``user_id`` as well.
+        assert interrupted.execute(
+            "SELECT session_id, selected_skill_ids_json, created_at, updated_at, active_stock_code "
+            "FROM conversation_session_states"
+        ).fetchone() == ("existing", '["technical"]', "2026-01-01", "2026-01-01", None)
     recovered = DatabaseManager(db_url=f"sqlite:///{path}")
     snapshot = recovered.read_chat_session_snapshot("existing")
     assert recovered._initialized and snapshot["session_generation"]
     assert snapshot["selected_skill_ids"] == ["technical"] and snapshot["session_state_version"] == 0
-    assert len(inspect(recovered._engine).get_columns("conversation_session_states")) == 13
+    # 13 chat-state columns plus ``user_id`` from the multi-user migration.
+    assert len(inspect(recovered._engine).get_columns("conversation_session_states")) == 14
     with recovered._engine.connect() as connection:
         assert connection.execute(text(
             "SELECT created_at, updated_at FROM conversation_session_states WHERE session_id='existing'"
@@ -2398,6 +2404,9 @@ def test_legacy_prepare_deletion_during_compression_cannot_rebind_request(db, ch
     config.agent_arch = arch
     config.agent_context_compression_enabled = True
     config.agent_context_compression_trigger_tokens = 1
+    # Use the fixed trigger only: a known model context window (real LiteLLM model info loaded by an
+    # earlier test) would otherwise make the default ratio trigger win and skip compression.
+    config.agent_context_compression_trigger_ratio = 0
     config.agent_context_protected_turns = 1
     service = AgentChatSessionService(db)
     sid = "legacy-summary"

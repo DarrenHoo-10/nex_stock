@@ -6,9 +6,11 @@ A股自选股智能分析系统 - 异步任务队列
 
 职责：
 1. 管理异步分析任务的生命周期
-2. 防止相同股票代码重复提交
+2. 防止同一用户相同股票代码重复提交
 3. 提供 SSE 事件广播机制
 4. 任务完成后持久化到数据库
+5. 按用户公平调度：各用户的待办任务轮流取，每个用户同时运行的任务数有上限
+   （``ANALYSIS_MAX_CONCURRENT_PER_USER``），全站并发仍由 ``MAX_WORKERS`` 限制
 """
 
 from __future__ import annotations
@@ -18,11 +20,12 @@ import copy
 import logging
 import threading
 import uuid
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Dict, List, Any, TYPE_CHECKING, Tuple, Literal, Callable
+from typing import Optional, Dict, List, Any, TYPE_CHECKING, Tuple, Literal, Callable, Deque
 
 if TYPE_CHECKING:
     from asyncio import Queue as AsyncQueue
@@ -67,6 +70,42 @@ def _dedupe_task_key(
     if analysis_target is not None and analysis_target.asset_type == ParseStatus.INDEX:
         return analysis_target.canonical_id
     return _dedupe_stock_code_key(stock_code)
+
+
+def task_owner(user_id: Optional[str]) -> str:
+    """The user a task belongs to: the requester, or the primary user for CLI / bot / system / primary tasks."""
+    from src.config import get_primary_user_id
+
+    return user_id or get_primary_user_id()
+
+
+def task_visible_to(task: Any, viewer_user_id: Optional[str]) -> bool:
+    """Whether ``viewer_user_id`` may see / act on ``task`` (``None`` = unrestricted, for internal callers)."""
+    if viewer_user_id is None:
+        return True
+    owner = getattr(task, "user_id", None)
+    return task_owner(owner if isinstance(owner, str) else None) == viewer_user_id
+
+
+def _scoped_dedupe_key(owner: str, dedupe_key: str) -> str:
+    """Duplicate-detection key scoped to one user: users never collide on (or learn about) each other's tasks.
+
+    The primary user keeps the bare key (what the queue always used); everyone else is prefixed.
+    """
+    from src.config import get_primary_user_id
+
+    return dedupe_key if owner == get_primary_user_id() else f"{owner}\x1f{dedupe_key}"
+
+
+@dataclass
+class _PendingRun:
+    """A task accepted by the queue but not yet handed to a worker thread."""
+
+    task_id: str
+    owner: str
+    fn: Callable[..., Any]
+    args: Tuple[Any, ...]
+    counted: bool  # counts against the owner's concurrency cap (analysis tasks; system background tasks do not)
 
 
 def asset_type_from_analysis_target(analysis_target: Optional[Any]) -> Optional[str]:
@@ -136,7 +175,14 @@ class TaskInfo:
     # parser 来源的可选资产类型（``index``/``stock``/``None``）；SSE 与任务列表
     # 从这里透传，不得在消费端重新猜测。
     asset_type: Optional[str] = None
-    
+    # Requester (user-center userId). ``None`` = the primary user / system. Carried to the worker so the
+    # analysis runs with that user's config view; never serialized to clients (``to_dict``).
+    user_id: Optional[str] = None
+    # The request allows answering from an existing shared report (no model call); see report_reuse_service.
+    allow_reuse: bool = False
+    # A worker that has to analyse may reuse the same-day inputs of an earlier analysis; see analysis_metadata_reuse.
+    reuse_metadata: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
         payload = {
@@ -191,6 +237,9 @@ class TaskInfo:
             dedupe_key=self.dedupe_key,
             analysis_target=self.analysis_target,
             asset_type=self.asset_type,
+            user_id=self.user_id,
+            allow_reuse=self.allow_reuse,
+            reuse_metadata=self.reuse_metadata,
         )
 
 
@@ -236,7 +285,14 @@ class AnalysisTaskQueue:
         
         self._max_workers = max_workers
         self._executor: Optional[ThreadPoolExecutor] = None
-        
+
+        # 公平调度：每个用户一条待办队列，空闲线程按"最久没被服务"的用户轮流取
+        self._per_user_limit = 1
+        self._pending_by_owner: "OrderedDict[str, Deque[_PendingRun]]" = OrderedDict()
+        self._running: Dict[str, Tuple[str, bool]] = {}   # task_id -> (owner, counted)
+        self._last_served: Dict[str, int] = {}            # owner -> serve sequence number of its last dispatch
+        self._serve_seq = 0
+
         # 核心数据结构
         self._tasks: Dict[str, TaskInfo] = {}           # task_id -> TaskInfo
         self._analyzing_stocks: Dict[str, str] = {}     # dedupe_key -> task_id
@@ -331,33 +387,167 @@ class AnalysisTaskQueue:
             logger.info("[TaskQueue] 最大并发已更新: %s -> %s", previous, target)
         return "applied"
     
-    # ========== 任务提交与查询 ==========
-    
-    def is_analyzing(self, stock_code: str) -> bool:
+    @property
+    def per_user_limit(self) -> int:
+        """Max analysis tasks one user may have running at the same time."""
+        return self._per_user_limit
+
+    def sync_per_user_limit(self, limit: Any, *, log: bool = True) -> bool:
+        """Apply ``ANALYSIS_MAX_CONCURRENT_PER_USER``; takes effect immediately. Returns True when it changed."""
+        try:
+            target = max(1, int(limit))
+        except (TypeError, ValueError):
+            if log:
+                logger.warning("[TaskQueue] 忽略非法 ANALYSIS_MAX_CONCURRENT_PER_USER 值: %r", limit)
+            return False
+        with self._data_lock:
+            if target == self._per_user_limit:
+                return False
+            previous, self._per_user_limit = self._per_user_limit, target
+            # A raised cap may let pending tasks start now.
+            self._dispatch_locked(fail_on_error=True)
+        if log:
+            logger.info("[TaskQueue] 每用户并发上限已更新: %s -> %s", previous, target)
+        return True
+
+    # ========== 公平调度 ==========
+
+    def _enqueue_locked(
+        self,
+        task_id: str,
+        owner: str,
+        fn: Callable[..., Any],
+        args: Tuple[Any, ...],
+        *,
+        counted: bool,
+    ) -> None:
+        self._pending_by_owner.setdefault(owner, deque()).append(
+            _PendingRun(task_id=task_id, owner=owner, fn=fn, args=args, counted=counted)
+        )
+
+    def _running_count_locked(self, owner: str) -> int:
+        return sum(1 for run_owner, counted in self._running.values() if counted and run_owner == owner)
+
+    def _pick_round_robin_locked(self, *, respect_cap: bool) -> Tuple[Optional[str], Optional[_PendingRun]]:
+        """Least recently served owner with a startable task (``respect_cap=False`` ignores the per-user cap)."""
+        best_owner: Optional[str] = None
+        best_run: Optional[_PendingRun] = None
+        best_seq = 0
+        for owner, pending in self._pending_by_owner.items():
+            at_cap = respect_cap and self._running_count_locked(owner) >= self._per_user_limit
+            startable = next((run for run in pending if not (run.counted and at_cap)), None)
+            if startable is None:
+                continue
+            seq = self._last_served.get(owner, 0)
+            if best_owner is None or seq < best_seq:
+                best_owner, best_run, best_seq = owner, startable, seq
+        return best_owner, best_run
+
+    def _pick_next_locked(self) -> Optional[_PendingRun]:
+        """Next task to start: of the users that may start one now, the one served least recently (round robin).
+
+        A user may start a task when it is not subject to the per-user cap (system background tasks) or the user
+        is below the cap; inside one user's queue the first startable task is taken, so a capped analysis never
+        holds back that user's startable background task.
+
+        The cap only applies while someone else is waiting (work-conserving): when no user below the cap has a
+        startable task, an idle slot goes to a user over the cap, so one user alone can use every worker. As soon
+        as another user submits, every freed slot goes to the users below the cap first.
         """
-        检查股票是否正在分析中
-        
+        if len(self._running) >= self._max_workers:
+            return None
+        best_owner, best_run = self._pick_round_robin_locked(respect_cap=True)
+        if best_owner is None:
+            best_owner, best_run = self._pick_round_robin_locked(respect_cap=False)
+        if best_owner is None or best_run is None:
+            return None
+        queue_of_owner = self._pending_by_owner[best_owner]
+        queue_of_owner.remove(best_run)
+        if not queue_of_owner:
+            del self._pending_by_owner[best_owner]
+        return best_run
+
+    def _dispatch_locked(self, *, fail_on_error: bool = False) -> None:
+        """Hand pending tasks to idle worker threads while the global and per-user caps allow.
+
+        ``fail_on_error=False`` (submit path): an executor failure puts the task back and re-raises so the
+        submitter can roll its batch back. ``True`` (completion path, nobody to raise to): the task is failed.
+        """
+        while True:
+            pending_run = self._pick_next_locked()
+            if pending_run is None:
+                return
+            # Mark it running first: an inline executor (tests) may finish the task before submit() returns.
+            self._running[pending_run.task_id] = (pending_run.owner, pending_run.counted)
+            self._serve_seq += 1
+            self._last_served[pending_run.owner] = self._serve_seq
+            try:
+                future = self.executor.submit(pending_run.fn, *pending_run.args)
+            except Exception as exc:
+                self._running.pop(pending_run.task_id, None)
+                if not fail_on_error:
+                    self._pending_by_owner.setdefault(pending_run.owner, deque()).appendleft(pending_run)
+                    raise
+                logger.error("[TaskQueue] 任务启动失败: %s (%s)", pending_run.task_id, exc)
+                self._fail_task_locked(pending_run.task_id, f"任务启动失败: {exc}")
+                continue
+            self._futures[pending_run.task_id] = future
+
+    def _fail_task_locked(self, task_id: str, error_msg: str) -> None:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        task.status = TaskStatus.FAILED
+        task.completed_at = datetime.now()
+        task.error = error_msg[:200]
+        task.message = f"分析失败: {error_msg[:50]}"
+        self._release_dedupe_locked(task)
+        self._broadcast_event("task_failed", task.to_dict())
+
+    def _release_dedupe_locked(self, task: "TaskInfo") -> None:
+        dedupe_key = task.dedupe_key or _dedupe_task_key(task.stock_code, getattr(task, "analysis_target", None))
+        if self._analyzing_stocks.get(dedupe_key) == task.task_id:
+            del self._analyzing_stocks[dedupe_key]
+
+    def _on_task_finished(self, task_id: str) -> None:
+        """A worker finished ``task_id``: free its slot and start the next fair pending task."""
+        with self._data_lock:
+            slot = self._running.pop(task_id, None)
+            self._dispatch_locked(fail_on_error=True)
+            if slot is not None:
+                owner = slot[0]
+                if owner not in self._pending_by_owner and not any(o == owner for o, _ in self._running.values()):
+                    self._last_served.pop(owner, None)  # bounded memory: an idle user starts fresh
+
+    # ========== 任务提交与查询 ==========
+
+    def is_analyzing(self, stock_code: str, user_id: Optional[str] = None) -> bool:
+        """
+        检查该用户是否已在分析这只股票（任务去重按用户隔离）
+
         Args:
             stock_code: 股票代码
-            
+            user_id: 发起人，``None`` = 主用户
+
         Returns:
             True 表示正在分析中
         """
-        dedupe_key = _dedupe_stock_code_key(stock_code)
+        dedupe_key = _scoped_dedupe_key(task_owner(user_id), _dedupe_stock_code_key(stock_code))
         with self._data_lock:
             return dedupe_key in self._analyzing_stocks
-    
-    def get_analyzing_task_id(self, stock_code: str) -> Optional[str]:
+
+    def get_analyzing_task_id(self, stock_code: str, user_id: Optional[str] = None) -> Optional[str]:
         """
-        获取正在分析该股票的任务 ID
-        
+        获取该用户正在分析该股票的任务 ID
+
         Args:
             stock_code: 股票代码
-            
+            user_id: 发起人，``None`` = 主用户
+
         Returns:
             任务 ID，如果没有则返回 None
         """
-        dedupe_key = _dedupe_stock_code_key(stock_code)
+        dedupe_key = _scoped_dedupe_key(task_owner(user_id), _dedupe_stock_code_key(stock_code))
         with self._data_lock:
             return self._analyzing_stocks.get(dedupe_key)
 
@@ -391,6 +581,7 @@ class AnalysisTaskQueue:
         skills: Optional[List[str]] = None,
         report_language: Optional[str] = None,
         analysis_target: Optional[Any] = None,
+        user_id: Optional[str] = None,
     ) -> TaskInfo:
         """
         Submit a single analysis task.
@@ -429,6 +620,7 @@ class AnalysisTaskQueue:
             skills=skills,
             report_language=report_language,
             analysis_targets=([analysis_target] if analysis_target is not None else None),
+            **({"user_id": user_id} if user_id else {}),
         )
         if duplicates:
             raise duplicates[0]
@@ -449,6 +641,9 @@ class AnalysisTaskQueue:
         skills: Optional[List[str]] = None,
         report_language: Optional[str] = None,
         analysis_targets: Optional[List[Any]] = None,
+        user_id: Optional[str] = None,
+        allow_reuse: bool = False,
+        reuse_metadata: bool = False,
     ) -> Tuple[List[TaskInfo], List[DuplicateTaskError]]:
         """
         Submit analysis tasks in batch.
@@ -458,6 +653,11 @@ class AnalysisTaskQueue:
         - ``analysis_targets`` is an optional per-code structured target list.
           Index targets dedupe by ``canonical_id`` (never collapsing with a
           same-digit stock); stock targets keep the legacy code-based key.
+        - ``user_id`` is the requester; it is recorded on every task and used by the worker to run the
+          analysis with that user's config view. It is also the task owner: scheduling is fair per owner,
+          duplicate detection is per owner, and only the owner sees the task.
+        - ``allow_reuse`` lets the worker answer from an existing shared report instead of calling the model.
+        - ``reuse_metadata`` lets a worker that has to analyse reuse the same-day inputs of an earlier analysis.
         """
         self.validate_selection_source(selection_source)
 
@@ -489,10 +689,13 @@ class AnalysisTaskQueue:
                 if normalized:
                     canonical_codes.append(normalized)
 
+        owner = task_owner(user_id or None)
         with self._data_lock:
             for idx, stock_code in enumerate(canonical_codes):
                 analysis_target = targets_by_index.get(idx)
-                dedupe_key = _dedupe_task_key(stock_code, analysis_target)
+                # Duplicate detection is per user: another user analysing the same stock never blocks you,
+                # and you never learn about their task (no foreign ``existing_task_id``).
+                dedupe_key = _scoped_dedupe_key(owner, _dedupe_task_key(stock_code, analysis_target))
                 if dedupe_key in self._analyzing_stocks:
                     existing_task_id = self._analyzing_stocks[dedupe_key]
                     duplicates.append(DuplicateTaskError(stock_code, existing_task_id))
@@ -518,13 +721,17 @@ class AnalysisTaskQueue:
                     dedupe_key=dedupe_key,
                     analysis_target=analysis_target,
                     asset_type=asset_type_from_analysis_target(analysis_target),
+                    user_id=user_id or None,
+                    allow_reuse=bool(allow_reuse),
+                    reuse_metadata=bool(reuse_metadata),
                 )
                 self._tasks[task_id] = task_info
                 self._analyzing_stocks[dedupe_key] = task_id
-
-                try:
-                    future = self.executor.submit(
-                        self._execute_task,
+                self._enqueue_locked(
+                    task_id,
+                    owner,
+                    self._execute_task,
+                    (
                         task_id,
                         stock_code,
                         report_type,
@@ -533,16 +740,19 @@ class AnalysisTaskQueue:
                         task_skills,
                         report_language,
                         analysis_target,
-                    )
-                except Exception:
-                    # Roll back the current batch to avoid partial submission.
-                    self._rollback_submitted_tasks_locked(created_task_ids + [task_id])
-                    raise
-
-                self._futures[task_id] = future
+                    ),
+                    counted=True,
+                )
                 accepted.append(task_info)
                 created_task_ids.append(task_id)
                 logger.info(f"[TaskQueue] 任务已提交: {stock_code} -> {task_id}")
+
+            try:
+                self._dispatch_locked()
+            except Exception:
+                # Roll back the current batch to avoid partial submission.
+                self._rollback_submitted_tasks_locked(created_task_ids)
+                raise
 
             # Keep task_created ordered before worker-emitted task_started/task_completed.
             # Broadcasting here also preserves batch rollback semantics because we only
@@ -563,12 +773,15 @@ class AnalysisTaskQueue:
         task_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         region: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> TaskInfo:
         """
         Submit a generic background callable with task lifecycle tracking.
 
         This is used by callers that need task status visibility but do not
-        map to standard per-stock async analysis flow.
+        map to standard per-stock async analysis flow. ``user_id`` is the submitter (``None`` = primary
+        user): only they see the task. Background tasks take a global worker slot but do not count against
+        the per-user analysis cap (they are admin / system jobs such as market review and screening).
         """
         task_id = task_id or uuid.uuid4().hex
         task_info = TaskInfo(
@@ -580,19 +793,26 @@ class AnalysisTaskQueue:
             message=message,
             report_type=report_type,
             region=region,
+            user_id=user_id or None,
         )
 
         with self._data_lock:
             if task_id in self._tasks:
                 raise ValueError(f"任务 ID 已存在: {task_id}")
             self._tasks[task_id] = task_info
+            self._enqueue_locked(
+                task_id,
+                task_owner(user_id or None),
+                self._execute_background_task,
+                (task_id, run_task),
+                counted=False,
+            )
             try:
-                future = self.executor.submit(self._execute_background_task, task_id, run_task)
+                self._dispatch_locked()
             except Exception:
-                del self._tasks[task_id]
+                self._rollback_submitted_tasks_locked([task_id])
                 raise
 
-            self._futures[task_id] = future
             self._broadcast_event("task_created", task_info.to_dict())
 
         return task_info.copy()
@@ -600,6 +820,14 @@ class AnalysisTaskQueue:
     def _rollback_submitted_tasks_locked(self, task_ids: List[str]) -> None:
         """回滚当前批次已创建但尚未稳定返回给调用方的任务。"""
         for task_id in task_ids:
+            self._running.pop(task_id, None)
+            for owner in list(self._pending_by_owner):
+                pending = self._pending_by_owner[owner]
+                kept = deque(run for run in pending if run.task_id != task_id)
+                if kept:
+                    self._pending_by_owner[owner] = kept
+                else:
+                    del self._pending_by_owner[owner]
             future = self._futures.pop(task_id, None)
             if future is not None:
                 future.cancel()
@@ -667,10 +895,13 @@ class AnalysisTaskQueue:
                 return []
             return copy.deepcopy(task.flow_events)
     
-    def list_pending_tasks(self) -> List[TaskInfo]:
+    def list_pending_tasks(self, viewer_user_id: Optional[str] = None) -> List[TaskInfo]:
         """
         获取所有进行中的任务（pending + processing）
-        
+
+        Args:
+            viewer_user_id: 非空时只返回该用户自己的任务
+
         Returns:
             任务列表（副本）
         """
@@ -678,42 +909,48 @@ class AnalysisTaskQueue:
             return [
                 task.copy() for task in self._tasks.values()
                 if task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.CANCEL_REQUESTED)
+                and task_visible_to(task, viewer_user_id)
             ]
-    
-    def list_all_tasks(self, limit: int = 50) -> List[TaskInfo]:
+
+    def list_all_tasks(self, limit: int = 50, viewer_user_id: Optional[str] = None) -> List[TaskInfo]:
         """
         获取所有任务（按创建时间倒序）
-        
+
         Args:
             limit: 返回数量限制
-            
+            viewer_user_id: 非空时只返回该用户自己的任务（先过滤再取 limit）
+
         Returns:
             任务列表（副本）
         """
         with self._data_lock:
             tasks = sorted(
-                self._tasks.values(),
+                (t for t in self._tasks.values() if task_visible_to(t, viewer_user_id)),
                 key=lambda t: t.created_at,
                 reverse=True
             )
             return [t.copy() for t in tasks[:limit]]
-    
-    def get_task_stats(self) -> Dict[str, int]:
+
+    def get_task_stats(self, viewer_user_id: Optional[str] = None) -> Dict[str, int]:
         """
         获取任务统计信息
-        
+
+        Args:
+            viewer_user_id: 非空时只统计该用户自己的任务
+
         Returns:
             统计信息字典
         """
         with self._data_lock:
+            visible = [t for t in self._tasks.values() if task_visible_to(t, viewer_user_id)]
             stats = {
-                "total": len(self._tasks),
+                "total": len(visible),
                 "pending": 0,
                 "processing": 0,
                 "completed": 0,
                 "failed": 0,
             }
-            for task in self._tasks.values():
+            for task in visible:
                 stats[task.status.value] = stats.get(task.status.value, 0) + 1
             return stats
 
@@ -766,6 +1003,25 @@ class AnalysisTaskQueue:
         report_language: Optional[str] = None,
         analysis_target: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
+        """Run one analysis task on a worker thread, then free its slot for the next fair pending task."""
+        try:
+            return self._run_analysis_task(
+                task_id, stock_code, report_type, force_refresh, notify, skills, report_language, analysis_target
+            )
+        finally:
+            self._on_task_finished(task_id)
+
+    def _run_analysis_task(
+        self,
+        task_id: str,
+        stock_code: str,
+        report_type: str,
+        force_refresh: bool,
+        notify: bool = True,
+        skills: Optional[List[str]] = None,
+        report_language: Optional[str] = None,
+        analysis_target: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         执行分析任务（在线程池中运行）
         
@@ -788,6 +1044,9 @@ class AnalysisTaskQueue:
             analysis_phase = task.analysis_phase
             query_source = task.query_source or "api"
             portfolio_context = dict(task.portfolio_context) if isinstance(task.portfolio_context, dict) else None
+            task_user_id = task.user_id
+            task_allow_reuse = task.allow_reuse
+            task_reuse_metadata = task.reuse_metadata
             task.status = TaskStatus.PROCESSING
             task.started_at = datetime.now()
             task.message = "正在分析中..."
@@ -829,6 +1088,9 @@ class AnalysisTaskQueue:
                 portfolio_context=portfolio_context,
                 report_language=report_language,
                 analysis_target=analysis_target,
+                **({"user_id": task_user_id} if task_user_id else {}),
+                **({"allow_reuse": True} if task_allow_reuse else {}),
+                **({"reuse_metadata": True} if task_reuse_metadata else {}),
             )
             reset_run_diagnostic_context(diag_token)
             diag_token = None
@@ -894,6 +1156,17 @@ class AnalysisTaskQueue:
             return None
 
     def _execute_background_task(
+        self,
+        task_id: str,
+        run_task: Callable[[], Optional[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        """Run one background task on a worker thread, then free its slot for the next fair pending task."""
+        try:
+            return self._run_background_task(task_id, run_task)
+        finally:
+            self._on_task_finished(task_id)
+
+    def _run_background_task(
         self,
         task_id: str,
         run_task: Callable[[], Optional[Dict[str, Any]]],
@@ -1051,8 +1324,10 @@ class AnalysisTaskQueue:
             event_type: 事件类型
             data: 事件数据
         """
-        event = {"type": event_type, "data": data}
-        
+        task_ref = self._tasks.get(data.get("task_id")) if isinstance(data, dict) else None
+        owner = task_owner(getattr(task_ref, "user_id", None)) if task_ref is not None else None
+        event = {"type": event_type, "data": data, "owner": owner}
+
         with self._subscribers_lock:
             subscribers = self._subscribers.copy()
             loop = self._main_loop
@@ -1101,6 +1376,7 @@ def get_task_queue() -> AnalysisTaskQueue:
         config = get_config()
         target_workers = max(1, int(getattr(config, "max_workers", queue.max_workers)))
         queue.sync_max_workers(target_workers, log=False)
+        queue.sync_per_user_limit(getattr(config, "analysis_max_concurrent_per_user", queue.per_user_limit), log=False)
     except Exception as exc:
         logger.debug("[TaskQueue] 读取 MAX_WORKERS 失败，使用当前并发设置: %s", exc)
 

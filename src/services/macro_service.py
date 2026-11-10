@@ -140,9 +140,9 @@ class MacroService:
     def fetcher(self) -> Any:
         if self._fetcher is None:
             from data_provider.base import DataFetchError
-            from data_provider.tushare_fetcher import TushareFetcher
+            from src.services.on_demand_fetch import shared_tushare_fetcher
 
-            fetcher = TushareFetcher()
+            fetcher = shared_tushare_fetcher()  # one rate limiter for every request (design 23.2)
             if not fetcher.is_available():
                 raise DataFetchError("Tushare 未配置（缺少 TUSHARE_TOKEN），无法获取宏观和指数数据")
             self._fetcher = fetcher

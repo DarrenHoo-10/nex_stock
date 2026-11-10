@@ -340,6 +340,23 @@ Secret 适合 token、password、webhook URL 等敏感项；Variable 适合 `WEC
 
 桌面端可通过配置导出 / 导入恢复 `.env`。回滚某个通知渠道时，清空该渠道 minimal key 并保存即可；advanced key 留存不会单独启用渠道，但建议同步清理以减少后续排障噪音。
 
+## 个人推送渠道（多用户，P3a）
+
+多用户（`AUTH_MODE=user_center`）下，非主用户的推送不使用上面任何 `.env` 渠道或 Bot 应用，而是发到他自己在 `/api/v1/me/notification-channels` 里添加的渠道（`feishu` / `dingtalk` / `wecom` Webhook、`telegram`、`pushplus`、`serverchan3`、自己的 SMTP `email`、`custom` Webhook）。主用户继续使用 `.env` 渠道，行为不变。
+
+- **复用现有发送器**：每条渠道对应一个只含这条配置的 `NotificationService`，用户的通知服务是这些渠道的组合；报告渲染、分片、重试、`send_with_results` 的逐渠道结果沿用本文描述的实现。个人渠道的 `NOTIFICATION_*_CHANNELS` 路由只取用户自己保存的值（系统的路由写的是系统渠道名，不继承）；降噪（去重 / 冷却 / 静默时段）的状态按用户隔离，`REPORT_*` 等偏好取用户自己的个人设置。
+- **目标检查**：Webhook 只接受 `https` 公网地址；SMTP 主机必须是公网主机，端口只允许 465（隐式 TLS）/ 587 / 25（必须 STARTTLS）。保存时检查一次，每次发送前再检查一次，不跟随重定向，SMTP 连接固定到检查过的地址（`src/utils/safe_requests.py`、`src/utils/safe_smtp.py`）。
+- **加密与脱敏**：配置用该用户自己的数据密钥加密；接口读取时 Webhook 地址、Token、密码、签名密钥一律 `******`，更新时留空保持原值；测试发送（`POST /me/notification-channels/{id}/test`）只返回状态和通用失败类别，不回显上游内容。
+- **失败隔离**：一个渠道失败只记录在发起这次推送的用户自己的运行 / 提醒记录里，不影响其它渠道、其它用户和运行本身；没有渠道就什么都不发，不会回退到 `.env` 渠道。
+- **PushPlus** 的请求地址由 `http://www.pushplus.plus/send` 改为 `https://www.pushplus.plus/send`（对主用户同样生效）。
+
+- **出站请求加固（个人渠道）**：用户填写的地址是服务器去访问的，所以个人渠道的 `requests` 调用（`src/utils/safe_requests.py`）额外保证：连接固定到刚检查过的公网地址（防 DNS 重绑定，SNI 与证书主机名校验不变）；不使用环境代理（`HTTPS_PROXY` / `HTTP_PROXY`，主用户渠道照旧）；响应只读前 64 KB（解压后，`Accept-Encoding: identity`，压缩炸弹只会读到 64 KB），读完关闭连接；每次渠道发送有硬性总时限（DNS、连接、TLS、读取响应、SMTP 合计，`USER_PUSH_SEND_DEADLINE_SECONDS`，默认 30 秒），一次推送（该用户所有渠道合计）有总预算（`USER_PUSH_TOTAL_DEADLINE_SECONDS`，默认 60 秒，用完后不再尝试后面的渠道）；异常里不带 URL / 路径 / Token（发送器记录 `{e}` 时不会泄露），请求路径的 `urllib3` 日志在个人渠道范围内关闭；SMTP 的 EHLO 名固定为 `localhost`。保存时对地址的拒绝，凡取决于 DNS 的结果（解析到私网、解析失败）统一报 `unsafe_target`，只有写法本身的问题（协议、凭据、端口、数字别名）保留具体原因。
+- **滥用限制**：测试发送同一用户同一时间只允许一个（`rate_limited`），且不再返回耗时（`latency_ms` 已移除，耗时会暴露内网端口开 / 关 / 过滤）；个人告警推送走有界后台线程池（`USER_PUSH_MAX_WORKERS`，默认 4，每个用户同一时间最多一次推送在途），告警评估和其他用户不会等某个用户卡住的目标，评估完整轮之后才收集结果（最多等推送时限）；`POST /agent/chat/send` 每个非主用户每小时最多 `USER_CHAT_SEND_MAX_PER_HOUR`（默认 30）次，超过返回 `{"success": false, "error": "rate_limited"}`；个人告警推送每小时最多 `USER_ALERT_PUSH_MAX_PER_HOUR`（默认 60）条，超过的只记录触发和 `__rate_limited__` 记录。个人告警的渠道尝试记录不保存耗时。
+- **不写共享 `reports/`**：非主用户的分析运行不保存本地日报文件（共享目录、固定的按日期文件名，也是主用户 `FEISHU_SEND_AS_FILE` 上传的来源）；个人通知服务的 `save_report_to_file` 是空操作且不使用文件上传模式。
+- **`/me/settings` 不再接受渠道凭据键**：`FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN`、`CUSTOM_WEBHOOK_URLS` 等 P2 遗留键返回 400 `managed_elsewhere`（改用 `/me/notification-channels`），也不再出现在 `GET /me/settings` 里；此前已保存的值不会被任何推送路径读取，可用 `DELETE /me/settings/{key}` 清除。
+
+接口、错误码和定时见 [full-guide.md](full-guide.md) 的「个人推送渠道与按用户定时」和 [docs/design/multi-user.md](design/multi-user.md) 第 21 节。
+
 ## 回滚方式
 
 - 本地 / Docker：恢复旧 `.env`，或删除对应渠道 minimal key 后重启进程。

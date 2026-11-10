@@ -57,6 +57,15 @@ from src.llm.generation_params import (
     resolve_required_max_tokens,
 )
 from src.llm.errors import call_litellm_with_param_recovery
+from src.llm.credentials_guard import (
+    config_user_id,
+    harden_user_model_list,
+    is_user_view,
+    require_explicit_credentials,
+    user_call_scope,
+    validate_user_deployments,
+    validate_user_endpoints,
+)
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
@@ -2652,6 +2661,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         """Return the runtime config, honoring injected overrides for tests/pipeline."""
         return getattr(self, "_config_override", None) or get_config()
 
+    def _usage_user_kwargs(self) -> Dict[str, Any]:
+        """``llm_usage`` owner of this analyzer's calls: the user a per-user view belongs to; system jobs and the
+        primary user write no explicit owner (the row defaults to ``PRIMARY_USER_ID``)."""
+        owner = config_user_id(self._get_runtime_config())
+        return {"user_id": owner} if owner else {}
+
     def _get_skill_prompt_sections(self) -> tuple[str, str, bool]:
         """Resolve skill instructions + default baseline + prompt mode."""
         skill_instructions = getattr(self, "_skill_instructions_override", None)
@@ -2846,7 +2861,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     return
             try:
                 self._router = Router(
-                    model_list=router_model_list,
+                    model_list=harden_user_model_list(config, router_model_list),
                     routing_strategy="simple-shuffle",
                     num_retries=2,
                 )
@@ -2891,7 +2906,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             self._legacy_router_model_list = legacy_model_list
             try:
                 self._router = Router(
-                    model_list=legacy_model_list,
+                    model_list=harden_user_model_list(config, legacy_model_list),
                     routing_strategy="simple-shuffle",
                     num_retries=2,
                 )
@@ -3108,6 +3123,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         router_model_names: set[str],
     ) -> Any:
         """Dispatch a LiteLLM completion through router or direct fallback."""
+        # A non-primary user's call may only use that user's own deployments / keys on allowed provider routes,
+        # never the provider variables LiteLLM would read from os.environ, and the endpoints are re-checked now
+        # (docs/design/multi-user.md 3.3).
+        if is_user_view(config):
+            validate_user_deployments(config)
+            validate_user_endpoints(config)
         origins = route_deployment_origins(config.llm_model_list, model)
         if origins.is_mixed:
             raise RuntimeError("Hermes/non-Hermes mixed generation route is not supported without deployment-level no-proxy client support")
@@ -3131,16 +3152,18 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         wire_models = resolve_fallback_litellm_wire_models(model, config.llm_model_list)
         register_fallback_model_pricing(wire_models)
         effective_kwargs = dict(call_kwargs)
-        if use_channel_router and self._router and model in router_model_names:
-            return self._router.completion(**effective_kwargs)
-        if self._router and model == config.litellm_model and not use_channel_router:
-            return self._router.completion(**effective_kwargs)
+        with user_call_scope(config):  # a user view's request never follows a redirect
+            if use_channel_router and self._router and model in router_model_names:
+                return self._router.completion(**effective_kwargs)
+            if self._router and model == config.litellm_model and not use_channel_router:
+                return self._router.completion(**effective_kwargs)
 
-        keys = get_api_keys_for_model(model, config)
-        if keys:
-            effective_kwargs["api_key"] = keys[0]
-        effective_kwargs.update(extra_litellm_params(model, config))
-        return litellm.completion(**effective_kwargs)
+            keys = get_api_keys_for_model(model, config)
+            if keys:
+                effective_kwargs["api_key"] = keys[0]
+            effective_kwargs.update(extra_litellm_params(model, config))
+            require_explicit_credentials(config, effective_kwargs, model=model)
+            return litellm.completion(**effective_kwargs)
 
     def _normalize_usage(
         self,
@@ -3953,7 +3976,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             if isinstance(result, tuple):
                 text, model_used, usage = result
                 if should_persist_usage_telemetry(usage):
-                    persist_llm_usage(usage, model_used, call_type="market_review")
+                    persist_llm_usage(
+                        usage, model_used, call_type="market_review",
+                        **self._usage_user_kwargs(),
+                    )
                 return text
             return result
         except GenerationError:
@@ -3988,7 +4014,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         result = self._call_litellm(prompt, generation_config, system_prompt=system_prompt)
         text, model_used, usage = result
         if should_persist_usage_telemetry(usage):
-            persist_llm_usage(usage, model_used, call_type=call_type)
+            persist_llm_usage(
+                usage, model_used, call_type=call_type,
+                **self._usage_user_kwargs(),
+            )
         return text
 
     def get_generation_backend_identity(self) -> Tuple[str, str]:
@@ -4015,7 +4044,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             if not isinstance(result, GenerationResult):
                 raise TypeError("generation backend returned an invalid result")
             if should_persist_usage_telemetry(result.usage):
-                persist_llm_usage(result.usage, result.model, call_type="market_review")
+                persist_llm_usage(
+                    result.usage, result.model, call_type="market_review",
+                    **self._usage_user_kwargs(),
+                )
             return result
         except GenerationError:
             raise
@@ -4354,7 +4386,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     break
 
             if should_persist_usage_telemetry(llm_usage):
-                persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
+                persist_llm_usage(
+                    llm_usage, model_used, call_type="analysis", stock_code=code,
+                    **self._usage_user_kwargs(),
+                )
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
 

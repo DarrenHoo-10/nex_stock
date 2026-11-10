@@ -97,12 +97,12 @@ def fit_pages(pages: List[Dict[str, Any]], max_chars: int) -> Tuple[List[Tuple[s
     return rendered, needs_tidy
 
 
-def _collect_pages(db, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _collect_pages(db, context: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
     from src.services.assistant_note_service import (
         AssistantNoteService, SCOPE_BOARD, SCOPE_GLOBAL, SCOPE_STOCK,
     )
 
-    service = AssistantNoteService(db)
+    service = AssistantNoteService(db, user_id=user_id)
     wanted: List[Tuple[str, Optional[str]]] = [(SCOPE_GLOBAL, None)]
     stock_code = str(context.get("stock_code") or "").strip()
     if stock_code:
@@ -204,6 +204,24 @@ def _render_section(
     return "\n\n".join(parts) + "\n"
 
 
+def _recall_service_for(user_id: str, config: Any):
+    """Long-term recall service of one user.
+
+    The primary user keeps the system Hindsight bank (``HINDSIGHT_BANK_ID``). Every other user gets a
+    service of their own: the system Hindsight server with a bank derived from the configured bank id and
+    their user id, or their own Hindsight endpoint when they saved one (docs/assistant-memory.md). Two users
+    never share a bank, and an unconfigured provider stays disabled.
+    """
+    from src.config import get_primary_user_id
+
+    if user_id == get_primary_user_id():
+        return get_recall_service(config)
+    from src.agent.recall import get_user_recall_service
+    from src.services.user_config_service import get_user_config
+
+    return get_user_recall_service(user_id, get_user_config(user_id))
+
+
 def build_memory_injection(
     *,
     message: str,
@@ -211,8 +229,16 @@ def build_memory_injection(
     db_manager: Any = None,
     config: Any = None,
     now: Optional[datetime] = None,
+    user_id: Optional[str] = None,
 ) -> MemoryInjection:
-    """Never raises; a failure yields an empty-ish injection."""
+    """Never raises; a failure yields an empty-ish injection.
+
+    ``user_id`` is the session owner whose notes are injected (``None`` = primary user: bots, CLI and
+    other context-less callers).
+    """
+    from src.config import get_primary_user_id
+
+    user_id = user_id or get_primary_user_id()
     context = dict(effective_context or {})
     now = now or datetime.now()
     try:
@@ -228,12 +254,12 @@ def build_memory_injection(
             from src.storage import DatabaseManager
 
             db = db_manager or DatabaseManager.get_instance()
-            notes, needs_tidy = fit_pages(_collect_pages(db, context), max_chars)
+            notes, needs_tidy = fit_pages(_collect_pages(db, context, user_id), max_chars)
         except Exception as exc:
             logger.warning("Assistant notes injection skipped: %s", exc)
 
         tags = object_tags_for(context)
-        service = get_recall_service(config)
+        service = _recall_service_for(user_id, config)
         outcome = service.recall(RecallQuery(text=message, tags=tags, limit=RECALL_TOP_K, now=now))
 
         snapshot, phase = build_context_snapshot(context, now)
@@ -271,12 +297,18 @@ def retain_chat_turn(
     assistant_text: str,
     memory: Optional[MemoryInjection],
     config: Any = None,
+    user_id: Optional[str] = None,
 ) -> None:
-    """Queue a finished turn for long-term retention; never raises, never blocks."""
+    """Queue a finished turn for long-term retention; never raises, never blocks.
+
+    ``user_id`` is the session owner (``None`` = primary user); only the primary user's turns are retained.
+    """
     if user_message_id is None or not assistant_text:
         return
     try:
-        service = get_recall_service(config)
+        from src.config import get_primary_user_id
+
+        service = _recall_service_for(user_id or get_primary_user_id(), config)
         if not service.configured:
             return
         service.retain_async(RecallTurn(

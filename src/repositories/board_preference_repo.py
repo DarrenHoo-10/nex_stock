@@ -19,10 +19,14 @@ class BoardPreferenceRepository:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
 
-    # ------------------------------------------------------------------ follows
-    def list_follows(self) -> List[Dict[str, Any]]:
+    # ------------------------------------------------------------------ follows (per user)
+    def list_follows(self, user_id: str) -> List[Dict[str, Any]]:
         with self.db.get_session() as session:
-            rows = session.execute(select(BoardFollow).order_by(BoardFollow.created_at, BoardFollow.id)).scalars().all()
+            rows = session.execute(
+                select(BoardFollow)
+                .where(BoardFollow.user_id == user_id)
+                .order_by(BoardFollow.created_at, BoardFollow.id)
+            ).scalars().all()
             return [
                 {
                     "board_ref": row.board_ref,
@@ -33,26 +37,30 @@ class BoardPreferenceRepository:
                 for row in rows
             ]
 
-    def follow(self, board_ref: str, board_name: str, board_type: str) -> bool:
+    def follow(self, user_id: str, board_ref: str, board_name: str, board_type: str) -> bool:
         """Idempotent; returns True when a new row was added."""
         def _write(session) -> bool:
-            row = session.execute(select(BoardFollow).where(BoardFollow.board_ref == board_ref)).scalar_one_or_none()
+            row = session.execute(
+                select(BoardFollow).where(BoardFollow.user_id == user_id, BoardFollow.board_ref == board_ref)
+            ).scalar_one_or_none()
             if row is not None:
                 row.board_name = board_name
                 row.board_type = board_type
                 return False
-            session.add(BoardFollow(board_ref=board_ref, board_name=board_name, board_type=board_type,
+            session.add(BoardFollow(user_id=user_id, board_ref=board_ref, board_name=board_name, board_type=board_type,
                                     created_at=utc_naive_now()))
             return True
 
-        return self.db._run_write_transaction(f"board_follow[{board_ref}]", _write)
+        return self.db._run_write_transaction(f"board_follow[{user_id}:{board_ref}]", _write)
 
-    def unfollow(self, board_ref: str) -> bool:
+    def unfollow(self, user_id: str, board_ref: str) -> bool:
         def _write(session) -> bool:
-            result = session.execute(delete(BoardFollow).where(BoardFollow.board_ref == board_ref))
+            result = session.execute(
+                delete(BoardFollow).where(BoardFollow.user_id == user_id, BoardFollow.board_ref == board_ref)
+            )
             return bool(result.rowcount)
 
-        return self.db._run_write_transaction(f"board_unfollow[{board_ref}]", _write)
+        return self.db._run_write_transaction(f"board_unfollow[{user_id}:{board_ref}]", _write)
 
     # ------------------------------------------------------------------ recommendations
     def replace_recommendations(

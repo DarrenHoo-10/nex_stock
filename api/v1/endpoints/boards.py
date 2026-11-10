@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.deps import get_board_anomaly_service, get_system_config_service
+from api.deps import CurrentUser, get_board_anomaly_service, get_current_user, get_system_config_service, require_admin
 from api.v1.errors import api_error
 from api.v1.schemas.boards import (
     BoardAnomalyListResponse,
@@ -95,6 +95,7 @@ def list_thresholds(
 
 @router.put(
     "/thresholds",
+    dependencies=[Depends(require_admin)],
     response_model=ThresholdListResponse,
     responses={
         400: {"model": ErrorResponse},
@@ -164,8 +165,8 @@ def _recommendation_service(anomaly_service: Any) -> Any:
     return BoardRecommendationService(anomaly_service=anomaly_service)
 
 
-def _follow_payload(service: Any) -> dict:
-    follows = _preference_repo().list_follows()
+def _follow_payload(service: Any, user_id: str) -> dict:
+    follows = _preference_repo().list_follows(user_id)
     day, rows = service.board_rows([item["board_ref"] for item in follows])
     return {
         "trade_date": day.isoformat() if day else None,
@@ -188,9 +189,12 @@ def _follow_payload(service: Any) -> dict:
     responses={500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},
     summary="我关注的板块（含最近一次运行的当日数据）",
 )
-def list_follows(service: Any = Depends(get_board_anomaly_service)) -> FollowListResponse:
+def list_follows(
+    service: Any = Depends(get_board_anomaly_service),
+    user: CurrentUser = Depends(get_current_user),
+) -> FollowListResponse:
     try:
-        return FollowListResponse.model_validate(_follow_payload(service))
+        return FollowListResponse.model_validate(_follow_payload(service, user.user_id))
     except HTTPException:
         raise
     except Exception as exc:
@@ -203,14 +207,18 @@ def list_follows(service: Any = Depends(get_board_anomaly_service)) -> FollowLis
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},
     summary="关注板块（重复关注无副作用），返回最新的关注列表",
 )
-def follow_board(board_id: str, service: Any = Depends(get_board_anomaly_service)) -> FollowListResponse:
+def follow_board(
+    board_id: str,
+    service: Any = Depends(get_board_anomaly_service),
+    user: CurrentUser = Depends(get_current_user),
+) -> FollowListResponse:
     try:
         matches = [b for b in service.repo.find_boards(board_id) if b.get("ref") == board_id]
         if not matches:
             raise api_error(404, "not_found", f"未找到板块：{board_id}")
         board = matches[0]
-        _preference_repo().follow(board["ref"], board["name"], board["board_type"])
-        return FollowListResponse.model_validate(_follow_payload(service))
+        _preference_repo().follow(user.user_id, board["ref"], board["name"], board["board_type"])
+        return FollowListResponse.model_validate(_follow_payload(service, user.user_id))
     except HTTPException:
         raise
     except Exception as exc:
@@ -223,10 +231,14 @@ def follow_board(board_id: str, service: Any = Depends(get_board_anomaly_service
     responses={500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},
     summary="取消关注板块（未关注时无副作用），返回最新的关注列表",
 )
-def unfollow_board(board_id: str, service: Any = Depends(get_board_anomaly_service)) -> FollowListResponse:
+def unfollow_board(
+    board_id: str,
+    service: Any = Depends(get_board_anomaly_service),
+    user: CurrentUser = Depends(get_current_user),
+) -> FollowListResponse:
     try:
-        _preference_repo().unfollow(board_id)
-        return FollowListResponse.model_validate(_follow_payload(service))
+        _preference_repo().unfollow(user.user_id, board_id)
+        return FollowListResponse.model_validate(_follow_payload(service, user.user_id))
     except HTTPException:
         raise
     except Exception as exc:
@@ -253,6 +265,7 @@ def get_recommendations(
 
 @router.post(
     "/recommendations/refresh",
+    dependencies=[Depends(require_admin)],
     status_code=202,
     response_model=RecommendationResponse,
     responses={500: {"model": ErrorResponse}, 503: _UNAVAILABLE_RESPONSE},

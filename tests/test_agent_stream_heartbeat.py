@@ -15,7 +15,10 @@ from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
 
-from api.v1.endpoints import agent as agent_endpoint  # noqa: E402
+from api.v1.endpoints import agent as agent_endpoint
+from api.deps import CurrentUser
+
+_PRIMARY_USER = CurrentUser(user_id="local", handle="local", display_name="local", role="admin", is_admin=True)  # noqa: E402
 
 
 class _SlowExecutor:
@@ -39,7 +42,9 @@ def _collect(executor) -> list[str]:
                 patch.object(agent_endpoint, "_select_agent_chat_backend", return_value="litellm"), \
                 patch.object(agent_endpoint, "_prepare_chat_request", return_value=(executor, object(), {}, None)), \
                 patch.object(agent_endpoint, "_accepted_state_payload", return_value={}):
-            response = await agent_endpoint.agent_chat_stream(request, session_service=object())
+            response = await agent_endpoint.agent_chat_stream(
+                request, session_service=object(), user=_PRIMARY_USER,
+            )
             return [chunk async for chunk in response.body_iterator]
 
     return asyncio.run(run())

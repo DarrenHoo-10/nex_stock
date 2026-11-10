@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from bot.commands.base import BotCommand
 from bot.models import BotMessage, BotResponse
 from data_provider.base import canonical_stock_code
-from src.config import get_config
+from src.config import get_config, get_primary_user_id
 from src.storage import get_db
 
 logger = logging.getLogger(__name__)
@@ -236,7 +236,9 @@ class AskCommand(BotCommand):
         try:
             from src.agent.factory import build_agent_executor
 
-            executor = build_agent_executor(config, skills=[skill_id] if skill_id else None)
+            executor = build_agent_executor(
+                config, skills=[skill_id] if skill_id else None, user_id=get_primary_user_id(),
+            )
             user_msg = self._build_user_message(code, skill_id, skill_text)
             session_id = f"{message.platform}_{message.user_id}:ask_{code}_{uuid.uuid4()}"
             result = executor.chat(
@@ -281,7 +283,9 @@ class AskCommand(BotCommand):
                 from src.agent.conversation import conversation_manager
                 from src.agent.factory import build_agent_executor
 
-                executor = build_agent_executor(config, skills=[skill_id] if skill_id else None)
+                executor = build_agent_executor(
+                config, skills=[skill_id] if skill_id else None, user_id=get_primary_user_id(),
+            )
                 user_msg = self._build_user_message(stock_code, skill_id, skill_text)
                 session_id = f"{platform}_{user_id}:ask_{stock_code}_{uuid.uuid4()}"
                 conversation_manager.add_message(session_id, "user", user_msg)

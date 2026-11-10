@@ -11,7 +11,7 @@ Selects which trading skills to apply based on:
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from src.agent.protocols import AgentContext
 from src.agent.skills.defaults import (
@@ -23,7 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 class SkillRouter:
-    """Select applicable skills for a given analysis context."""
+    """Select applicable skills for a given analysis context.
+
+    ``config`` is the acting user's configuration (``AGENT_SKILL_ROUTING`` / ``AGENT_SKILLS`` are personal
+    settings); without one the system config is read, as before.
+    """
+
+    def __init__(self, config: Any = None) -> None:
+        self._config = config
 
     def select_skills(
         self,
@@ -35,9 +42,9 @@ class SkillRouter:
             logger.info("[SkillRouter] user-requested skills: %s", requested_skills)
             return requested_skills[:max_count]
 
-        routing_mode = self._get_routing_mode()
+        routing_mode = self._get_routing_mode(self._config)
         if routing_mode == "manual":
-            selected = self._get_manual_skills(max_count=max_count)
+            selected = self._get_manual_skills(max_count=max_count, config=self._config)
             logger.info("[SkillRouter] manual mode — using skills: %s", selected)
             return selected
 
@@ -99,11 +106,12 @@ class SkillRouter:
         return None
 
     @staticmethod
-    def _get_routing_mode() -> str:
+    def _get_routing_mode(config: Any = None) -> str:
         try:
-            from src.config import get_config
+            if config is None:
+                from src.config import get_config
 
-            config = get_config()
+                config = get_config()
             return getattr(config, "agent_skill_routing", "auto")
         except Exception:
             logger.warning("Failed to get routing mode, falling back to auto", exc_info=True)
@@ -130,12 +138,13 @@ class SkillRouter:
             return []
 
     @classmethod
-    def _get_manual_skills(cls, max_count: int) -> List[str]:
+    def _get_manual_skills(cls, max_count: int, config: Any = None) -> List[str]:
         configured: List[str] = []
         try:
-            from src.config import get_config
+            if config is None:
+                from src.config import get_config
 
-            config = get_config()
+                config = get_config()
             configured = [
                 skill_id
                 for skill_id in getattr(config, "agent_skills", []) or []

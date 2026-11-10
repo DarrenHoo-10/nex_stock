@@ -8,6 +8,7 @@ Tools:
 """
 
 import logging
+from typing import Optional
 
 from src.agent.news_evidence import record_news_evidence
 from src.agent.tools.execution import get_tool_stock_identity
@@ -37,10 +38,29 @@ def _get_db():
     return get_db()
 
 
-def _get_search_service():
-    """Return shared SearchService singleton."""
+def _get_search_service(user_id: Optional[str] = None):
+    """Return the SearchService of the acting user.
+
+    The primary user (and context-less callers) share the process-wide service built from ``.env``. Every
+    other user searches with their own keys only; without any, the service reports ``is_available == False``
+    and the tool answers "no search engine" instead of spending the system's search quota.
+    """
     from src.search_service import get_search_service
-    return get_search_service()
+
+    if not user_id:
+        return get_search_service()
+    from src.services.user_config_service import resolve_user_config
+
+    return get_search_service(resolve_user_config(user_id))
+
+
+def _acting_search_service(user_id: Optional[str]):
+    """Shared service for the primary user / no user context, the user's own one for everybody else."""
+    from src.config import get_primary_user_id
+
+    if user_id and user_id != get_primary_user_id():
+        return _get_search_service(user_id)
+    return _get_search_service()
 
 
 def _canonical_search_code(stock_code: str) -> str:
@@ -108,9 +128,9 @@ def _persist_news_response(
         )
 
 
-def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
+def _handle_search_stock_news(stock_code: str, stock_name: str, user_id: Optional[str] = None) -> dict:
     """Search latest news for a stock."""
-    service = _get_search_service()
+    service = _acting_search_service(user_id)
     query_code, query_name = _resolve_search_subject(stock_code, stock_name)
 
     if not service.is_available:
@@ -174,6 +194,7 @@ search_stock_news_tool = ToolDefinition(
     ],
     handler=_handle_search_stock_news,
     category="search",
+    user_scoped=True,  # searches with the acting user's own keys (see _get_search_service)
     policy=_NEWS_READ_POLICY,
 )
 
@@ -182,9 +203,9 @@ search_stock_news_tool = ToolDefinition(
 # search_comprehensive_intel
 # ============================================================
 
-def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict:
+def _handle_search_comprehensive_intel(stock_code: str, stock_name: str, user_id: Optional[str] = None) -> dict:
     """Multi-dimensional intelligence search."""
-    service = _get_search_service()
+    service = _acting_search_service(user_id)
     query_code, query_name = _resolve_search_subject(stock_code, stock_name)
 
     if not service.is_available:
@@ -258,6 +279,7 @@ search_comprehensive_intel_tool = ToolDefinition(
     ],
     handler=_handle_search_comprehensive_intel,
     category="search",
+    user_scoped=True,  # searches with the acting user's own keys (see _get_search_service)
     policy=_INTEL_READ_POLICY,
 )
 
@@ -282,19 +304,28 @@ def _market_news_terms(keyword: str) -> list:
     return [term for term in str(keyword or "").replace("，", " ").replace(",", " ").split() if term]
 
 
-def _pool_news_hits(terms: list, days: int) -> list:
-    """Stored flash / announcement rows (news pool) whose title, summary or boards mention any term."""
+def _pool_news_hits(terms: list, days: int, user_id: Optional[str] = None) -> list:
+    """Stored flash / announcement rows (news pool) whose title, summary or boards mention any term.
+
+    The pool is shared and its announcements are fetched for every user's watchlist / holdings; for a non-primary
+    ``user_id`` announcements of codes outside that user's own watchlist / holdings are left out (they would reveal
+    what other users follow). Flashes and other general news are returned as before; the primary user is unrestricted.
+    """
     from datetime import timedelta
 
     from src.repositories.intelligence_repo import IntelligenceRepository
+    from src.services.news_digest_service import announcement_visible, viewer_announcement_codes
     from src.services.news_pool_service import china_now
 
     repo = IntelligenceRepository()
     now = china_now()
     rows = repo.list_news_rows(since=now - timedelta(days=days), until=now)
     folded = [term.casefold() for term in terms]
+    own_codes = viewer_announcement_codes(user_id)
     hits = []
     for row in rows:
+        if not announcement_visible(row.item_kind, repo.loads_list(row.stock_codes), own_codes):
+            continue
         boards = repo.loads_list(row.board_names)
         haystack = " ".join([row.title or "", row.summary or "", *[str(b) for b in boards]]).casefold()
         if not any(term in haystack for term in folded):
@@ -315,7 +346,7 @@ def _pool_news_hits(terms: list, days: int) -> list:
     return hits
 
 
-def _handle_search_market_news(keyword: str, days: int = 3) -> dict:
+def _handle_search_market_news(keyword: str, days: int = 3, user_id: Optional[str] = None) -> dict:
     """Market / theme news for a keyword: stored news pool first, web topic search as a fallback."""
     terms = _market_news_terms(keyword)
     if not terms:
@@ -329,14 +360,14 @@ def _handle_search_market_news(keyword: str, days: int = 3) -> dict:
     result = {"keyword": " ".join(terms), "days": days}
     pool_hits = []
     try:
-        pool_hits = _pool_news_hits(terms, days)
+        pool_hits = _pool_news_hits(terms, days, user_id)
     except Exception as exc:  # noqa: BLE001 - the pool is optional; fall through to web search
         logger.warning("[search_market_news] news pool read failed: %s", exc)
         result["pool_error"] = "资讯库读取失败"
     result["pool_results"] = pool_hits
 
     if len(pool_hits) < _MARKET_NEWS_MIN_POOL_HITS:
-        service = _get_search_service()
+        service = _acting_search_service(user_id)
         if not service.is_available:
             result["web_error"] = "未配置搜索引擎"
         else:
@@ -382,6 +413,7 @@ search_market_news_tool = ToolDefinition(
     ],
     handler=_handle_search_market_news,
     category="search",
+    user_scoped=True,  # searches with the acting user's own keys (see _get_search_service)
     policy=_MARKET_NEWS_POLICY,
 )
 

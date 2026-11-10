@@ -26,6 +26,7 @@ import { DecisionSignalProfileCalibration } from '../components/decision-signals
 import { DecisionSignalTimeline } from '../components/decision-signals/DecisionSignalTimeline';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import { useStockIndex } from '../hooks/useStockIndex';
 import type { UiTextKey } from '../i18n/uiText';
 import type { DecisionAction, MarketPhaseValue, StockBarItem } from '../types/analysis';
@@ -387,6 +388,8 @@ function formatStatPercent(value: number | null | undefined): string {
 
 const DecisionSignalsPage: React.FC = () => {
   const { t } = useUiLanguage();
+  // Shared decision signals are written by administrators only (reassess, feedback, status); everyone can read.
+  const { isAdmin } = useCurrentUser();
   const actionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
   const { index: stockIndex } = useStockIndex();
   const [filters, setFilters] = useState<ListFilters>(() => getInitialFilters());
@@ -1565,7 +1568,9 @@ const DecisionSignalsPage: React.FC = () => {
       >
         {selected ? (
           <div className="space-y-4">
-            {renderReassessPanel()}
+            {isAdmin ? renderReassessPanel() : (
+              <InlineAlert variant="info" message={t('me.adminOnlyReadOnlyHint')} className="rounded-xl px-3 py-2 text-xs shadow-none" />
+            )}
             <DecisionSignalDetails
               item={selected.item}
               outcomes={selectedOutcomes}
@@ -1575,8 +1580,8 @@ const DecisionSignalsPage: React.FC = () => {
               feedbackLoading={selectedFeedbackLoading}
               feedbackSaving={feedbackSaving}
               feedbackError={selectedFeedbackError?.message ?? null}
-              onFeedbackSubmit={handleFeedbackSubmit}
-              actions={STATUS_ACTIONS.map((status) => (
+              onFeedbackSubmit={isAdmin ? handleFeedbackSubmit : undefined}
+              actions={isAdmin ? STATUS_ACTIONS.map((status) => (
                 <button
                   key={status}
                   type="button"
@@ -1590,7 +1595,7 @@ const DecisionSignalsPage: React.FC = () => {
                 >
                   {t(STATUS_ACTION_LABEL_KEYS[status])}
                 </button>
-              ))}
+              )) : undefined}
             />
           </div>
         ) : null}

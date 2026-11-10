@@ -12,6 +12,11 @@ interface SettingsCategoryNavProps {
   itemsByCategory: Record<string, SystemConfigItem[]>;
   activeCategory: string;
   onSelect: (category: string) => void;
+  /** Heading / hint above the list; default to the system settings wording. */
+  title?: string;
+  description?: string;
+  /** Badge number per category when it is not simply the number of items (for example a list loaded on its own). */
+  counts?: Record<string, number>;
 }
 
 const categoryIconMap: Partial<Record<SystemConfigCategory, LucideIcon>> = {
@@ -29,23 +34,28 @@ export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({
   itemsByCategory,
   activeCategory,
   onSelect,
+  title,
+  description,
+  counts,
 }) => {
   const { language, t } = useUiLanguage();
+  const navTitle = title ?? t('settings.categoryNavTitle');
+  const navDescription = description ?? t('settings.categoryNavDescription');
 
   return (
     <nav
       className="h-full rounded-lg border settings-border bg-card/90 p-2 shadow-soft-card backdrop-blur-sm"
-      aria-label={t('settings.categoryNavTitle')}
+      aria-label={navTitle}
     >
       <div className="hidden px-2 pb-3 pt-2 lg:block">
-        <p className="settings-accent-text text-xs font-semibold uppercase tracking-[0.24em]">{t('settings.categoryNavTitle')}</p>
-        <p className="mt-1 text-[11px] leading-relaxed text-muted-text">{t('settings.categoryNavDescription')}</p>
+        <p className="settings-accent-text text-xs font-semibold uppercase tracking-[0.24em]">{navTitle}</p>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-text">{navDescription}</p>
       </div>
 
       <div className="flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-1.5 lg:overflow-visible lg:pb-0">
         {categories.map((category) => {
           const isActive = category.category === activeCategory;
-          const count = (itemsByCategory[category.category] || []).length;
+          const count = counts?.[category.category] ?? (itemsByCategory[category.category] || []).length;
           const title = getCategoryTitle(category.category, category.title, language);
           const description = getCategoryDescription(category.category, category.description, language);
           const Icon = categoryIconMap[category.category] ?? Layers3;

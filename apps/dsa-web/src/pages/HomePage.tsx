@@ -27,6 +27,9 @@ import { isWatchlistRowPendingAnalysis } from '../components/watchlist/watchlist
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import { useWatchlist } from '../hooks/useWatchlist';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { useCurrentUser } from '../hooks/useCurrentUser';
+import { ModelKeyBanner } from '../components/auth/ModelKeyBanner';
+import { ReportProvenance } from '../components/report/ReportProvenance';
 import type { SetupStatusResponse } from '../types/systemConfig';
 import { normalizeReportLanguage } from '../utils/reportLanguage';
 import type {
@@ -212,7 +215,7 @@ function toStockBarItemFromHistoryItem(item: HistoryItem): StockBarItem {
   };
 }
 
-async function getTodayAnalysisItems(dateKey: string): Promise<StockBarItem[]> {
+async function getTodayAnalysisItems(dateKey: string, mineOnly = false): Promise<StockBarItem[]> {
   const items: StockBarItem[] = [];
   let loadedRecordCount = 0;
   let page = 1;
@@ -225,6 +228,7 @@ async function getTodayAnalysisItems(dateKey: string): Promise<StockBarItem[]> {
       endDate: shiftDateKey(dateKey, 1),
       page,
       limit: TODAY_ANALYSIS_PAGE_SIZE,
+      ...(mineOnly && { mineOnly: true }),
     });
 
     loadedRecordCount += response.items.length;
@@ -253,6 +257,10 @@ const HomePage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { language: uiLanguage, t } = useUiLanguage();
+  // Administrator gating (docs/design/multi-user.md 2.4): the market review and the system setup check are
+  // process-level endpoints. Local mode is the single administrator, so nothing changes there.
+  const { isAdmin, isMultiUser } = useCurrentUser();
+  const [todayMineOnly, setTodayMineOnly] = useState(false);
   const {
     index: stockIndexItems,
     fallback: isStockIndexFallback,
@@ -371,6 +379,7 @@ const HomePage: React.FC = () => {
     isLoadingMoreStockHistory,
     stockHistoryError,
     stockHistoryFilters,
+    analysisReuse,
     activeTasks,
     markdownDrawerOpen,
     setQuery,
@@ -394,6 +403,7 @@ const HomePage: React.FC = () => {
     openHistoryTrend,
     closeHistoryTrend,
     setStockHistoryRange,
+    setStockHistoryMineOnly,
     loadMoreStockHistory,
     stockBarItems,
     isLoadingStockBar,
@@ -452,6 +462,10 @@ const HomePage: React.FC = () => {
   }, [t]);
 
   useEffect(() => {
+    if (!isAdmin) {
+      // /system/config/setup/status is administrator-only; regular users get the model-key banner instead.
+      return undefined;
+    }
     let active = true;
     systemConfigApi.getSetupStatus()
       .then((status) => {
@@ -468,7 +482,7 @@ const HomePage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     let active = true;
@@ -926,6 +940,24 @@ const HomePage: React.FC = () => {
     });
   }, [selectedAnalysisSkills, selectedReport, submitAnalysis]);
 
+  const handleRegenerate = useCallback(() => {
+    if (!selectedReport || selectedReport.meta.reportType === 'market_review') {
+      return;
+    }
+
+    // force_regenerate: do not answer from an existing shared report; needs the user's own model key.
+    void submitAnalysis({
+      stockCode: selectedReport.meta.stockCode,
+      stockName: selectedReport.meta.stockName,
+      originalQuery: selectedReport.meta.stockCode,
+      selectionSource: 'manual',
+      forceRegenerate: true,
+      skills: selectedAnalysisSkills,
+    });
+  }, [selectedAnalysisSkills, selectedReport, submitAnalysis]);
+
+  const selectedReuse = selectedReport ? analysisReuse[selectedReport.meta.queryId] ?? null : null;
+
   const openTaskRunFlow = useCallback((task: TaskInfo) => {
     const stock = task.stockName || task.stockCode || task.taskId;
     setRunFlowDrawer({
@@ -1112,7 +1144,7 @@ const HomePage: React.FC = () => {
     let active = true;
     setIsLoadingTodayAnalysisItems(true);
     setTodayAnalysisLoadFailed(false);
-    void getTodayAnalysisItems(todayDateKey)
+    void getTodayAnalysisItems(todayDateKey, todayMineOnly)
       .then((items) => {
         if (active) {
           setTodayHistoryItems(items);
@@ -1134,7 +1166,7 @@ const HomePage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [sidebarWorkspaceTab, todayAnalysisRefreshVersion, todayDateKey]);
+  }, [sidebarWorkspaceTab, todayAnalysisRefreshVersion, todayDateKey, todayMineOnly]);
 
   const activeTaskByCode = useMemo(() => {
     const tasksByCode = new Map<string, TaskInfo>();
@@ -1467,6 +1499,8 @@ const HomePage: React.FC = () => {
           isBatchAnalyzing={isBatchAnalyzingWatchlist}
           batchStatus={batchAnalyzeStatus}
           todayItems={todayAnalysisItems}
+          todayMineOnly={todayMineOnly}
+          onTodayMineOnlyChange={setTodayMineOnly}
           isLoadingTodayItems={isLoadingTodayAnalysisItems}
           todayLoadError={todayAnalysisLoadFailed}
           watchlistAnalyzedTodayCount={watchlistAnalyzedTodayCount}
@@ -1504,6 +1538,7 @@ const HomePage: React.FC = () => {
       selectedReport?.meta.stockCode,
       sidebarWorkspaceTab,
       todayAnalysisItems,
+      todayMineOnly,
       watchlistAnalyzedTodayCount,
       watchlistRows,
       watchlistState.actionMessage,
@@ -1598,11 +1633,14 @@ const HomePage: React.FC = () => {
               ) : null}
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-              <MarketReviewRegionSelector
-                value={marketReviewRegionOverride}
-                disabled={isSubmittingMarketReview}
-                onChange={setMarketReviewRegionOverride}
-              />
+              {isAdmin ? (
+                <MarketReviewRegionSelector
+                  value={marketReviewRegionOverride}
+                  disabled={isSubmittingMarketReview}
+                  onChange={setMarketReviewRegionOverride}
+                />
+              ) : null}
+              {isAdmin || !isMultiUser ? (
               <label className="flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-subtle bg-surface/60 px-3 text-xs text-secondary-text select-none transition-colors hover:border-subtle-hover hover:text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
                 <input
                   type="checkbox"
@@ -1613,18 +1651,21 @@ const HomePage: React.FC = () => {
                 />
                 {t('home.notify')}
               </label>
-              <Button
-                type="button"
-                variant="secondary"
-                size="md"
-                isLoading={isSubmittingMarketReview}
-                loadingText={t('home.submitMarketReview')}
-                onClick={() => void handleTriggerMarketReview()}
-                className="h-10 flex-1 whitespace-nowrap md:flex-none"
-              >
-                <BarChart3 className="h-4 w-4" aria-hidden="true" />
-                {t('home.marketReview')}
-              </Button>
+              ) : null}
+              {isAdmin ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="md"
+                  isLoading={isSubmittingMarketReview}
+                  loadingText={t('home.submitMarketReview')}
+                  onClick={() => void handleTriggerMarketReview()}
+                  className="h-10 flex-1 whitespace-nowrap md:flex-none"
+                >
+                  <BarChart3 className="h-4 w-4" aria-hidden="true" />
+                  {t('home.marketReview')}
+                </Button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => handleSubmitAnalysis()}
@@ -1646,6 +1687,8 @@ const HomePage: React.FC = () => {
             </div>
           </div>
         </header>
+
+        <ModelKeyBanner className="px-3 pb-2 md:px-4" />
 
         {inputError || (duplicateError && duplicateBannerVisible) ? (
           <div className="px-3 pb-2 md:px-4">
@@ -1782,6 +1825,18 @@ const HomePage: React.FC = () => {
                         </svg>
                         {t('home.reanalyze')}
                       </Button>
+                      {isMultiUser ? (
+                        <Button
+                          variant="home-action-ai"
+                          size="sm"
+                          disabled={isAnalyzing || selectedReport.meta.id === undefined}
+                          onClick={handleRegenerate}
+                          aria-label={t('history.regenerateHint')}
+                          data-testid="regenerate-report"
+                        >
+                          {t('history.regenerate')}
+                        </Button>
+                      ) : null}
                       <Button
                         variant="home-action-ai"
                         size="sm"
@@ -1794,7 +1849,7 @@ const HomePage: React.FC = () => {
                         {t('home.askAi')}
                       </Button>
                     </>
-                  ) : (
+                  ) : isAdmin ? (
                     <Button
                       variant="home-action-ai"
                       size="sm"
@@ -1806,7 +1861,7 @@ const HomePage: React.FC = () => {
                       <BarChart3 className="h-4 w-4" />
                       {t('home.rerunMarketReview')}
                     </Button>
-                  )}
+                  ) : null}
                   <Button
                     variant="home-action-ai"
                     size="sm"
@@ -1835,6 +1890,7 @@ const HomePage: React.FC = () => {
                     {t('home.fullReport')}
                   </Button>
                 </div>
+                {!isMarketReviewHistoryReport ? <ReportProvenance meta={selectedReport.meta} reuse={selectedReuse} /> : null}
                 {isHistoryTrendOpen ? (
                   <StockHistoryTrendDrawer
                     key={`stock-history-${selectedReport.meta.id}`}
@@ -1848,6 +1904,7 @@ const HomePage: React.FC = () => {
                     filters={stockHistoryFilters}
                     onClose={closeHistoryTrend}
                     onRangeChange={(range) => void setStockHistoryRange(range)}
+                    onMineOnlyChange={(mineOnly) => void setStockHistoryMineOnly(mineOnly)}
                     onLoadMore={() => void loadMoreStockHistory()}
                     onSelectRecord={(recordId) => void selectHistoryItem(recordId)}
                     onRetry={() => void openHistoryTrend()}

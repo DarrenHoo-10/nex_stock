@@ -8,7 +8,9 @@ import {
   RouterProvider,
 } from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
+import { AdminOnly } from './components/auth/AdminOnly';
 import { UserCenterForbidden, UserCenterLoginRedirect } from './components/auth/UserCenterGate';
+import { useCurrentUser } from './hooks/useCurrentUser';
 import { PlanShell } from './components/plan/PlanShell';
 import {
   PageLoadingFallback,
@@ -24,6 +26,7 @@ import './App.css';
 const HomePage = lazy(() => import('./pages/HomePage'));
 const BacktestPage = lazy(() => import('./pages/BacktestPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const PersonalSettingsPage = lazy(() => import('./pages/PersonalSettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
@@ -106,12 +109,22 @@ const LegacyShellLayout: React.FC = () => (
   </Shell>
 );
 
+/**
+ * Administrator-only route (docs/design/multi-user.md 2.4): regular users are sent to their personal settings
+ * instead of a page that would only produce 403s. Local mode and administrators are unaffected.
+ */
+const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAdmin } = useCurrentUser();
+  return isAdmin ? <>{children}</> : <Navigate to="/settings/personal" replace />;
+};
+
 const planRouteChildren = [
   { path: '/closing-analysis', element: <ClosingAnalysisPage /> },
   { path: '/boards', element: <BoardsPage /> },
-  { path: '/picks', element: <PicksPage /> },
+  // Running the screening is an administrator action (POST /screening/screen/tasks).
+  { path: '/picks', element: <AdminOnly variant="plan"><PicksPage /></AdminOnly> },
   { path: '/mine', element: <MinePage /> },
-  { path: '/preferences', element: <PreferencesPage /> },
+  { path: '/preferences', element: <AdminRoute><PreferencesPage /></AdminRoute> },
   { path: '/assistant', element: <AssistantPage /> },
 ];
 
@@ -120,12 +133,13 @@ const legacyRouteChildren = [
   { path: '/chat', element: <ChatPage /> },
   { path: '/portfolio', element: <PortfolioPage /> },
   { path: '/decision-signals', element: <DecisionSignalsPage /> },
-  { path: '/screening', element: <StockScreeningPage /> },
+  { path: '/screening', element: <AdminOnly><StockScreeningPage /></AdminOnly> },
   { path: '/data', element: <DataCenterPage /> },
   { path: '/backtest', element: <BacktestPage /> },
   { path: '/alerts', element: <AlertsPage /> },
   { path: '/usage', element: <TokenUsagePage /> },
-  { path: '/settings', element: <SettingsPage /> },
+  { path: '/settings', element: <AdminRoute><SettingsPage /></AdminRoute> },
+  { path: '/settings/personal', element: <PersonalSettingsPage /> },
   { path: '*', element: <NotFoundPage /> },
 ];
 

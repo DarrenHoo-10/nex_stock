@@ -18,6 +18,25 @@ const { chatPageShouldThrow, setCurrentRoute, useAgentChatStoreMock } = vi.hoist
   return { chatPageShouldThrow, setCurrentRoute, useAgentChatStoreMock };
 });
 
+const { currentUserState } = vi.hoisted(() => ({
+  currentUserState: { isAdmin: true },
+}));
+
+vi.mock('./hooks/useCurrentUser', () => ({
+  useCurrentUser: () => ({
+    user: null,
+    isAdmin: currentUserState.isAdmin,
+    modelKeyConfigured: true,
+    displayName: '',
+    isMultiUser: !currentUserState.isAdmin,
+    refresh: async () => undefined,
+  }),
+}));
+
+vi.mock('./pages/PersonalSettingsPage', () => ({
+  default: () => <div data-testid="personal-settings-page">Personal settings</div>,
+}));
+
 vi.mock('./contexts/AuthContext', () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => children,
   useAuth: vi.fn(),
@@ -96,6 +115,7 @@ function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
   return {
     authMode: 'local',
     userCenter: null,
+    currentUser: null,
     authEnabled: false,
     loggedIn: false,
     passwordSet: false,
@@ -107,6 +127,7 @@ function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
     changePassword: vi.fn().mockResolvedValue({ success: true }),
     logout: vi.fn().mockResolvedValue(undefined),
     refreshStatus: vi.fn().mockResolvedValue(undefined),
+    refreshCurrentUser: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -114,6 +135,7 @@ function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
 beforeEach(() => {
   vi.clearAllMocks();
   chatPageShouldThrow.value = false;
+  currentUserState.isAdmin = true;
   window.history.pushState({}, '', '/');
   localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
   vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState());
@@ -411,5 +433,54 @@ describe('App user_center mode', () => {
     render(<App />);
 
     expect(await screen.findByTestId('mine-page')).toBeInTheDocument();
+  });
+});
+
+describe('App routing for regular users', () => {
+  it('sends a regular user from the system settings to their personal settings', async () => {
+    currentUserState.isAdmin = false;
+    window.history.pushState({}, '', '/settings');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('personal-settings-page')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-page')).not.toBeInTheDocument();
+    expect(window.location.pathname).toBe('/settings/personal');
+  });
+
+  it('sends a regular user from the plan preferences to their personal settings', async () => {
+    currentUserState.isAdmin = false;
+    window.history.pushState({}, '', '/preferences');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('personal-settings-page')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/settings/personal');
+  });
+
+  it('replaces the screening pages with an administrator-permission notice', async () => {
+    currentUserState.isAdmin = false;
+    window.history.pushState({}, '', '/picks');
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: '需要管理员权限' })).toBeInTheDocument();
+    expect(screen.queryByTestId('picks-page')).not.toBeInTheDocument();
+  });
+
+  it('serves the personal settings route to everyone', async () => {
+    window.history.pushState({}, '', '/settings/personal');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('personal-settings-page')).toBeInTheDocument();
+  });
+
+  it('keeps the system settings for an administrator', async () => {
+    window.history.pushState({}, '', '/settings');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('settings-page')).toBeInTheDocument();
   });
 });

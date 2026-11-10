@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from bot.commands.base import BotCommand
 from bot.models import BotMessage, BotResponse, ChatType
+from src.config import get_primary_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,7 @@ class HistoryCommand(BotCommand):
                 limit=limit,
                 session_prefix=prefix,
                 extra_session_ids=[legacy_chat_session_id],
+                user_id=get_primary_user_id(),  # bots act as the primary user
             )
             if not sessions:
                 return BotResponse.text_response("📭 暂无对话历史记录")

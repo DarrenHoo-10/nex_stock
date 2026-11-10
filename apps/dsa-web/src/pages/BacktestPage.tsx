@@ -6,6 +6,7 @@ import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { ApiErrorAlert, Card, Badge, EmptyState, Pagination, StatusDot, Tooltip } from '../components/common';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import { formatUiText, type UiLanguage } from '../i18n/uiText';
 import {
   BACKTEST_DIRECTION_EXPECTED_LABELS,
@@ -245,6 +246,7 @@ const RunSummary: React.FC<{ data: BacktestRunResponse; language: UiLanguage }> 
 
 const BacktestPage: React.FC = () => {
   const { language, t } = useUiLanguage();
+  const { isAdmin } = useCurrentUser();
   const text = BACKTEST_TEXT[language];
   const phaseFilterOptions = BACKTEST_PHASE_FILTER_OPTIONS[language];
   const actionLabels = buildDecisionActionLabelMap(t);
@@ -517,33 +519,42 @@ const BacktestPage: React.FC = () => {
             <span className="dot" />
             {text.oneDayValidation}
           </button>
-          <button
-            type="button"
-            onClick={() => setForceRerun(!forceRerun)}
-            disabled={isRunning}
-            className={`backtest-force-btn ${forceRerun ? 'active' : ''}`}
-          >
-            <span className="dot" />
-            {text.forceRerun}
-          </button>
-          <button
-            type="button"
-            onClick={handleRun}
-            disabled={isRunning}
-            className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
-          >
-            {isRunning ? (
-              <>
-                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                {text.running}
-              </>
-            ) : (
-              text.runBacktest
-            )}
-          </button>
+          {isAdmin ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setForceRerun(!forceRerun)}
+                disabled={isRunning}
+                className={`backtest-force-btn ${forceRerun ? 'active' : ''}`}
+              >
+                <span className="dot" />
+                {text.forceRerun}
+              </button>
+              <button
+                type="button"
+                onClick={handleRun}
+                disabled={isRunning}
+                className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
+              >
+                {isRunning ? (
+                  <>
+                    <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    {text.running}
+                  </>
+                ) : (
+                  text.runBacktest
+                )}
+              </button>
+            </>
+          ) : (
+            // Running a backtest evaluates every shared report: an administrator action (POST /backtest/run).
+            <span className="text-xs text-muted-text" data-testid="backtest-run-admin-only">
+              {t('me.adminOnlyReadOnlyHint')}
+            </span>
+          )}
         </div>
         {runResult && (
           <div className="mt-2 max-w-4xl">

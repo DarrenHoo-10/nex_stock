@@ -7,9 +7,10 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
+from api.deps import CurrentUser, get_current_user
 from api.v1.errors import api_error
 from api.v1.schemas.analysis import DuplicateTaskErrorResponse, TaskAccepted
 from api.v1.schemas.common import ErrorResponse
@@ -35,10 +36,14 @@ from api.v1.schemas.portfolio import (
     PortfolioTradeListResponse,
     PortfolioTradeCreateRequest,
 )
+from src.config import get_primary_user_id
+from src.services.decision_signal_extractor import PORTFOLIO_CONTEXT_OWNER_KEY
 from src.services.task_queue import get_task_queue
+from src.services.user_config_service import get_user_config, require_usable_model
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_risk_service import PortfolioRiskService
 from src.services.portfolio_service import (
+    PortfolioAccountNotFoundError,
     PortfolioBusyError,
     PortfolioConflictError,
     PortfolioOversellError,
@@ -51,6 +56,9 @@ router = APIRouter()
 
 
 def _bad_request(exc: Exception) -> HTTPException:
+    if isinstance(exc, PortfolioAccountNotFoundError):
+        # Missing and foreign accounts look the same (multi-user ownership: 404, never 403).
+        return api_error(404, "not_found", str(exc))
     return api_error(400, "validation_error", str(exc))
 
 
@@ -79,8 +87,11 @@ def _serialize_import_record(item: dict) -> PortfolioImportTradeItem:
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Create portfolio account",
 )
-def create_account(request: PortfolioAccountCreateRequest) -> PortfolioAccountItem:
-    service = PortfolioService()
+def create_account(
+    request: PortfolioAccountCreateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioAccountItem:
+    service = PortfolioService(user_id=user.user_id)
     try:
         row = service.create_account(
             name=request.name,
@@ -104,8 +115,9 @@ def create_account(request: PortfolioAccountCreateRequest) -> PortfolioAccountIt
 )
 def list_accounts(
     include_inactive: bool = Query(False, description="Whether to include inactive accounts"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioAccountListResponse:
-    service = PortfolioService()
+    service = PortfolioService(user_id=user.user_id)
     try:
         rows = service.list_accounts(include_inactive=include_inactive)
         return PortfolioAccountListResponse(accounts=[PortfolioAccountItem(**item) for item in rows])
@@ -119,8 +131,11 @@ def list_accounts(
     responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Update portfolio account",
 )
-def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> PortfolioAccountItem:
-    service = PortfolioService()
+def update_account(
+    account_id: int, request: PortfolioAccountUpdateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioAccountItem:
+    service = PortfolioService(user_id=user.user_id)
     try:
         updated = service.update_account(
             account_id,
@@ -147,8 +162,11 @@ def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> P
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Deactivate portfolio account",
 )
-def delete_account(account_id: int):
-    service = PortfolioService()
+def delete_account(
+    account_id: int,
+    user: CurrentUser = Depends(get_current_user),
+):
+    service = PortfolioService(user_id=user.user_id)
     try:
         ok = service.deactivate_account(account_id)
         if not ok:
@@ -166,8 +184,11 @@ def delete_account(account_id: int):
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Record trade event",
 )
-def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedResponse:
-    service = PortfolioService()
+def create_trade(
+    request: PortfolioTradeCreateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioEventCreatedResponse:
+    service = PortfolioService(user_id=user.user_id)
     try:
         data = service.record_trade(
             account_id=request.account_id,
@@ -210,8 +231,9 @@ def list_trades(
     side: Optional[str] = Query(None, description="Optional side filter: buy/sell"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioTradeListResponse:
-    service = PortfolioService()
+    service = PortfolioService(user_id=user.user_id)
     try:
         data = service.list_trade_events(
             account_id=account_id,
@@ -235,8 +257,11 @@ def list_trades(
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Delete trade event",
 )
-def delete_trade(trade_id: int) -> PortfolioDeleteResponse:
-    service = PortfolioService()
+def delete_trade(
+    trade_id: int,
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioDeleteResponse:
+    service = PortfolioService(user_id=user.user_id)
     try:
         ok = service.delete_trade_event(trade_id)
         if not ok:
@@ -256,8 +281,11 @@ def delete_trade(trade_id: int) -> PortfolioDeleteResponse:
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Record cash event",
 )
-def create_cash_ledger(request: PortfolioCashLedgerCreateRequest) -> PortfolioEventCreatedResponse:
-    service = PortfolioService()
+def create_cash_ledger(
+    request: PortfolioCashLedgerCreateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioEventCreatedResponse:
+    service = PortfolioService(user_id=user.user_id)
     try:
         data = service.record_cash_ledger(
             account_id=request.account_id,
@@ -289,8 +317,9 @@ def list_cash_ledger(
     direction: Optional[str] = Query(None, description="Optional direction filter: in/out"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioCashLedgerListResponse:
-    service = PortfolioService()
+    service = PortfolioService(user_id=user.user_id)
     try:
         data = service.list_cash_ledger_events(
             account_id=account_id,
@@ -313,8 +342,11 @@ def list_cash_ledger(
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Delete cash ledger event",
 )
-def delete_cash_ledger(entry_id: int) -> PortfolioDeleteResponse:
-    service = PortfolioService()
+def delete_cash_ledger(
+    entry_id: int,
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioDeleteResponse:
+    service = PortfolioService(user_id=user.user_id)
     try:
         ok = service.delete_cash_ledger_event(entry_id)
         if not ok:
@@ -334,8 +366,11 @@ def delete_cash_ledger(entry_id: int) -> PortfolioDeleteResponse:
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Record corporate action event",
 )
-def create_corporate_action(request: PortfolioCorporateActionCreateRequest) -> PortfolioEventCreatedResponse:
-    service = PortfolioService()
+def create_corporate_action(
+    request: PortfolioCorporateActionCreateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioEventCreatedResponse:
+    service = PortfolioService(user_id=user.user_id)
     try:
         data = service.record_corporate_action(
             account_id=request.account_id,
@@ -371,8 +406,9 @@ def list_corporate_actions(
     action_type: Optional[str] = Query(None, description="Optional action type filter"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioCorporateActionListResponse:
-    service = PortfolioService()
+    service = PortfolioService(user_id=user.user_id)
     try:
         data = service.list_corporate_action_events(
             account_id=account_id,
@@ -396,8 +432,11 @@ def list_corporate_actions(
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Delete corporate action event",
 )
-def delete_corporate_action(action_id: int) -> PortfolioDeleteResponse:
-    service = PortfolioService()
+def delete_corporate_action(
+    action_id: int,
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioDeleteResponse:
+    service = PortfolioService(user_id=user.user_id)
     try:
         ok = service.delete_corporate_action_event(action_id)
         if not ok:
@@ -425,8 +464,9 @@ def get_snapshot(
         True,
         description="Whether today's snapshot should try realtime quotes before historical close fallback",
     ),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioSnapshotResponse:
-    service = PortfolioService()
+    service = PortfolioService(user_id=user.user_id)
     try:
         data = service.get_portfolio_snapshot(
             account_id=account_id,
@@ -448,8 +488,11 @@ def get_snapshot(
     responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": DuplicateTaskErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Submit manual analysis for a held portfolio position",
 )
-def analyze_position(symbol: str, request: PortfolioPositionAnalysisRequest) -> TaskAccepted | JSONResponse:
-    service = PortfolioService()
+def analyze_position(
+    symbol: str, request: PortfolioPositionAnalysisRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> TaskAccepted | JSONResponse:
+    service = PortfolioService(user_id=user.user_id)
     try:
         context = _resolve_position_analysis_context(service, symbol=symbol, account_id=request.account_id)
     except HTTPException:
@@ -458,6 +501,14 @@ def analyze_position(symbol: str, request: PortfolioPositionAnalysisRequest) -> 
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Resolve portfolio position failed", exc)
+
+    # A non-primary user's analysis (position-aware) is pushed to that user's own channels only, never through the
+    # server's ``.env`` channels, and it never leaves their holding in shared decision signals.
+    is_primary = user.user_id == get_primary_user_id()
+    context[PORTFOLIO_CONTEXT_OWNER_KEY] = user.user_id
+    if not is_primary:
+        # The analysis runs with the requester's own model / search keys; none configured -> 400 model_key_required.
+        require_usable_model(get_user_config(user.user_id))
 
     queue = get_task_queue()
     accepted, duplicates = queue.submit_tasks_batch(
@@ -470,7 +521,11 @@ def analyze_position(symbol: str, request: PortfolioPositionAnalysisRequest) -> 
         report_type="detailed",
         analysis_phase=request.analysis_phase,
         force_refresh=bool(request.force),
+        # A position-aware analysis is never a direct reuse (its report is private) but it still skips fetching the
+        # market inputs that an earlier analysis of the same stock / trading date collected.
+        reuse_metadata=not request.force,
         notify=True,
+        **({} if is_primary else {"user_id": user.user_id}),
     )
     if duplicates:
         dup = duplicates[0]
@@ -564,8 +619,9 @@ def _resolve_position_analysis_context(
 def parse_csv_import(
     broker: str = Form(..., description="Broker id: huatai/citic/cmb"),
     file: UploadFile = File(...),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioImportParseResponse:
-    importer = PortfolioImportService()
+    importer = PortfolioImportService(user_id=user.user_id)
     try:
         content = file.file.read()
         parsed = importer.parse_trade_csv(broker=broker, content=content)
@@ -589,8 +645,10 @@ def parse_csv_import(
     responses={500: {"model": ErrorResponse}},
     summary="List supported broker CSV parsers",
 )
-def list_csv_brokers() -> PortfolioImportBrokerListResponse:
-    importer = PortfolioImportService()
+def list_csv_brokers(
+    user: CurrentUser = Depends(get_current_user),
+) -> PortfolioImportBrokerListResponse:
+    importer = PortfolioImportService(user_id=user.user_id)
     try:
         return PortfolioImportBrokerListResponse(brokers=importer.list_supported_brokers())
     except Exception as exc:
@@ -608,8 +666,9 @@ def commit_csv_import(
     broker: str = Form(..., description="Broker id: huatai/citic/cmb"),
     dry_run: bool = Form(False),
     file: UploadFile = File(...),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioImportCommitResponse:
-    importer = PortfolioImportService()
+    importer = PortfolioImportService(user_id=user.user_id)
     try:
         content = file.file.read()
         parsed = importer.parse_trade_csv(broker=broker, content=content)
@@ -635,8 +694,9 @@ def commit_csv_import(
 def refresh_fx_rates(
     account_id: Optional[int] = Query(None, description="Optional account id"),
     as_of: Optional[date] = Query(None, description="Rate date, default today"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioFxRefreshResponse:
-    service = PortfolioService()
+    service = PortfolioService(user_id=user.user_id)
     try:
         data = service.refresh_fx_rates(account_id=account_id, as_of=as_of)
         return PortfolioFxRefreshResponse(**data)
@@ -660,8 +720,9 @@ def get_risk_report(
         True,
         description="Whether today's risk snapshot should try realtime quotes before historical close fallback",
     ),
+    user: CurrentUser = Depends(get_current_user),
 ) -> PortfolioRiskResponse:
-    service = PortfolioRiskService()
+    service = PortfolioRiskService(user_id=user.user_id)
     try:
         data = service.get_risk_report(
             account_id=account_id,

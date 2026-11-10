@@ -43,11 +43,23 @@ from src.agent.tools.execution import (
     serialize_tool_result,
 )
 from src.agent.stock_scope import StockScope
+from src.llm.credentials_guard import config_user_id
 from src.llm.usage import should_persist_usage_telemetry
 from src.utils.data_processing import normalize_report_signal_attribution
 from src.storage import persist_llm_usage as _persist_usage
 
 logger = logging.getLogger(__name__)
+
+
+def _usage_owner_kwargs(llm_adapter: Any, user_id: Optional[str]) -> Dict[str, Any]:
+    """``llm_usage`` owner of an Agent call: the owner of the adapter's per-user view (else the acting user when it
+    is not the primary one). System jobs and the primary user pass nothing and are recorded as ``PRIMARY_USER_ID``."""
+    from src.config import get_primary_user_id
+
+    owner = config_user_id(getattr(llm_adapter, "_config", None))
+    if not owner and user_id and user_id != get_primary_user_id():
+        owner = user_id
+    return {"user_id": owner} if owner else {}
 
 __all__ = [
     "RunLoopResult",
@@ -337,6 +349,7 @@ def run_agent_loop(
     tool_call_timeout_seconds: Optional[float] = None,
     stock_scope: Optional[StockScope] = None,
     emit_stage_events: bool = True,
+    user_id: Optional[str] = None,
 ) -> RunLoopResult:
     """Execute the ReAct LLM ↔ tool loop.
 
@@ -360,6 +373,8 @@ def run_agent_loop(
         emit_stage_events: Whether to emit the synthetic ``agent_loop``
             stage lifecycle. Orchestrated business stages disable this so
             ``stage_start`` / ``stage_done`` only describe real stages.
+        user_id: Acting user (session owner). Handed to ``user_scoped`` tools
+            (personal data); without it those tools refuse to run.
 
     Returns:
         A :class:`RunLoopResult` with the final content, stats, and the
@@ -470,7 +485,10 @@ def run_agent_loop(
             models_used.append(m)
         model_for_usage = m or response.provider
         if model_for_usage and model_for_usage != "error" and should_persist_usage_telemetry(response.usage):
-            _persist_usage(response.usage, model_for_usage, call_type="agent")
+            _persist_usage(
+                response.usage, model_for_usage, call_type="agent",
+                **_usage_owner_kwargs(llm_adapter, user_id),
+            )
 
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         if remaining_timeout is not None and remaining_timeout <= 0:
@@ -531,6 +549,7 @@ def run_agent_loop(
                 tool_call_timeout_seconds=tool_call_timeout_seconds,
                 tool_wait_timeout_seconds=remaining_timeout,
                 stock_scope=stock_scope,
+                user_id=user_id,
             )
 
             # Append tool results preserving original call order
@@ -718,6 +737,7 @@ def _execute_tools(
     tool_call_timeout_seconds: Optional[float] = None,
     tool_wait_timeout_seconds: Optional[float] = None,
     stock_scope: Optional[StockScope] = None,
+    user_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Execute one or more tool calls, returning ordered result dicts.
 
@@ -740,6 +760,7 @@ def _execute_tools(
             tool_registry=tool_registry,
             stock_scope=stock_scope,
             non_retriable_tool_results=non_retriable_tool_results,
+            user_id=user_id,
         )
 
     def _exec_with_deadline(tc_item, per_tool_timeout, deadline_holder):

@@ -212,6 +212,16 @@ def test_szse_is_the_third_announcement_source(pool, monkeypatch):
 # ----------------------------------------------------------------------
 # API
 # ----------------------------------------------------------------------
+
+
+def _primary():
+    """The acting user the open stock routes receive for the primary user (CLI / local mode)."""
+    from api.deps import CurrentUser
+    from src.config import get_primary_user_id
+
+    uid = get_primary_user_id()
+    return CurrentUser(user_id=uid, handle=uid, display_name=uid, role="admin", is_admin=True)
+
 def test_qa_endpoint_refreshes_then_reads_stored_items(pool, monkeypatch):
     from fastapi import HTTPException
 
@@ -232,12 +242,12 @@ def test_qa_endpoint_refreshes_then_reads_stored_items(pool, monkeypatch):
                                                                     setattr(self, "_sleep", lambda s: None),
                                                                     setattr(self, "_events_runner", None),
                                                                     None)[-1])
-    first = get_stock_qa("002773", days=60)
+    first = get_stock_qa("002773", days=60, user=_primary())
     assert first.platform == "irm" and first.items and first.fetch["status"] == "ok" and fetches == ["002773"]
     assert first.items[0].platform_label == "巨潮互动易" and first.items[0].answer
-    again = get_stock_qa("002773", days=60)
+    again = get_stock_qa("002773", days=60, user=_primary())
     assert again.fetch == {} and fetches == ["002773"]  # fetched within 6 h
-    bse = get_stock_qa("920002", days=30)
+    bse = get_stock_qa("920002", days=30, user=_primary())
     assert bse.platform is None and bse.items == [] and "北交所" in bse.coverage
     with pytest.raises(HTTPException):
-        get_stock_qa("sh000001", days=30)
+        get_stock_qa("sh000001", days=30, user=_primary())

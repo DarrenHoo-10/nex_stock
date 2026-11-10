@@ -2578,6 +2578,18 @@ class SystemConfigService:
         ]
         return self._collect_generation_backend_issues(items=items, mask_token="******")
 
+    @classmethod
+    def validate_single_value(cls, key: str, value: str) -> List[Dict[str, Any]]:
+        """Validate one value with the registry rules (shared with per-user settings)."""
+        key_upper = key.upper()
+        return cls._validate_value(key=key_upper, value=value, field_schema=get_field_definition(key_upper, value))
+
+    @classmethod
+    def normalize_single_value(cls, key: str, value: str) -> str:
+        """Normalize one value for storage with the registry rules (shared with per-user settings)."""
+        key_upper = key.upper()
+        return cls._normalize_value_for_storage(value, get_field_definition(key_upper, value))
+
     @staticmethod
     def _validate_value(key: str, value: str, field_schema: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Validate a single field value against schema metadata."""

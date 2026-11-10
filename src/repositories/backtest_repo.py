@@ -34,10 +34,32 @@ BacktestResultContextRow = Tuple[
 
 
 class BacktestRepository:
-    """DB access layer for backtesting."""
+    """DB access layer for backtesting.
+
+    Backtests are shared system output (docs/design/multi-user.md 1 / 17): every candidate, result and rollup is
+    built from shared reports only. A private report (``AnalysisHistory.is_private``: produced with one user's
+    personal context such as holdings) is never a candidate, and results that still point at one are invisible
+    to every read and to the summary recompute (:meth:`shared_result_condition`).
+    """
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
+
+    @staticmethod
+    def shared_report_condition():
+        """SQL predicate on ``AnalysisHistory``: the report is shared (``NULL`` counts as shared)."""
+        return or_(AnalysisHistory.is_private.is_(None), AnalysisHistory.is_private.is_(False))
+
+    @staticmethod
+    def shared_result_condition():
+        """SQL predicate on ``BacktestResult``: its source report is not private (also true without a source)."""
+        private_source = (
+            select(AnalysisHistory.id)
+            .where(AnalysisHistory.id == BacktestResult.analysis_history_id, AnalysisHistory.is_private.is_(True))
+            .correlate(BacktestResult)
+            .exists()
+        )
+        return ~private_source
 
     def get_candidates(
         self,
@@ -54,7 +76,7 @@ class BacktestRepository:
         cutoff_dt = datetime.now() - timedelta(days=min_age_days)
 
         with self.db.get_session() as session:
-            conditions = [AnalysisHistory.created_at <= cutoff_dt]
+            conditions = [AnalysisHistory.created_at <= cutoff_dt, self.shared_report_condition()]
             if code:
                 conditions.extend(self._build_code_conditions(AnalysisHistory.code, code))
             conditions.append(
@@ -104,6 +126,7 @@ class BacktestRepository:
                 AnalysisHistory.created_at <= cutoff_dt,
                 BacktestResult.eval_window_days == eval_window_days,
                 BacktestResult.engine_version == engine_version,
+                self.shared_report_condition(),
                 or_(
                     AnalysisHistory.report_type.is_(None),
                     AnalysisHistory.report_type != MARKET_REVIEW_REPORT_TYPE,
@@ -507,7 +530,7 @@ class BacktestRepository:
         days: Optional[int],
         code_candidates: Optional[Tuple[str, ...]] = None,
     ) -> List[object]:
-        conditions = []
+        conditions = [BacktestRepository.shared_result_condition()]
         if code_candidates is not None:
             conditions.append(BacktestRepository._strict_result_code_condition(code_candidates))
         elif code:

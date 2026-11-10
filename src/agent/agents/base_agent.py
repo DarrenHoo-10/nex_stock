@@ -130,6 +130,7 @@ class BaseAgent(ABC):
                 max_wall_clock_seconds=timeout_seconds,
                 stock_scope=ctx.meta.get("stock_scope"),
                 emit_stage_events=False,
+                user_id=ctx.user_id,
             )
 
             result.tokens_used = loop_result.total_tokens

@@ -18,7 +18,8 @@ from src.agent.events import (
     _read_quote_float,
     validate_event_alert_rule,
 )
-from src.repositories.alert_repo import AlertRepository
+from src.config import get_config, get_primary_user_id
+from src.repositories.alert_repo import AlertRepository, AlertRuleLimitExceeded
 from src.services.alert_indicators import (
     TECHNICAL_ALERT_TYPES,
     TechnicalIndicatorAlert,
@@ -95,31 +96,58 @@ class AlertNotFoundError(AlertServiceError):
     error_code = "not_found"
 
 
+class AlertRuleLimitError(AlertServiceError):
+    """Raised when a user already has the maximum number of enabled alert rules."""
+
+    error_code = "rule_limit_exceeded"
+
+
 class UnsupportedAlertTypeError(AlertServiceError):
     """Raised when the API receives a future/non-runtime alert type."""
 
     error_code = "unsupported_alert_type"
 
 
+def max_enabled_rules_per_user() -> int:
+    """Per-user cap on enabled rules (``ALERT_MAX_ENABLED_RULES_PER_USER``); also the worker's per-user selection."""
+    try:
+        return max(1, int(getattr(get_config(), "alert_max_enabled_rules_per_user", 200)))
+    except (TypeError, ValueError):
+        return 200
+
+
 class AlertService:
     """Business logic for alert rule CRUD and dry-run evaluation."""
 
-    def __init__(self, db_manager: Optional[DatabaseManager] = None):
+    def __init__(self, db_manager: Optional[DatabaseManager] = None, user_id: Optional[str] = None):
+        """Bind the service to one rule owner.
+
+        ``user_id`` is the owner every rule/history read and write is scoped to (API endpoints pass the
+        authenticated user). ``None`` means the primary user (``PRIMARY_USER_ID``), which is how the
+        CLI, bots, MCP, the alert worker and other context-less entry points act; it is resolved once
+        here and never re-read. Rows of other users reach the service only through the worker, which
+        evaluates every user's rules and passes each rule's own ``user_id`` explicitly.
+        """
         self.db = db_manager or DatabaseManager.get_instance()
         self.repo = AlertRepository(self.db)
+        self.user_id = user_id if user_id else get_primary_user_id()
 
     def create_rule(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         fields = self._normalize_rule_payload(payload)
-        return self._serialize_rule(self.repo.create_rule(fields))
+        try:
+            row = self.repo.create_rule(self.user_id, fields, max_enabled=max_enabled_rules_per_user())
+        except AlertRuleLimitExceeded as exc:
+            raise AlertRuleLimitError(str(exc)) from exc
+        return self._serialize_rule(row)
 
     def get_rule(self, rule_id: int) -> Dict[str, Any]:
-        row = self.repo.get_rule(rule_id)
+        row = self.repo.get_rule(self.user_id, rule_id)
         if row is None:
             raise AlertNotFoundError(f"Alert rule not found: {rule_id}")
         return self._serialize_rule(row)
 
     def update_rule(self, rule_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-        row = self.repo.get_rule(rule_id)
+        row = self.repo.get_rule(self.user_id, rule_id)
         if row is None:
             raise AlertNotFoundError(f"Alert rule not found: {rule_id}")
         if not payload:
@@ -129,16 +157,24 @@ class AlertService:
         merged = self._serialize_rule_base(row)
         merged.update(payload)
         fields = self._normalize_rule_payload(merged, source=merged.get("source") or "api")
-        updated = self.repo.update_rule(rule_id, fields)
+        try:
+            updated = self.repo.update_rule(self.user_id, rule_id, fields, max_enabled=max_enabled_rules_per_user())
+        except AlertRuleLimitExceeded as exc:
+            raise AlertRuleLimitError(str(exc)) from exc
         if updated is None:
             raise AlertNotFoundError(f"Alert rule not found: {rule_id}")
         return self._serialize_rule(updated)
 
     def delete_rule(self, rule_id: int) -> bool:
-        return self.repo.delete_rule(rule_id)
+        return self.repo.delete_rule(self.user_id, rule_id)
 
     def enable_rule(self, rule_id: int, enabled: bool) -> Dict[str, Any]:
-        updated = self.repo.update_rule(rule_id, {"enabled": enabled})
+        try:
+            updated = self.repo.update_rule(
+                self.user_id, rule_id, {"enabled": enabled}, max_enabled=max_enabled_rules_per_user(),
+            )
+        except AlertRuleLimitExceeded as exc:
+            raise AlertRuleLimitError(str(exc)) from exc
         if updated is None:
             raise AlertNotFoundError(f"Alert rule not found: {rule_id}")
         return self._serialize_rule(updated)
@@ -155,6 +191,7 @@ class AlertService:
         page_size: int = 20,
     ) -> Dict[str, Any]:
         rows, total = self.repo.list_rules(
+            self.user_id,
             enabled=enabled,
             alert_type=alert_type,
             target_scope=target_scope,
@@ -171,7 +208,7 @@ class AlertService:
         }
 
     def test_rule(self, rule_id: int) -> Dict[str, Any]:
-        row = self.repo.get_rule(rule_id)
+        row = self.repo.get_rule(self.user_id, rule_id)
         if row is None:
             raise AlertNotFoundError(f"Alert rule not found: {rule_id}")
 
@@ -219,6 +256,8 @@ class AlertService:
         if isinstance(rule, TechnicalIndicatorAlert):
             return await self._evaluate_technical_indicator(rule, daily_cache=daily_cache)
         if isinstance(rule, PortfolioRiskAlert):
+            # The rule carries its owner (set from the persisted row), so the evaluation reads that
+            # user's accounts, never the caller's or the primary user's.
             return await asyncio.to_thread(evaluate_portfolio_risk_alert, rule)
         if isinstance(rule, MarketLightAlert):
             return await asyncio.to_thread(evaluate_market_light_alert, rule, cache=daily_cache)
@@ -832,6 +871,7 @@ class AlertService:
         page_size: int = 20,
     ) -> Dict[str, Any]:
         rows, total = self.repo.list_triggers(
+            self.user_id,
             rule_id=rule_id,
             target=target,
             status=status,
@@ -855,6 +895,7 @@ class AlertService:
         page_size: int = 20,
     ) -> Dict[str, Any]:
         rows, total = self.repo.list_notifications(
+            self.user_id,
             trigger_id=trigger_id,
             channel=channel,
             success=success,
@@ -945,7 +986,7 @@ class AlertService:
         try:
             normalized = normalize_batch_target_scope_target(target_scope, target)
             if target_scope in {"portfolio_holdings", "portfolio_account"}:
-                ensure_active_portfolio_account(normalized)
+                ensure_active_portfolio_account(normalized, user_id=self.user_id)
             return normalized
         except ValueError as exc:
             raise AlertServiceError(str(exc)) from exc
@@ -1013,7 +1054,8 @@ class AlertService:
             Dict[tuple[str, str], tuple[List[ExpandedSymbolTarget], int] | Exception]
         ] = None,
     ) -> List[RuntimeAlertPayload]:
-        data = self._serialize_rule_base(row)
+        owner = self._rule_owner(row)
+        data = {**self._serialize_rule_base(row), "user_id": owner}
         parent_key = self._semantic_key(
             data["target_scope"],
             data["target"],
@@ -1032,7 +1074,8 @@ class AlertService:
                 from src.config import get_config
 
                 config = get_config()
-            cache_key = (data["target_scope"], data["target"])
+            # Watchlist / holdings are the rule owner's, never the primary user's.
+            cache_key = (owner, data["target_scope"], data["target"])
             try:
                 if target_expansion_cache is not None and cache_key in target_expansion_cache:
                     cached_expansion = target_expansion_cache[cache_key]
@@ -1044,6 +1087,7 @@ class AlertService:
                         target_scope=data["target_scope"],
                         target=data["target"],
                         config=config,
+                        user_id=owner,
                         read_only=read_only,
                     )
                     if target_expansion_cache is not None:
@@ -1123,6 +1167,9 @@ class AlertService:
             )
         ]
 
+    def _rule_owner(self, row: AlertRuleRecord) -> str:
+        return str(getattr(row, "user_id", None) or self.user_id)
+
     def _to_runtime_rule(self, row: AlertRuleRecord, data: Optional[Dict[str, Any]] = None):
         data = data or self._serialize_rule_base(row)
         parameters = data["parameters"]
@@ -1201,6 +1248,7 @@ class AlertService:
                 else str(row.target)
             )
             cooldown = self.repo.get_rule_cooldown_summary(
+                self._rule_owner(row),
                 rule_id=int(row.id),
                 target=cooldown_target,
                 severity=str(row.severity) if row.severity else None,

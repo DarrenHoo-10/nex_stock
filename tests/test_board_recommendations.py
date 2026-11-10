@@ -10,7 +10,9 @@ from typing import Any, Dict, List
 
 import pytest
 
+from api.deps import CurrentUser
 from api.v1.endpoints import boards as boards_endpoint
+from src.config import get_primary_user_id
 from src.repositories.board_preference_repo import BoardPreferenceRepository
 from src.services.board_anomaly_service import BoardAnomalyService
 from src.services.board_recommendation_service import (
@@ -21,6 +23,9 @@ from src.services.board_recommendation_service import (
 )
 from src.storage import DatabaseManager
 from tests.test_board_pipeline import FakeIngest, run, seeded_world
+
+
+_PRIMARY_USER = CurrentUser(user_id="local", handle="local", display_name="local", role="admin", is_admin=True)
 
 
 @pytest.fixture()
@@ -58,9 +63,9 @@ def test_rule_ranking_prefers_strong_states_and_skips_single_stock_boards():
     assert [r["board_ref"] for r in rule_ranking(rows)] == ["industry:Launch", "concept:Strong", "concept:Div"]
 
 
-def test_prompt_lists_candidates_and_followed_boards():
-    prompt = build_prompt(date(2026, 11, 6), [_row("concept:A", "strengthening", 2)], [_row("industry:B", "none", 0)])
-    assert "id=concept:A" in prompt and "走强" in prompt and "用户关注的板块" in prompt and "B（状态 无异动" in prompt
+def test_prompt_lists_candidates_only():
+    prompt = build_prompt(date(2026, 11, 6), [_row("concept:A", "strengthening", 2)])
+    assert "id=concept:A" in prompt and "走强" in prompt and "用户关注" not in prompt
 
 
 def _service(world, db, reply=None, error=None, model="anthropic/claude-opus-5-5"):
@@ -91,13 +96,14 @@ def test_pipeline_step_saves_model_picks_and_the_view_returns_today_rows(db):
     ref = _ref(world, "I0")
     reply = json.dumps([{"board_id": ref, "reason": "首次启动，量能放大"}, {"board_id": "concept:BK9999", "reason": "x"}])
     service, calls = _service(world, db, reply=reply)
-    BoardPreferenceRepository(db).follow(_ref(world, "I1"), "I1", "industry")
+    BoardPreferenceRepository(db).follow(get_primary_user_id(), _ref(world, "I1"), "I1", "industry")
 
     result = run(world, ingest_service=FakeIngest(), recommender=service)
 
     step = result["steps"][-1]
     assert step["key"] == "recommend" and step["status"] == "succeeded" and "1 个（模型）" in step["detail"]
-    assert len(calls) == 1 and ref in calls[0] and "用户关注的板块" in calls[0]
+    # recommendations are shared: the primary user's follow never reaches the prompt
+    assert len(calls) == 1 and ref in calls[0] and "用户关注" not in calls[0]
     view = service.view()
     assert view["status"] == "ready" and view["source"] == "model" and view["model"] == "anthropic/claude-opus-5-5"
     [item] = view["items"]
@@ -135,15 +141,15 @@ def test_follow_endpoints_round_trip_with_today_rows(db, monkeypatch):
     monkeypatch.setattr(boards_endpoint, "_preference_repo", lambda: BoardPreferenceRepository(db))
     ref = _ref(world, "I0")
 
-    followed = boards_endpoint.follow_board(ref, service=service)
-    again = boards_endpoint.follow_board(ref, service=service)
+    followed = boards_endpoint.follow_board(ref, service=service, user=_PRIMARY_USER)
+    again = boards_endpoint.follow_board(ref, service=service, user=_PRIMARY_USER)
     assert [b.id for b in followed.boards] == [ref] and [b.id for b in again.boards] == [ref]
     assert followed.boards[0].today is not None and followed.boards[0].today.state == "first_launch"
     assert followed.trade_date == world.days[-1].isoformat()
 
     with pytest.raises(Exception) as missing:
-        boards_endpoint.follow_board("concept:BK0000", service=service)
+        boards_endpoint.follow_board("concept:BK0000", service=service, user=_PRIMARY_USER)
     assert getattr(missing.value, "status_code", None) == 404
 
-    assert boards_endpoint.unfollow_board(ref, service=service).boards == []
-    assert boards_endpoint.list_follows(service=service).boards == []
+    assert boards_endpoint.unfollow_board(ref, service=service, user=_PRIMARY_USER).boards == []
+    assert boards_endpoint.list_follows(service=service, user=_PRIMARY_USER).boards == []

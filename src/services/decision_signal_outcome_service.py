@@ -114,8 +114,13 @@ class DecisionSignalOutcomeService:
         source_type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
+        viewer_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Evaluate outcomes. Batch mode is a system maintenance job over every signal; only the signals
+        ``viewer_user_id`` may see are echoed back, and a single ``signal_id`` must be visible to the viewer."""
         signal_id_norm = self._optional_positive_int(signal_id, "signal_id")
+        if signal_id_norm is not None:
+            self._require_existing_signal(signal_id_norm, viewer_user_id)
         market_norm = DecisionSignalService._normalize_optional_market(market)
         action_norm = DecisionSignalService._normalize_optional_action(action)
         source_type_norm = self._normalize_optional_enum(source_type, SOURCE_TYPES, "source_type")
@@ -157,6 +162,7 @@ class DecisionSignalOutcomeService:
         skipped_count = 0
 
         for signal in signals:
+            visible = viewer_user_id is None or signal.owner_user_id in (None, viewer_user_id)
             for horizon in self._horizons_for_signal(signal, horizons_norm):
                 existing = self.repo.get_outcome(
                     signal_id=signal.id,
@@ -165,7 +171,8 @@ class DecisionSignalOutcomeService:
                 )
                 if existing is not None and not force and not self._should_recompute_outcome(existing):
                     skipped_count += 1
-                    items.append(self._serialize_outcome(existing))
+                    if visible:
+                        items.append(self._serialize_outcome(existing))
                     continue
 
                 fields = self._evaluate_signal_horizon(signal, horizon)
@@ -174,7 +181,8 @@ class DecisionSignalOutcomeService:
                     created_count += 1
                 else:
                     updated_count += 1
-                items.append(self._serialize_outcome(row))
+                if visible:
+                    items.append(self._serialize_outcome(row))
 
         return {
             "items": items,
@@ -295,6 +303,7 @@ class DecisionSignalOutcomeService:
         outcome: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        viewer_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         signal_id_norm = self._optional_positive_int(signal_id, "signal_id")
         horizon_norm = self._normalize_optional_enum(horizon, HORIZONS, "horizon")
@@ -311,6 +320,7 @@ class DecisionSignalOutcomeService:
             outcome=outcome_norm,
             page=safe_page,
             page_size=safe_page_size,
+            **self._viewer_kwargs(viewer_user_id),
         )
         return {
             "items": [self._serialize_outcome(row) for row in rows],
@@ -319,13 +329,14 @@ class DecisionSignalOutcomeService:
             "page_size": safe_page_size,
         }
 
-    def list_signal_outcomes(self, signal_id: int) -> Dict[str, Any]:
-        signal_id_norm = self._require_existing_signal(signal_id).id
+    def list_signal_outcomes(self, signal_id: int, viewer_user_id: Optional[str] = None) -> Dict[str, Any]:
+        signal_id_norm = self._require_existing_signal(signal_id, viewer_user_id).id
         return self.list_outcomes(
             signal_id=signal_id_norm,
             engine_version=DECISION_SIGNAL_OUTCOME_ENGINE_VERSION,
             page=1,
             page_size=100,
+            viewer_user_id=viewer_user_id,
         )
 
     def get_stats(
@@ -334,6 +345,7 @@ class DecisionSignalOutcomeService:
         horizons: Optional[List[str]] = None,
         engine_version: Optional[str] = None,
         statuses: Optional[List[str]] = None,
+        viewer_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         engine_version_norm = str(engine_version or DECISION_SIGNAL_OUTCOME_ENGINE_VERSION).strip()
         horizons_norm = self._normalize_horizons(horizons)
@@ -346,6 +358,7 @@ class DecisionSignalOutcomeService:
             engine_version=engine_version_norm,
             horizons=horizons_norm,
             statuses=statuses_norm,
+            **self._viewer_kwargs(viewer_user_id),
         )
         rows = [stats_row.outcome for stats_row in stats_rows]
         dimensions = (
@@ -376,6 +389,7 @@ class DecisionSignalOutcomeService:
         stock_code: str,
         *,
         horizon: Optional[str] = None,
+        viewer_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Aggregate a read-only, low-sensitivity review of signal outcomes for one stock.
 
@@ -405,6 +419,7 @@ class DecisionSignalOutcomeService:
             horizons=horizons_norm,
             statuses=list(DEFAULT_STATS_STATUSES),
             stock_codes=filter_codes,
+            **self._viewer_kwargs(viewer_user_id),
         )
         rows = [stats_row.outcome for stats_row in stats_rows]
         aggregate = self._aggregate(rows)
@@ -513,8 +528,8 @@ class DecisionSignalOutcomeService:
             return text
         return REVIEW_OTHER_REASON_LABEL
 
-    def get_feedback(self, signal_id: int) -> Dict[str, Any]:
-        signal = self._require_existing_signal(signal_id)
+    def get_feedback(self, signal_id: int, viewer_user_id: Optional[str] = None) -> Dict[str, Any]:
+        signal = self._require_existing_signal(signal_id, viewer_user_id)
         row = self.repo.get_feedback(signal_id=signal.id)
         if row is None:
             return {
@@ -536,8 +551,9 @@ class DecisionSignalOutcomeService:
         reason_code: Optional[str] = None,
         note: Optional[str] = None,
         source: str = "api",
+        viewer_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        signal = self._require_existing_signal(signal_id)
+        signal = self._require_existing_signal(signal_id, viewer_user_id)
         fields = {
             "signal_id": signal.id,
             "feedback_value": self._normalize_enum(feedback_value, FEEDBACK_VALUES, "feedback_value"),
@@ -765,9 +781,15 @@ class DecisionSignalOutcomeService:
             return [horizon]
         return list(SUPPORTED_OUTCOME_HORIZONS.keys())
 
-    def _require_existing_signal(self, signal_id: int) -> DecisionSignalRecord:
+    @staticmethod
+    def _viewer_kwargs(viewer_user_id: Optional[str]) -> Dict[str, Any]:
+        return {"viewer_user_id": viewer_user_id} if viewer_user_id is not None else {}
+
+    def _require_existing_signal(
+        self, signal_id: int, viewer_user_id: Optional[str] = None
+    ) -> DecisionSignalRecord:
         signal_id_norm = self._optional_positive_int(signal_id, "signal_id")
-        row = self.signal_repo.get(signal_id_norm)
+        row = self.signal_repo.get(signal_id_norm, **self._viewer_kwargs(viewer_user_id))
         if row is None:
             raise DecisionSignalNotFoundError(f"Decision signal not found: {signal_id_norm}")
         return row

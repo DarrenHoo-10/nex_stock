@@ -17,6 +17,8 @@ export interface AnalysisRequest {
   stockCodes?: string[];
   reportType?: StockReportType;
   forceRefresh?: boolean;
+  /** Skip reuse of an existing shared report and generate a new one (needs the user's own model key). */
+  forceRegenerate?: boolean;
   asyncMode?: boolean;
   analysisPhase?: AnalysisPhase;
   stockName?: string;
@@ -85,6 +87,10 @@ export interface ReportMeta {
   modelUsed?: string;  // 历史元数据快照，仅用于展示，不用于运行时模型选择
   marketPhaseSummary?: MarketPhaseSummary | null;
   assetType?: 'stock' | 'index';  // 后端权威资产类型；index 用于隐藏 stock-only 自选操作
+  requesterUserId?: string | null;  // 报告发起人（用户中心 userId）
+  requesterName?: string | null;  // 发起人显示名（尽力而为）
+  isMine?: boolean | null;  // 是否由当前用户发起
+  isPrivate?: boolean | null;  // 私有报告：带个人上下文（持仓等）生成，只有发起人能看到
 }
 
 /** Sentiment label */
@@ -426,6 +432,18 @@ export interface AnalysisResult {
   report: AnalysisReport;
   diagnosticSummary?: RunDiagnosticSummary;
   createdAt: string;
+  /** true: an existing shared report was returned as is (no model call); `queryId` is that report's own. */
+  reused?: boolean | null;
+  reusedReportId?: number | null;
+  /** Re-analysis that took the already collected inputs of an earlier same-day report; the model was still called. */
+  metadataReusedFrom?: number | null;
+}
+
+/** How a finished analysis was produced relative to existing reports (shown on the report header). */
+export interface AnalysisReuseInfo {
+  reused: boolean;
+  reusedReportId?: number | null;
+  metadataReusedFrom?: number | null;
 }
 
 /** Async task accepted response */
@@ -548,6 +566,10 @@ export interface HistoryItem {
   modelUsed?: string;  // 历史元数据快照，仅用于列表展示，不影响运行时调用与路由
   marketPhaseSummary?: MarketPhaseSummary | null;
   assetType?: 'stock' | 'index';
+  requesterUserId?: string | null;
+  requesterName?: string | null;
+  isMine?: boolean | null;
+  isPrivate?: boolean | null;
   createdAt: string;
 }
 
@@ -557,6 +579,8 @@ export interface StockHistoryFilters {
   range: StockHistoryRange;
   model: string;
   sort: 'desc' | 'asc';
+  /** Only reports the current user requested (`mine_only=true`). Optional: absent = everyone's shared reports. */
+  mineOnly?: boolean;
 }
 
 /** History list response */
@@ -586,6 +610,7 @@ export interface HistoryFilters {
   reportType?: ReportType;
   startDate?: string;
   endDate?: string;
+  mineOnly?: boolean;
 }
 
 /** History pagination parameters */

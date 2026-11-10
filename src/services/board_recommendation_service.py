@@ -2,7 +2,8 @@
 """Recommended boards for the next session, picked by the analysis model from one board run.
 
 Input: the run's signalled boards (``BoardAnomalyService.list_anomalies``: state, tags, change, 5-day change,
-excess return, amount ratio, breadth, limit-ups, reason) plus the user's followed boards with their state.
+excess return, amount ratio, breadth, limit-ups, reason). Recommendations are shared by every user, so no user's
+personal follows go into the prompt (the web client marks a user's own followed boards from ``GET /boards/follows``).
 The model (``LITELLM_MODEL`` with ``LLM_REASONING_EFFORT``, same routing as every other call) answers with a
 JSON list of 3-5 board ids and a short reason each; ids that were not offered are dropped. When the model is not
 configured, fails or returns nothing usable, a rule ranking is stored instead (strong states first, then excess
@@ -56,7 +57,7 @@ def _fmt(value: Any, suffix: str = "%") -> str:
         return "—"
 
 
-def build_prompt(trade_date: date, candidates: List[Dict[str, Any]], followed: List[Dict[str, Any]]) -> str:
+def build_prompt(trade_date: date, candidates: List[Dict[str, Any]]) -> str:
     lines = []
     for row in candidates:
         lines.append(
@@ -69,14 +70,9 @@ def build_prompt(trade_date: date, candidates: List[Dict[str, Any]], followed: L
             f"{'，涨停 ' + str(row['limit_up_count']) if row.get('limit_up_count') is not None else ''}"
             f" | 判定理由：{row.get('reason') or '无'}"
         )
-    followed_lines = [
-        f"- {row['name']}（状态 {_STATE_TEXT.get(row['state'], row['state'])}，当日 {_fmt(row.get('change_pct'))}）"
-        for row in followed
-    ]
     return (
         f"交易日 {trade_date.isoformat()} 收盘后的板块异动（按状态和超额收益排序）：\n"
         + "\n".join(lines)
-        + ("\n\n用户关注的板块（可作参考，不必入选）：\n" + "\n".join(followed_lines) if followed_lines else "")
         + "\n\n要求：\n"
         f"1. 从上面的异动板块里选 3 到 {MAX_RECOMMENDATIONS} 个下一个交易日最值得重点跟踪、在里面找机会的板块，按优先级排序。\n"
         "2. 优先考虑：持续性（5 日与超额收益）、量能、内部广度、不是个股拉动；退潮、个股拉动、过热的板块要谨慎。\n"
@@ -178,21 +174,19 @@ class BoardRecommendationService:
         )
 
     # -- generation ------------------------------------------------------
-    def _inputs(self, trade_date: Optional[date]) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def _inputs(self, trade_date: Optional[date]) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         run = self.anomalies.repo.latest_completed_run(trade_date)
         if run is None:
-            return None, [], []
+            return None, []
         listing = self.anomalies.list_anomalies(run["trade_date"], None, None)
         candidates = [row for row in listing.get("boards") or [] if row.get("state") not in ("none", "insufficient_history")]
-        candidates = candidates[:MAX_CANDIDATES]
-        followed_refs = [item["board_ref"] for item in self.prefs.list_follows()]
-        _, followed_rows = self.anomalies.board_rows(followed_refs, run["trade_date"])
-        return run, candidates, list(followed_rows.values())
+        # Shared output: no user's personal follows go into the input.
+        return run, candidates[:MAX_CANDIDATES]
 
     def generate(self, trade_date: Optional[date] = None) -> Dict[str, Any]:
         """Pick and save the recommendations of the latest completed run (of ``trade_date``). Never raises for
         model failures (falls back to the rule ranking); returns ``{status, run_id, trade_date, source, count, note}``."""
-        run, candidates, followed = self._inputs(trade_date)
+        run, candidates = self._inputs(trade_date)
         if run is None:
             return {"status": "skipped", "run_id": None, "trade_date": None, "source": None, "count": 0,
                     "note": "还没有完成的板块运行"}
@@ -209,7 +203,7 @@ class BoardRecommendationService:
             note = "没有配置分析模型，按规则排序"
         else:
             try:
-                items = parse_reply(self._call_model(build_prompt(day, candidates, followed)), allowed)
+                items = parse_reply(self._call_model(build_prompt(day, candidates)), allowed)
                 if not items:
                     note = "模型没有给出可用的板块，按规则排序"
             except Exception as exc:  # noqa: BLE001 - any model failure falls back to the rule ranking

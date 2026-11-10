@@ -1,4 +1,6 @@
 import axios from 'axios';
+import { UI_TEXT } from '../i18n/uiText';
+import { isMultiUserErrorCode, MULTI_USER_ERROR_TEXT } from './multiUserErrors';
 
 export type ApiErrorCategory =
   | 'agent_disabled'
@@ -318,6 +320,20 @@ export function parseApiError(error: unknown): ParsedApiError {
   const rawMessage = pickString(payloadText, response?.statusText, errorMessage, causeMessage, code)
     ?? '请求未成功完成，请稍后重试。';
   const matchText = buildMatchText([rawMessage, errorMessage, causeMessage, code, errorCode, response?.statusText]);
+
+  // Multi-user contract codes (admin guard, model key, personal settings): keep the code so the UI can render
+  // a translated message and the right call to action; the zh text here is only the non-React fallback.
+  if (isMultiUserErrorCode(errorCode)) {
+    const text = MULTI_USER_ERROR_TEXT[errorCode];
+    return createParsedApiError({
+      title: UI_TEXT.zh[text.title],
+      message: UI_TEXT.zh[text.message],
+      rawMessage,
+      status,
+      category: 'http_error',
+      code: errorCode,
+    });
+  }
 
   if (errorCode === 'validation_failed') {
     const issues = extractConfigValidationIssues(response?.data);

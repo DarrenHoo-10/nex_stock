@@ -6,7 +6,8 @@ Data flow
 * **Account**: cash + holdings snapshot in SQLite (``plan_account`` / ``plan_holding``), replaced as a whole by
   ``set_holdings_snapshot``. Holding rows are enriched from the local ``market_stock_daily`` (latest close, name,
   board market, ST); T+1 ``sellable`` compares the buy date with the latest ingested trade date.
-* **Universe**: holdings first, then the watchlist (``STOCK_LIST``). Only 6-digit A-share codes are planned; other
+* **Universe**: holdings first, then the watchlist (``WatchlistService``: ``STOCK_LIST`` for the primary user,
+  ``user_watchlist`` for everyone else). Only 6-digit A-share codes are planned; other
   watchlist entries are skipped and listed in the run's ``data_gaps``.
 * **Plans**: a run (``trigger_run``, scheduled or manual) plans every stock and stores the ``StockPlan`` payloads
   (``plan_stock``). ``list_stock_plans`` / ``get_stock_plan`` read the newest stored plan of the trade date, so page
@@ -16,8 +17,12 @@ Data flow
   them takes effect at the next run (spec 6.4: generated plans are not rewritten).
 * **Run** (spec 7.1): boards (read the latest board run) -> picks (read the latest completed screening task; no new
   screening is started) -> per-stock plans (worker pool, one failing stock does not stop the others) -> switch
-  decisions -> Feishu push. One run at a time per process (409 otherwise); a run left ``running`` by a restarted
-  process is reported as failed.
+  decisions -> Feishu push. One run at a time per user and process (409 otherwise); a run left ``running`` by a
+  restarted process is reported as failed.
+* **Users** (docs/design/multi-user.md): account, holdings, runs and stored plans belong to one user. The service is
+  bound to that user at construction (``user_id``; ``None`` = the primary user, which is what the scheduled job, the
+  CLI and any legacy caller act as) and passes it explicitly to every repository call. Market, board and picks
+  context is shared and read-only.
 * **Model vs rules**: the analysis model decides buy / wait and the price levels (validated against the next day's
   price limits); shares, stops and loss figures always come from the rules (``daily_plan_sizing``). Without a model
   or when it fails, a deterministic rule plan is stored and ``data_gaps`` says so.
@@ -39,6 +44,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
+from src.config import get_primary_user_id
+from src.llm.credentials_guard import is_user_view
 from src.repositories.daily_plan_repo import DailyPlanRepository
 from src.services.board_common import default_calendar_fn
 from src.services.daily_plan_engine import (
@@ -64,6 +71,7 @@ from src.services.daily_plan_sizing import (
     compute_sizing,
     round_price,
 )
+from src.services.watchlist_service import WatchlistService
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +84,7 @@ PICK_CANDIDATES = 3  # screening picks (outside the watchlist) evaluated as swit
 INTERRUPTED_ERROR = "服务重启，这次运行没有完成"
 NO_MODEL_GAP = "没有配置分析模型，这份计划按规则生成"
 REFINING_GAP = "这份计划先按规则生成，模型分析在后台进行，稍后刷新查看"
-_REFINING: set = set()  # (code, trade date) with a background model plan in flight
+_REFINING: set = set()  # (user id, code, trade date) with a background model plan in flight
 _REFINING_LOCK = threading.Lock()
 STEP_DEFS = (
     ("boards", "板块异动"),
@@ -90,7 +98,7 @@ _STRONG_STATES = ("first_launch", "strengthening", "divergence")
 _BOARD_STATE_ORDER = {"first_launch": 0, "strengthening": 1, "divergence": 2, "abnormal_drop": 3, "ebbing": 4}
 
 _STATE_LOCK = threading.Lock()
-_ACTIVE: Dict[str, Optional[str]] = {"run_id": None}
+_ACTIVE: Dict[str, str] = {}  # user id -> run id of that user's run executing in this process
 
 
 class DailyPlanValidationError(ValueError):
@@ -98,7 +106,7 @@ class DailyPlanValidationError(ValueError):
 
 
 class DailyPlanRunConflictError(RuntimeError):
-    """A plan run is already in progress (maps to HTTP 409)."""
+    """A plan run of the same user is already in progress (maps to HTTP 409)."""
 
 
 def _iso_utc(value: Optional[datetime]) -> Optional[str]:
@@ -149,12 +157,22 @@ class DailyPlanService:
         now_fn: Optional[Callable[[], datetime]] = None,
         workers: Optional[int] = None,
         on_demand_sync: Optional[bool] = None,
+        user_id: Optional[str] = None,
+        shared_board_cache: Optional[Dict[Any, Any]] = None,
     ) -> None:
+        # The user whose account / runs / plans this instance reads and writes; None = the primary user.
+        self.user_id = user_id or get_primary_user_id()
         self._db = db_manager
         self._config = config
         self._llm_call = llm_call
         self._spawn = spawn or self._spawn_thread
-        self._pusher = pusher or send_feishu
+        # Primary user: the system Feishu route (``.env``). Everyone else: their own personal channels only - an
+        # injected ``pusher`` / ``push_configured`` is the primary user's and can never serve another user.
+        self._pusher = (pusher or send_feishu) if self.user_id == get_primary_user_id() else self._push_personal
+        self._push_outcomes: List[Dict[str, Any]] = []
+        # The scheduled multi-user batch hands every user's service the same dict, so the board listing of one trading
+        # day is computed once and reused (shared, read-only market context). None = no sharing (API, primary user).
+        self._shared_board_cache = shared_board_cache
         self._push_configured = push_configured
         self._anomaly = anomaly_service
         self._calendar_fn = calendar_fn
@@ -171,6 +189,11 @@ class DailyPlanService:
     def config(self) -> Any:
         if self._config is not None:
             return self._config
+        # Model, POSITION_* rules and report preferences are personal settings: a non-primary user's own view.
+        if self.user_id != get_primary_user_id():
+            from src.services.user_config_service import get_user_config
+
+            return get_user_config(self.user_id)
         from src.config import get_config
 
         return get_config()
@@ -206,6 +229,12 @@ class DailyPlanService:
         if not self._model_label():
             return None
         config = self.config
+        if is_user_view(config):
+            # Rule plans only unless the user brought a model of their own; never the system's.
+            from src.services.user_config_service import has_usable_model
+
+            if not has_usable_model(config):
+                return None
 
         def call(prompt: str, system_prompt: str) -> str:
             from src.analyzer import GeminiAnalyzer
@@ -268,20 +297,14 @@ class DailyPlanService:
         return PositionRules.from_config(self.config)
 
     def _watchlist(self) -> Tuple[List[str], List[str]]:
-        """(6-digit A-share codes, skipped entries) of ``STOCK_LIST``."""
-        config = self.config
-        refresh = getattr(config, "refresh_stock_list", None)
-        if callable(refresh):
-            try:
-                refresh()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[DailyPlan] 刷新 STOCK_LIST 失败，沿用当前值: %s", exc)
+        """(6-digit A-share codes, skipped entries) of this user's watchlist."""
+        tokens = WatchlistService(db_manager=self.db, config=self._config).list_codes(self.user_id)
         from data_provider.base import normalize_stock_code
         from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 
         codes: List[str] = []
         skipped: List[str] = []
-        for token in list(getattr(config, "stock_list", None) or []):
+        for token in tokens:
             text = str(token).strip()
             if not text:
                 continue
@@ -300,7 +323,7 @@ class DailyPlanService:
         return codes, skipped
 
     def _load_context(self) -> _Context:
-        snapshot = self.repo.get_account()
+        snapshot = self.repo.get_account(self.user_id)
         latest = self.repo.latest_ingested_date()
         watch, skipped = self._watchlist()
         held_codes = [h["code"] for h in snapshot["holdings"]]
@@ -390,7 +413,7 @@ class DailyPlanService:
             if horizon not in (None, *HORIZONS):
                 raise DailyPlanValidationError(f"{code} 的计划周期必须是 short 或 swing")
             clean.append({"code": code, "shares": shares, "cost": cost, "buy_date": buy_date, "horizon": horizon})
-        self.repo.replace_account(cash_value, clean)
+        self.repo.replace_account(self.user_id, cash_value, clean)
         return self.get_account()
 
     # ------------------------------------------------------------------ plan inputs
@@ -408,9 +431,7 @@ class DailyPlanService:
                 result["gaps"].append(
                     f"板块判定是 {run['trade_date'].isoformat()} 的结果，不是 {trade_date.isoformat()} 的"
                 )
-            listing = self.anomaly().list_anomalies(run["trade_date"], None, None)
-            rows = {row["id"]: row for row in listing.get("boards") or []
-                    if row.get("state") not in ("none", "insufficient_history")}
+            rows = self._board_rows(run)
             result["top"] = list(rows.values())[:10]
             refs_by_stock = self.repo.boards_of_stocks(list(codes), run["trade_date"])
             for code, refs in refs_by_stock.items():
@@ -422,6 +443,19 @@ class DailyPlanService:
             logger.warning("[DailyPlan] 读取板块信号失败: %s", exc, exc_info=True)
             result["gaps"].append(f"板块信号读取失败（{type(exc).__name__}），计划里没有板块信号")
         return result
+
+    def _board_rows(self, run: Dict[str, Any]) -> Dict[Any, Dict[str, Any]]:
+        """Boards with a signal of the board run's trading day; shared between the users of one scheduled batch."""
+        cache = self._shared_board_cache
+        key = ("boards", run.get("trade_date"), run.get("run_id") or run.get("id"))
+        if cache is not None and key in cache:
+            return cache[key]
+        listing = self.anomaly().list_anomalies(run["trade_date"], None, None)
+        rows = {row["id"]: row for row in listing.get("boards") or []
+                if row.get("state") not in ("none", "insufficient_history")}
+        if cache is not None:
+            cache[key] = rows
+        return rows
 
     def _latest_picks(self) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         """(task, picks) of the newest completed screening task; picks are ``{code, name, rank}``."""
@@ -601,7 +635,7 @@ class DailyPlanService:
         day = self._resolve_trade_date(trade_date)
         ctx = self._load_context()
         codes = ctx.universe
-        stored = self.repo.latest_stock_plans(codes, day)
+        stored = self.repo.latest_stock_plans(self.user_id, codes, day)
         items = [self._summary_from(code, ctx, stored.get(code)) for code in codes]
         held = [item for item in items if item["held"]]
         others = [item for item in items if not item["held"]]
@@ -625,7 +659,7 @@ class DailyPlanService:
             return None
         day = self._resolve_trade_date(trade_date)
         ctx = self._load_context()
-        stored = self.repo.latest_stock_plans([code], day).get(code)
+        stored = self.repo.latest_stock_plans(self.user_id, [code], day).get(code)
         if stored is not None and stored["fingerprint"] == ctx.fingerprint(code):
             return stored["payload"]
         if code not in ctx.universe:
@@ -636,7 +670,7 @@ class DailyPlanService:
             return self._plan_on_demand(code, day, ctx, llm, self._model_label() if llm else "")
         # rule plan now (instant), model plan in the background; the next load returns the stored model plan
         payload = self._plan_on_demand(code, day, ctx, None, "", replace_gap=REFINING_GAP)
-        key = (code, day.isoformat())
+        key = (self.user_id, code, day.isoformat())
         with _REFINING_LOCK:
             start = key not in _REFINING
             if start:
@@ -669,9 +703,10 @@ class DailyPlanService:
             payload["data_gaps"] = [replace_gap, *gaps]
         if payload["status"] == "ready" and ctx.holdings.get(code) is not None:
             _task, picks = self._latest_picks()
-            stored_all = self.repo.latest_stock_plans(ctx.watch_codes, day)
+            stored_all = self.repo.latest_stock_plans(self.user_id, ctx.watch_codes, day)
             payload["switch"] = self._switch_for(payload, ctx, self._candidates(ctx, day, stored_all, picks))
-        self.repo.save_stock_plan(None, day, code, payload["status"], ctx.fingerprint(code), payload, outcome.meta)
+        self.repo.save_stock_plan(
+            self.user_id, None, day, code, payload["status"], ctx.fingerprint(code), payload, outcome.meta)
         return payload
 
     def preview_sizing(self, code: str, price: float, horizon: str) -> Dict[str, Any]:
@@ -727,55 +762,57 @@ class DailyPlanService:
 
     def _reconcile_interrupted(self) -> None:
         with _STATE_LOCK:
-            active = _ACTIVE["run_id"]
+            active = _ACTIVE.get(self.user_id)
         try:
-            self.repo.fail_interrupted(active, INTERRUPTED_ERROR)
+            self.repo.fail_interrupted(self.user_id, active, INTERRUPTED_ERROR)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[DailyPlan] 清理中断的运行失败: %s", exc)
 
     def get_latest_run(self) -> Optional[Dict[str, Any]]:
         self._reconcile_interrupted()
-        row = self.repo.latest_run()
+        row = self.repo.latest_run(self.user_id)
         return self._run_payload(row) if row else None
 
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         self._reconcile_interrupted()
-        row = self.repo.get_run(str(run_id))
+        row = self.repo.get_run(self.user_id, str(run_id))
         return self._run_payload(row) if row else None
 
     def trigger_run(self, trigger: str = "manual", *, wait: bool = False) -> Dict[str, Any]:
         """Start a run (background thread; ``wait=True`` runs it inline, used by the scheduler job).
 
-        Raises ``DailyPlanRunConflictError`` when a run is already in progress.
+        Raises ``DailyPlanRunConflictError`` when a run of this user is already in progress (other users' runs
+        do not block it).
         """
+        user_id = self.user_id
         with _STATE_LOCK:
-            if _ACTIVE["run_id"]:
+            if _ACTIVE.get(user_id):
                 raise DailyPlanRunConflictError("已有次日计划运行在进行中")
-            self.repo.fail_interrupted(None, INTERRUPTED_ERROR)
+            self.repo.fail_interrupted(user_id, None, INTERRUPTED_ERROR)
             trade_date = self._resolve_trade_date(None)
             run_id = f"plan-{trade_date:%Y%m%d}-{uuid.uuid4().hex[:8]}"
             configured = self._is_push_configured()
-            steps = [{"key": k, "label": label, "status": "pending", "finished_at": None, "detail": None}
-                     for k, label in STEP_DEFS]
-            self.repo.create_run(run_id, trade_date, trigger, steps,
-                                 {"channel": "feishu", "status": "pending", "sent_at": None, "error": None,
-                                  "configured": configured})
-            _ACTIVE["run_id"] = run_id
+            steps = self._fresh_steps()
+            self.repo.create_run(user_id, run_id, trade_date, trigger, steps,
+                                 {"channel": self._push_channel_name(), "status": "pending", "sent_at": None,
+                                  "error": None, "configured": configured})
+            _ACTIVE[user_id] = run_id
 
         def work() -> None:
             try:
-                self._execute_run(run_id, trade_date)
+                self._execute_run(run_id, trade_date, trigger=trigger)
             except Exception as exc:  # noqa: BLE001 - recorded on the run, never raised into the thread
                 logger.error("[DailyPlan] 运行 %s 异常: %s", run_id, exc, exc_info=True)
                 try:
-                    self.repo.update_run(run_id, status="failed", error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                    self.repo.update_run(user_id, run_id, status="failed",
+                                         error=f"{type(exc).__name__}: {str(exc)[:200]}",
                                          finished_at=datetime.now(timezone.utc).replace(tzinfo=None))
                 except Exception:  # noqa: BLE001
                     pass
             finally:
                 with _STATE_LOCK:
-                    if _ACTIVE["run_id"] == run_id:
-                        _ACTIVE["run_id"] = None
+                    if _ACTIVE.get(user_id) == run_id:
+                        _ACTIVE.pop(user_id, None)
 
         try:
             if wait:
@@ -784,20 +821,59 @@ class DailyPlanService:
                 self._spawn(work)
         except Exception:
             with _STATE_LOCK:
-                if _ACTIVE["run_id"] == run_id:
-                    _ACTIVE["run_id"] = None
+                if _ACTIVE.get(user_id) == run_id:
+                    _ACTIVE.pop(user_id, None)
             raise
-        return self._run_payload(self.repo.get_run(run_id))
+        return self._run_payload(self.repo.get_run(user_id, run_id))
+
+    def _is_primary_user(self) -> bool:
+        return self.user_id == get_primary_user_id()
+
+    def _fresh_steps(self) -> List[Dict[str, Any]]:
+        personal = not self._is_primary_user()
+        return [{"key": k, "label": "个人渠道推送" if personal and k == "push" else label, "status": "pending",
+                 "finished_at": None, "detail": None} for k, label in STEP_DEFS]
+
+    def _push_channel_name(self) -> str:
+        return "feishu" if self._is_primary_user() else "personal"
 
     def _is_push_configured(self) -> bool:
+        # The Feishu channel is the server's (primary user's) own; a non-primary user's plan (their holdings) must
+        # never go through it. Their plan goes to their own personal channels, and only when they have one.
+        if not self._is_primary_user():
+            from src.services.user_notification_service import user_has_channels
+
+            return user_has_channels(self.user_id)
         if self._push_configured is not None:
             return bool(self._push_configured())
         return feishu_configured(self.config)
 
-    def _execute_run(self, run_id: str, trade_date: date) -> None:
+    def _push_personal(self, markdown: str) -> None:
+        """Push the plan summary to this user's own channels (all enabled ones); raises when none delivered."""
+        from src.services.user_notification_service import build_user_notifier, push_to_user
+
+        notifier = build_user_notifier(self.user_id)
+        result = push_to_user(self.user_id, markdown, route_type="report", severity="info", notifier=notifier)
+        self._push_outcomes = [
+            {"channel": item.channel, "success": bool(item.success)} for item in (result.channel_results or [])
+        ]
+        if not result.success:
+            raise RuntimeError("个人推送渠道发送失败，请检查渠道配置")
+
+    def _notice_no_model_once(self) -> str:
+        """Scheduled run of a user without a usable model: remind them once (``push_once_notice``), never daily."""
+        from src.services.user_notification_service import NO_MODEL_NOTICE_KEY, push_once_notice
+
+        return push_once_notice(
+            self.user_id,
+            NO_MODEL_NOTICE_KEY,
+            "【NexStock】未配置分析模型：你的次日计划 / 盘前推送已暂停。请在个人设置里配置自己的模型 Key，配置后会自动恢复推送。",
+        )
+
+    def _execute_run(self, run_id: str, trade_date: date, trigger: str = "manual") -> None:
+        user_id = self.user_id
         started = time.monotonic()
-        steps = [{"key": k, "label": label, "status": "pending", "finished_at": None, "detail": None}
-                 for k, label in STEP_DEFS]
+        steps = self._fresh_steps()
         by_key = {s["key"]: s for s in steps}
 
         def mark(key: str, status: str, detail: Optional[str] = None) -> None:
@@ -806,7 +882,7 @@ class DailyPlanService:
             step["detail"] = detail
             step["finished_at"] = _iso_utc(datetime.now(timezone.utc).replace(tzinfo=None)) if status not in (
                 "running", "pending") else None
-            self.repo.update_run(run_id, steps=steps)
+            self.repo.update_run(user_id, run_id, steps=steps)
 
         next_date = self.next_trade_date(trade_date)
         ctx = self._load_context()
@@ -864,7 +940,7 @@ class DailyPlanService:
                     model_calls += 1
                     fallbacks += 0 if outcome.model_used else 1
                 row_id = self.repo.save_stock_plan(
-                    run_id, trade_date, code, payload["status"], ctx.fingerprint(code), payload, outcome.meta)
+                    user_id, run_id, trade_date, code, payload["status"], ctx.fingerprint(code), payload, outcome.meta)
                 plans[code] = (payload, outcome.meta, row_id)
                 if payload["status"] == "ready":
                     succeeded += 1
@@ -874,8 +950,8 @@ class DailyPlanService:
                     failures.append({"code": code, "name": payload.get("name") or "",
                                      "reason": payload.get("failure_reason") or "计划生成失败"})
             failed = len(failures)
-            self.repo.update_run(run_id, stock_total=len(codes), stock_succeeded=succeeded, stock_failed=failed,
-                                 failures=failures)
+            self.repo.update_run(user_id, run_id, stock_total=len(codes), stock_succeeded=succeeded,
+                                 stock_failed=failed, failures=failures)
             detail = f"{len(codes)} 只，成功 {succeeded}，失败 {failed}"
             if llm is None:
                 detail += "；没有配置分析模型，全部按规则生成"
@@ -903,7 +979,7 @@ class DailyPlanService:
                     switch = self._switch_for(payload, ctx, candidates)
                     if switch is not None:
                         payload["switch"] = switch
-                        self.repo.update_stock_plan_payload(row_id, payload)
+                        self.repo.update_stock_plan_payload(user_id, row_id, payload)
                         keep += 1 if switch["decision"] == "keep" else 0
                 mark("switch", "succeeded", f"{len(held_ready)} 只持仓，候选 {len(candidates)} 只，"
                                             f"{keep} 只结论为不换")
@@ -929,21 +1005,41 @@ class DailyPlanService:
             watchlist=watch_payloads, failures=failures, boards=board["top"], data_gaps=run_gaps,
             duration_sec=duration, stock_total=len(codes), stock_failed=len(failures),
         )
-        push: Dict[str, Any] = {"channel": "feishu", "status": "skipped", "sent_at": None, "error": None,
+        channel_name = self._push_channel_name()
+        label_name = "飞书" if channel_name == "feishu" else "个人渠道"
+        push: Dict[str, Any] = {"channel": channel_name, "status": "skipped", "sent_at": None, "error": None,
                                 "configured": configured}
+        no_model_scheduled = llm is None and not self._is_primary_user() and trigger == "schedule"
         if not codes:
             mark("push", "skipped", "没有内容可推送")
+        elif no_model_scheduled:
+            # A user without a model of their own gets rule-only plans on the web, but no daily push: one reminder only.
+            reminder = self._notice_no_model_once() if configured else "no_channel"
+            push["reason"] = "no_model"
+            run_gaps.append("未配置模型：这份计划按规则生成，不推送；配置自己的模型后恢复推送")
+            mark("push", "skipped", "未配置模型，不推送" + ("（已提醒一次）" if reminder == "sent" else ""))
         elif not configured:
-            mark("push", "skipped", "没有配置飞书推送，计划只在网页里查看")
+            mark("push", "skipped",
+                 "没有配置飞书推送，计划只在网页里查看" if self._is_primary_user()
+                 else "没有可用的个人推送渠道，计划只在网页里查看")
         else:
             try:
+                self._push_outcomes = []
                 self._pusher(markdown)
                 push.update(status="sent", sent_at=_iso_utc(datetime.now(timezone.utc).replace(tzinfo=None)))
-                mark("push", "succeeded", "已发送飞书摘要")
+                if self._push_outcomes:
+                    push["channels"] = list(self._push_outcomes)
+                mark("push", "succeeded", f"已发送{label_name}摘要")
             except Exception as exc:  # noqa: BLE001 - a push failure never fails the run
-                logger.warning("[DailyPlan] 飞书推送失败: %s", exc)
+                logger.warning("[DailyPlan] %s推送失败: %s", label_name, exc)
                 push.update(status="failed", error=str(exc)[:200] or type(exc).__name__)
+                if self._push_outcomes:
+                    push["channels"] = list(self._push_outcomes)
                 mark("push", "failed", push["error"])
+        if llm is not None and not self._is_primary_user() and trigger == "schedule":
+            from src.services.user_notification_service import NO_MODEL_NOTICE_KEY, clear_notice
+
+            clear_notice(self.user_id, NO_MODEL_NOTICE_KEY)  # a model is back: a later loss reminds once again
 
         # --- finish -------------------------------------------------------------------------------
         if not codes:
@@ -955,7 +1051,7 @@ class DailyPlanService:
         else:
             status = "succeeded"
         self.repo.update_run(
-            run_id, status=status, steps=steps, push=push, push_preview=markdown, model_calls=model_calls_payload,
+            user_id, run_id, status=status, steps=steps, push=push, push_preview=markdown, model_calls=model_calls_payload,
             data_gaps=list(dict.fromkeys(run_gaps)),
             finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )

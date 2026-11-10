@@ -5,12 +5,14 @@ Report Engine - History Comparison Service
 ===================================
 
 Fetches recent analysis signal changes per stock for report rendering.
-Excludes current record via exclude_query_id.
+Excludes current record via exclude_query_id. Only the primary user's push notifications render this block,
+so it reads what the primary user may see (shared reports + their own private ones).
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
+from src.config import get_primary_user_id
 from src.storage import DatabaseManager
 from src.report_language import normalize_report_language
 from src.schemas.decision_action import display_action_fields
@@ -87,6 +89,7 @@ def get_signal_changes(
         days=90,
         limit=limit,
         exclude_query_id=exclude_query_id,
+        viewer_user_id=get_primary_user_id(),
     )
     out = []
     for r in records:
@@ -124,6 +127,7 @@ def get_signal_changes_batch(
             days=90,
             limit=limit,
             exclude_query_id=exclude,
+            viewer_user_id=get_primary_user_id(),
         )
         for r in records:
             sig = _record_to_signal(r, report_language=report_language)

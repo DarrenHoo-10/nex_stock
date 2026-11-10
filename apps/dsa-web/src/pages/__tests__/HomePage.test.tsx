@@ -6,6 +6,9 @@ import { agentApi } from '../../api/agent';
 import { historyApi } from '../../api/history';
 import { systemConfigApi } from '../../api/systemConfig';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { CurrentUserProvider } from '../../test-utils/currentUser';
+import { adminUser, regularUser } from '../../test-utils/currentUserFixtures';
+import type { CurrentUser } from '../../types/me';
 import { useTaskStream } from '../../hooks/useTaskStream';
 import { useStockPoolStore } from '../../stores';
 import type { RunFlowSnapshot } from '../../types/runFlow';
@@ -3510,5 +3513,145 @@ describe('HomePage', () => {
     expect(await screen.findByText('大盘复盘摘要')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '市场情绪与赚钱效应' })).toBeInTheDocument();
     expect(vi.mocked(historyApi.getDetail)).toHaveBeenCalledWith(2);
+  });
+});
+
+describe('HomePage in a multi-user deployment', () => {
+  const othersReport = {
+    ...historyReport,
+    meta: {
+      ...historyReport.meta,
+      requesterUserId: 'u-bob',
+      requesterName: 'Bob',
+      isMine: false,
+      isPrivate: false,
+    },
+  };
+
+  function renderAs(user: CurrentUser | null) {
+    return render(
+      <MemoryRouter>
+        <CurrentUserProvider user={user}>
+          <HomePage />
+        </CurrentUserProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    navigateMock.mockReset();
+    stockIndexItems = [];
+    stockIndexLoading = false;
+    stockIndexFallback = false;
+    stockIndexLoaded = true;
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    useStockPoolStore.getState().resetDashboardState();
+    vi.mocked(analysisApi.getTasks).mockResolvedValue({ total: 0, pending: 0, processing: 0, tasks: [] });
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue([]);
+    vi.mocked(agentApi.getSkills).mockResolvedValue({ skills: [], default_skill_id: '' });
+    vi.mocked(historyApi.getRecordFlow).mockResolvedValue(runFlowSnapshot);
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getDiagnostics).mockResolvedValue({
+      status: 'unknown',
+      statusLabel: '未知',
+      reason: '旧报告或诊断证据不足，无法判断本次运行状态',
+      components: {},
+      copyText: 'data_status: unknown',
+    });
+    vi.mocked(systemConfigApi.getSetupStatus).mockResolvedValue({
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [],
+    });
+    vi.mocked(historyApi.getList).mockResolvedValue({ total: 1, page: 1, limit: 20, items: [historyItem] });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(othersReport);
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({ taskId: 'task-1', status: 'pending' });
+  });
+
+  it('prompts a user without a model key, hides the admin-only market review and skips the system setup check', async () => {
+    renderAs({ ...regularUser, modelKeyConfigured: false });
+
+    expect(await screen.findByTestId('model-key-banner')).toHaveTextContent('尚未配置你自己的模型 Key');
+    expect(screen.getByRole('link', { name: '去个人设置' })).toHaveAttribute('href', '/settings/personal');
+    await screen.findByText('趋势维持强势');
+    expect(screen.queryByRole('button', { name: '大盘复盘' })).toBeNull();
+    expect(screen.queryByText('推送通知')).toBeNull();
+    expect(systemConfigApi.getSetupStatus).not.toHaveBeenCalled();
+    expect(analysisApi.triggerMarketReview).not.toHaveBeenCalled();
+  });
+
+  it('does not nag a user who already has a model key', async () => {
+    renderAs(regularUser);
+
+    await screen.findByText('趋势维持强势');
+    expect(screen.queryByTestId('model-key-banner')).toBeNull();
+  });
+
+  it('shows who requested the report and regenerates it with force_regenerate', async () => {
+    renderAs(regularUser);
+
+    expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
+    expect(screen.getByTestId('requester-badge')).toHaveTextContent('发起：Bob');
+
+    fireEvent.click(screen.getByTestId('regenerate-report'));
+
+    await waitFor(() => expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(1));
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ stockCode: '600519', forceRegenerate: true }),
+    );
+  });
+
+  it('shows the reuse badges for the analysis that produced the report on screen', async () => {
+    useStockPoolStore.setState({ analysisReuse: { 'q-1': { reused: true, reusedReportId: 1 } } });
+    renderAs(regularUser);
+
+    expect(await screen.findByTestId('reused-report-badge')).toHaveTextContent('复用已有报告');
+  });
+
+  it('shows 已复用数据 when only the collected inputs were reused', async () => {
+    useStockPoolStore.setState({ analysisReuse: { 'q-1': { reused: false, metadataReusedFrom: 9 } } });
+    renderAs(regularUser);
+
+    expect(await screen.findByTestId('reused-metadata-badge')).toHaveTextContent('已复用数据');
+  });
+
+  it('surfaces a model_key_required refusal with a link to the personal settings', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockRejectedValue({
+      response: { status: 400, data: { error: 'model_key_required', message: 'No model configured' } },
+    });
+    renderAs(regularUser);
+    await screen.findByText('趋势维持强势');
+
+    fireEvent.click(screen.getByTestId('regenerate-report'));
+
+    const alert = await screen.findByText('需要先配置你自己的模型 Key');
+    expect(alert).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: '前往个人设置' })[0]).toHaveAttribute('href', '/settings/personal');
+  });
+
+  it('keeps the market review and the setup check for an administrator', async () => {
+    renderAs(adminUser);
+
+    await screen.findByText('趋势维持强势');
+    expect(screen.getByRole('button', { name: '大盘复盘' })).toBeInTheDocument();
+    expect(systemConfigApi.getSetupStatus).toHaveBeenCalled();
+  });
+
+  it('is exactly the single-user page in local mode', async () => {
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+    renderAs(null);
+
+    await screen.findByText('趋势维持强势');
+    expect(screen.getByRole('button', { name: '大盘复盘' })).toBeInTheDocument();
+    expect(screen.getByText('推送通知')).toBeInTheDocument();
+    expect(screen.queryByTestId('regenerate-report')).toBeNull();
+    expect(screen.queryByTestId('model-key-banner')).toBeNull();
+    expect(screen.queryByTestId('requester-badges')).toBeNull();
+    expect(systemConfigApi.getSetupStatus).toHaveBeenCalled();
   });
 });

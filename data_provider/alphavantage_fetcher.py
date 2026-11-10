@@ -28,10 +28,11 @@ class AlphaVantageFetcher(BaseFetcher):
     name = "AlphaVantageFetcher"
     priority = 3
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None):
         from src.config import get_config
         config = get_config()
-        self._api_key = getattr(config, 'alphavantage_api_key', None) or os.getenv('ALPHAVANTAGE_API_KEY')
+        # An explicit key (a user's own credential) wins and is never read back from / written to the environment.
+        self._api_key = api_key or getattr(config, 'alphavantage_api_key', None) or os.getenv('ALPHAVANTAGE_API_KEY')
         if not self._api_key:
             logger.debug("[AlphaVantage] API key not configured, fetcher disabled")
 

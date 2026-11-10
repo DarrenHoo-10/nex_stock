@@ -28,6 +28,11 @@ from src.services.agent_model_service import (  # noqa: E402
 from src.storage import ChatSessionStateConflict, DatabaseManager  # noqa: E402
 
 
+from api.deps import CurrentUser  # noqa: E402
+
+_PRIMARY_USER = CurrentUser(user_id="local", handle="local", display_name="local", role="admin", is_admin=True)
+
+
 def _model_config(**overrides) -> Config:
     config = Config(
         litellm_model="primary-alias",
@@ -256,7 +261,9 @@ def test_context_endpoint_for_unknown_session_is_empty() -> None:
     with patch.object(agent, "get_config", return_value=_history_config()), patch.object(
         agent, "resolve_model_context_window", return_value=None,
     ), patch.object(agent.asyncio, "to_thread", _inline_to_thread):
-        response = asyncio.run(agent.get_chat_session_context("missing-session"))
+        response = asyncio.run(agent.get_chat_session_context(
+            "missing-session", session_service=agent.AgentChatSessionService(), user=_PRIMARY_USER,
+        ))
 
     assert response.message_count == 0
     assert response.history_tokens == 0
@@ -276,7 +283,9 @@ def test_compact_endpoint_returns_502_when_summary_fails() -> None:
         agent.asyncio, "to_thread", _inline_to_thread,
     ):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(agent.compact_chat_session(session_id))
+            asyncio.run(agent.compact_chat_session(
+                session_id, session_service=agent.AgentChatSessionService(), user=_PRIMARY_USER,
+            ))
 
     assert exc_info.value.status_code == 502
     assert db.get_conversation_summary(session_id) is None
@@ -293,7 +302,9 @@ def test_compact_endpoint_success_returns_fresh_context() -> None:
     ), patch.object(agent, "resolve_model_context_window", return_value=128000), patch(
         "src.agent.llm_adapter.LLMToolAdapter", return_value=_summary_adapter(),
     ), patch.object(agent.asyncio, "to_thread", _inline_to_thread):
-        response = asyncio.run(agent.compact_chat_session(session_id))
+        response = asyncio.run(agent.compact_chat_session(
+                session_id, session_service=agent.AgentChatSessionService(), user=_PRIMARY_USER,
+            ))
 
     assert response.status == "compacted"
     assert response.summarized_message_count == 4
@@ -304,7 +315,7 @@ def test_compact_endpoint_success_returns_fresh_context() -> None:
 # ---------------------------------------------------------------- endpoint wiring
 
 def _capture_prepare(captured):
-    def fake_prepare(request, config, session_id, session_service):
+    def fake_prepare(request, config, session_id, session_service, user_id):
         captured.append(config)
         raise RuntimeError("stop after prepare")
     return fake_prepare
@@ -321,6 +332,7 @@ def test_stream_endpoint_prepares_turn_with_overridden_config() -> None:
             response = await agent.agent_chat_stream(
                 agent.ChatRequest(message="hi", model="fallback-alias", reasoning_effort="none"),
                 session_service=MagicMock(),
+                user=_PRIMARY_USER,
             )
             return [chunk async for chunk in response.body_iterator]
 
@@ -339,6 +351,8 @@ def test_chat_endpoint_without_overrides_uses_shared_config() -> None:
         agent, "_select_agent_chat_backend", return_value="litellm",
     ), patch.object(agent, "_prepare_chat_request", _capture_prepare(captured)):
         with pytest.raises(HTTPException):
-            asyncio.run(agent.agent_chat(agent.ChatRequest(message="hi"), session_service=MagicMock()))
+            asyncio.run(agent.agent_chat(
+                agent.ChatRequest(message="hi"), session_service=MagicMock(), user=_PRIMARY_USER,
+            ))
 
     assert captured == [config]

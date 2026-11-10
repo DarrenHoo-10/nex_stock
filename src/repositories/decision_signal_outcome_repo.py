@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, desc, func, select
 
+from src.repositories.decision_signal_repo import signal_visibility_condition
 from src.storage import (
     DatabaseManager,
     DecisionSignalFeedbackRecord,
@@ -145,6 +146,7 @@ class DecisionSignalOutcomeRepository:
         outcome: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        viewer_user_id: Optional[str] = None,
     ) -> Tuple[List[DecisionSignalOutcomeRecord], int]:
         safe_page = max(1, int(page))
         safe_page_size = max(1, min(int(page_size), 100))
@@ -159,6 +161,12 @@ class DecisionSignalOutcomeRepository:
             conditions.append(DecisionSignalOutcomeRecord.eval_status == eval_status)
         if outcome:
             conditions.append(DecisionSignalOutcomeRecord.outcome == outcome)
+        if viewer_user_id is not None:
+            conditions.append(
+                DecisionSignalOutcomeRecord.signal_id.in_(
+                    select(DecisionSignalRecord.id).where(signal_visibility_condition(viewer_user_id))
+                )
+            )
         where_clause = and_(*conditions) if conditions else True
         offset = (safe_page - 1) * safe_page_size
         with self.db.get_session() as session:
@@ -183,8 +191,11 @@ class DecisionSignalOutcomeRepository:
         horizons: Optional[List[str]] = None,
         statuses: Optional[List[str]] = None,
         stock_codes: Optional[List[str]] = None,
+        viewer_user_id: Optional[str] = None,
     ) -> List[OutcomeStatsRow]:
         conditions = [DecisionSignalOutcomeRecord.engine_version == engine_version]
+        if viewer_user_id is not None:
+            conditions.append(signal_visibility_condition(viewer_user_id))
         if horizons:
             conditions.append(DecisionSignalOutcomeRecord.horizon.in_(horizons))
         if statuses:

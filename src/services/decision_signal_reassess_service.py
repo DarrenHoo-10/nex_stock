@@ -18,6 +18,7 @@ from src.services.decision_profile_policy import (
     apply_decision_profile_policy,
 )
 from src.services.decision_signal_data_quality import normalize_decision_signal_data_quality
+from src.config import get_primary_user_id
 from src.services.decision_signal_service import DecisionSignalService
 from src.storage import AnalysisHistory, DatabaseManager
 from src.utils.data_processing import parse_json_field
@@ -62,12 +63,18 @@ class DecisionSignalReassessService:
         source_report_id: int,
         decision_profile: str,
         persist: bool = False,
+        viewer_user_id: Optional[str] = None,
     ) -> dict[str, Any]:
         decision_profile_norm = normalize_decision_profile(decision_profile)
         if decision_profile_norm is None:
             raise ValueError("decision_profile is required")
 
-        record = self.db.get_analysis_history_by_id(source_report_id)
+        # Another user's private report counts as missing (the preview would echo its reasoning).
+        record = (
+            self.db.get_analysis_history_by_id(source_report_id)
+            if viewer_user_id is None
+            else self.db.get_analysis_history_by_id(source_report_id, viewer_user_id=viewer_user_id)
+        )
         if record is None:
             raise DecisionSignalSourceReportNotFoundError(f"source report not found: {source_report_id}")
 
@@ -136,6 +143,9 @@ class DecisionSignalReassessService:
             candidate=preview_candidate,
             metadata=metadata,
         )
+        if getattr(record, "is_private", None):
+            # Signals of a private report stay private to its requester.
+            payload["owner_user_id"] = getattr(record, "requester_user_id", None) or get_primary_user_id()
         market_phase_summary = _as_mapping(context_snapshot.get("market_phase_summary"))
         if not market_phase_summary:
             market_phase_summary = _as_mapping(raw_result.get("market_phase_summary"))

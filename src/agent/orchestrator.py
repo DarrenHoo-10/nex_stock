@@ -66,7 +66,7 @@ from src.agent.runner import parse_dashboard_json
 from src.agent.stock_scope import StockScopeResolution
 from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
-from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
+from src.config import AGENT_MAX_STEPS_DEFAULT, get_config, get_primary_user_id
 from src.report_language import normalize_report_language
 
 if TYPE_CHECKING:
@@ -172,7 +172,11 @@ class AgentOrchestrator:
         mode: str = "standard",
         skill_manager=None,
         config=None,
+        user_id: Optional[str] = None,
     ):
+        # Acting user of ``run()`` / legacy ``chat()`` (``None`` = primary user: CLI, bots, scheduled
+        # analysis). API chat turns carry the verified session owner on the resolved turn instead.
+        self.user_id = user_id or get_primary_user_id()
         self.tool_registry = tool_registry
         self.llm_adapter = llm_adapter
         self.skill_instructions = skill_instructions
@@ -479,7 +483,7 @@ class AgentOrchestrator:
         else:
             from src.services.agent_chat_session_service import AgentChatSessionService
 
-            db, snapshot = conversation_manager.prepare_turn(session_id)
+            db, snapshot = conversation_manager.prepare_turn(session_id, user_id=self.user_id)
             scope_resolution, disposition = AgentChatSessionService(db).prepare_compatibility_turn(
                 config, snapshot, message, context=context,
             )
@@ -488,6 +492,7 @@ class AgentOrchestrator:
             scope_resolution=scope_resolution if scope_resolution.stock_scope is not None else None,
         )
         ctx.session_id = session_id
+        ctx.user_id = resolved_turn.user_id if resolved_turn is not None else self.user_id
         ctx.meta["response_mode"] = "chat"
         if scope_resolution.stock_scope is not None:
             ctx.meta["stock_scope"] = scope_resolution.stock_scope
@@ -921,7 +926,7 @@ class AgentOrchestrator:
                 skill_instructions=self.skill_instructions,
                 technical_skill_policy=self.technical_skill_policy,
             )
-            router = SkillRouter()
+            router = SkillRouter(config=self.config)
             selected = router.select_skills(ctx, max_count=4)
             if not selected:
                 return []
@@ -1253,7 +1258,7 @@ class AgentOrchestrator:
         scope_resolution: Optional[StockScopeResolution] = None,
     ) -> AgentContext:
         """Seed an ``AgentContext`` from the user request."""
-        ctx = AgentContext(query=task)
+        ctx = AgentContext(query=task, user_id=self.user_id)
 
         if context:
             ctx.stock_code = context.get("stock_code", "")

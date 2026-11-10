@@ -12,3 +12,5 @@ export * from './SettingsCategoryNav';
 export * from './AuthSettingsCard';
 export * from './GenerationBackendStatusPanel';
 export * from './AgentBackendStatusPanel';
+export * from './PersonalSettingsPanel';
+export * from './SettingsScopeTabs';

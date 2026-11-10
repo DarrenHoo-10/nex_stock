@@ -87,8 +87,10 @@ class PortfolioImportService:
         *,
         portfolio_service: Optional[PortfolioService] = None,
         repo: Optional[PortfolioRepository] = None,
+        user_id: Optional[str] = None,
     ):
-        self.portfolio_service = portfolio_service or PortfolioService()
+        # ``user_id`` is only used to build the default PortfolioService (None = primary user).
+        self.portfolio_service = portfolio_service or PortfolioService(user_id=user_id)
         self.repo = repo or PortfolioRepository()
         self._parser_registry = self.__class__._shared_parser_registry
         self._broker_alias_map = self.__class__._shared_broker_alias_map
@@ -188,6 +190,9 @@ class PortfolioImportService:
         dry_run: bool = False,
     ) -> Dict[str, Any]:
         broker_norm = self._normalize_broker(broker)
+        # Ownership gate before any dedup lookup: a foreign account must look missing and must not
+        # reveal which trade uids / hashes it holds (the has_trade_* lookups are keyed by account_id only).
+        self.portfolio_service.require_active_account(account_id)
 
         inserted_count = 0
         duplicate_count = 0

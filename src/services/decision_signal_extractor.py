@@ -10,6 +10,7 @@ from typing import Any, Dict, Literal, Mapping, Optional
 from data_provider.base import normalize_stock_code
 
 from src.analyzer import AnalysisResult
+from src.config import get_primary_user_id
 from src.core.trading_calendar import get_market_for_stock
 from src.schemas.decision_action import build_action_fields, normalize_decision_action
 from src.schemas.decision_scale import (
@@ -24,6 +25,9 @@ from src.utils.sniper_points import extract_sniper_points
 
 
 logger = logging.getLogger(__name__)
+
+# Set by the API on a position-analysis ``portfolio_context`` so the shared signal knows whose holding it is.
+PORTFOLIO_CONTEXT_OWNER_KEY = "owner_user_id"
 
 ProfileSource = Literal["auto_default", "backfill_defaulted", "legacy_unknown"]
 
@@ -51,8 +55,11 @@ def build_decision_signal_payload_from_report(
     report_type: str,
     profile_source: ProfileSource,
     market_override: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
 ) -> Dict[str, Any] | None:
     """Build a DecisionSignal payload from a completed stock analysis report.
+
+    ``owner_user_id`` marks the signal as coming from a private report: only that user can see it.
 
     ``market_override`` lets callers supply a target-derived market (e.g.
     ``cn`` for index targets whose canonical code would otherwise resolve to
@@ -170,6 +177,7 @@ def build_decision_signal_payload_from_report(
         "data_quality_summary": _extract_data_quality(context_snapshot, result),
         "metadata": metadata,
         "report_language": getattr(result, "report_language", None),
+        "owner_user_id": owner_user_id,
     }
     return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
@@ -216,6 +224,7 @@ def extract_and_persist_from_analysis_result(
     profile_source: ProfileSource,
     service: Optional[DecisionSignalService] = None,
     market_override: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
 ) -> Dict[str, Any] | None:
     """Best-effort extract and persist a DecisionSignal from an analysis result."""
 
@@ -230,6 +239,7 @@ def extract_and_persist_from_analysis_result(
             report_type=report_type,
             profile_source=profile_source,
             market_override=market_override,
+            owner_user_id=owner_user_id,
         )
         if payload is None:
             return None
@@ -448,6 +458,10 @@ def _extract_data_quality(context_snapshot: Optional[Mapping[str, Any]], result:
 
 def _extract_holding_state(portfolio_context: Optional[Mapping[str, Any]]) -> str:
     context = _as_mapping(portfolio_context)
+    owner = context.get(PORTFOLIO_CONTEXT_OWNER_KEY)
+    if owner not in (None, "") and str(owner) != get_primary_user_id():
+        # Decision signals are shared across users: another user's holding must not be recorded in them.
+        return "unknown"
     quantity = context.get("quantity")
     if quantity in (None, ""):
         return "unknown"

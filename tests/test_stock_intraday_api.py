@@ -6,12 +6,15 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import HTTPException
 
+from api.deps import CurrentUser
 from api.v1.endpoints import stocks as stocks_endpoint
 from src.services.intraday_snapshot_service import (
     BarsResult,
     IntradayDataUnavailable,
     IntradaySnapshotService,
 )
+
+_PRIMARY = CurrentUser(user_id="local", handle="local", display_name="local", role="admin", is_admin=True)
 
 
 def _service_with(result=None, error=None):
@@ -44,7 +47,7 @@ def test_returns_bars_with_source_and_freshness(monkeypatch) -> None:
     service = _service_with(result)
     _patch_service(monkeypatch, service)
 
-    response = stocks_endpoint.get_stock_intraday("002029", date="2026-11-06")
+    response = stocks_endpoint.get_stock_intraday("002029", date="2026-11-06", user=_PRIMARY)
 
     service.get_session_bars.assert_called_once_with("002029", "2026-11-06")
     assert response.stock_code == "002029"
@@ -59,7 +62,7 @@ def test_returns_bars_with_source_and_freshness(monkeypatch) -> None:
 def test_invalid_or_future_date_is_422(monkeypatch) -> None:
     _patch_service(monkeypatch, _service_with(error=ValueError("date 2099-01-01 is in the future")))
     with pytest.raises(HTTPException) as caught:
-        stocks_endpoint.get_stock_intraday("002029", date="2099-01-01")
+        stocks_endpoint.get_stock_intraday("002029", date="2099-01-01", user=_PRIMARY)
     assert caught.value.status_code == 422
     assert caught.value.detail["error"] == "invalid_date"
 
@@ -70,7 +73,7 @@ def test_no_source_is_503_without_leaking_provider_detail(monkeypatch) -> None:
         _service_with(error=IntradayDataUnavailable("biying: Biying error: bad licence SECRET-123")),
     )
     with pytest.raises(HTTPException) as caught:
-        stocks_endpoint.get_stock_intraday("002029", date="2026-11-05")
+        stocks_endpoint.get_stock_intraday("002029", date="2026-11-05", user=_PRIMARY)
     assert caught.value.status_code == 503
     assert caught.value.detail["error"] == "intraday_unavailable"
     assert "SECRET-123" not in str(caught.value.detail)
@@ -89,7 +92,7 @@ def test_no_source_is_503_without_leaking_provider_detail(monkeypatch) -> None:
 def test_503_carries_the_reason_and_its_message(monkeypatch, reason, expected) -> None:
     _patch_service(monkeypatch, _service_with(error=IntradayDataUnavailable("detail", reason=reason)))
     with pytest.raises(HTTPException) as caught:
-        stocks_endpoint.get_stock_intraday("002029", date="2026-09-22")
+        stocks_endpoint.get_stock_intraday("002029", date="2026-09-22", user=_PRIMARY)
     detail = caught.value.detail
     assert caught.value.status_code == 503
     assert detail["error"] == "intraday_unavailable"
@@ -101,5 +104,5 @@ def test_503_carries_the_reason_and_its_message(monkeypatch, reason, expected) -
 def test_unexpected_error_is_500(monkeypatch) -> None:
     _patch_service(monkeypatch, _service_with(error=RuntimeError("boom")))
     with pytest.raises(HTTPException) as caught:
-        stocks_endpoint.get_stock_intraday("002029", date="2026-11-05")
+        stocks_endpoint.get_stock_intraday("002029", date="2026-11-05", user=_PRIMARY)
     assert caught.value.status_code == 500

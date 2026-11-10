@@ -264,12 +264,21 @@ class RunFailure(BaseModel):
     reason: str = ""
 
 
+class PushChannelOutcome(BaseModel):
+    channel: str
+    success: bool
+
+
 class PushInfo(BaseModel):
-    channel: Literal["feishu"] = "feishu"
+    # "feishu" = the primary user's .env route; "personal" = the user's own push channels (multi-user P3a)
+    channel: Literal["feishu", "personal"] = "feishu"
     status: PushStatus
     sent_at: Optional[str] = None
     error: Optional[str] = None
     configured: bool = False
+    # Additive (personal channels only): why nothing was pushed ("no_model") and what each channel type returned.
+    reason: Optional[str] = None
+    channels: List[PushChannelOutcome] = Field(default_factory=list)
 
 
 class ModelCall(BaseModel):

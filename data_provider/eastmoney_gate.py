@@ -183,6 +183,14 @@ _install_lock = threading.Lock()
 _underlying_request: Optional[Callable[..., Any]] = None  # Session.request beneath the hook
 
 
+def _in_user_scope() -> bool:
+    try:
+        from src.utils.safe_requests import in_user_outbound_scope
+    except ImportError:  # data_provider used without the app package
+        return False
+    return in_user_outbound_scope()
+
+
 def install() -> None:
     """Route every ``requests`` call to an East Money host through ``GATE`` (idempotent).
 
@@ -197,7 +205,9 @@ def install() -> None:
         underlying = current
 
         def gated_request(self, method, url, *args, **kwargs):  # type: ignore[no-untyped-def]
-            if host_of(url) is None:
+            # A user's own outbound request (personal webhook ...) is theirs: its 403 must not cool the host down
+            # for everyone, and it must not take a turn in the shared per-host queue.
+            if host_of(url) is None or _in_user_scope():
                 return underlying(self, method, url, *args, **kwargs)
             return GATE.request(lambda m, u, **kw: underlying(self, m, u, *args, **kw), method, url, **kwargs)
 

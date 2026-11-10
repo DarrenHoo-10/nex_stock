@@ -125,6 +125,7 @@ class Scheduler:
         self._daily_job: Optional[Any] = None
         self._daily_jobs: List[Any] = []
         self._extra_daily_jobs: List[Dict[str, Any]] = []
+        self._dynamic_job_groups: List[Dict[str, Any]] = []
         self._background_tasks: List[Dict[str, Any]] = []
         self._lifecycle_lock = threading.Lock()
         self._running = False
@@ -321,6 +322,64 @@ class Scheduler:
         logger.info("Daily job %s registered at %s", entry["name"], candidate)
         return True
 
+    def register_job_definition(self, job: Dict[str, Any]) -> None:
+        """Register a job definition as built by the ``*_schedule`` modules: a fixed daily job (the kwargs of
+        :meth:`add_daily_job`) or a dynamic group (``{"dynamic": True, "times_provider": ..., "task_factory": ...,
+        "name": ...}``, see :meth:`add_dynamic_daily_jobs`)."""
+        if job.get("dynamic"):
+            self.add_dynamic_daily_jobs(
+                times_provider=job["times_provider"],
+                task_factory=job["task_factory"],
+                name_prefix=job["name"],
+                resync_interval_seconds=job.get("resync_interval_seconds", 60.0),
+            )
+        else:
+            self.add_daily_job(**job)
+
+    def add_dynamic_daily_jobs(
+        self,
+        *,
+        times_provider: Callable[[], Sequence[str]],
+        task_factory: Callable[[str], Callable],
+        name_prefix: str,
+        resync_interval_seconds: float = 60.0,
+    ) -> None:
+        """Keep one daily job per time in ``times_provider()`` (a de-duplicated set, e.g. the push times of all users).
+
+        The set is re-read every ``resync_interval_seconds`` by the run loop: a new time registers a job whose task is
+        ``task_factory(time)``, a time nobody uses any more is cancelled. A failing provider keeps the current jobs.
+        """
+        group: Dict[str, Any] = {
+            "times_provider": times_provider,
+            "task_factory": task_factory,
+            "prefix": name_prefix,
+            "interval": max(1.0, float(resync_interval_seconds)),
+            "last_sync": 0.0,
+            "entries": {},
+        }
+        self._dynamic_job_groups.append(group)
+        self._sync_dynamic_group(group)
+
+    def _sync_dynamic_group(self, group: Dict[str, Any]) -> None:
+        group["last_sync"] = time.monotonic()
+        try:
+            wanted = {
+                str(item).strip() for item in (group["times_provider"]() or []) if self._is_valid_schedule_time(str(item).strip())
+            }
+        except Exception as exc:  # noqa: BLE001 - keep the jobs that are registered
+            logger.warning("Failed to read the times of dynamic job group %s; keeping the current jobs: %s", group["prefix"], exc)
+            return
+        entries: Dict[str, Dict[str, Any]] = group["entries"]
+        for when in sorted(wanted - set(entries)):
+            if self.add_daily_job(group["task_factory"](when), when, name=f"{group['prefix']}_{when.replace(':', '')}"):
+                entries[when] = self._extra_daily_jobs[-1]
+        for when in sorted(set(entries) - wanted):
+            entry = entries.pop(when)
+            self._cancel_extra_daily_job(entry)
+            if entry in self._extra_daily_jobs:
+                self._extra_daily_jobs.remove(entry)
+            logger.info("Daily job %s_%s removed (no user needs it any more)", group["prefix"], when.replace(":", ""))
+
     def _register_extra_daily_job(self, entry: Dict[str, Any]) -> Any:
         return self.schedule.every().day.at(entry["time"]).do(lambda: self._start_extra_daily_job(entry))
 
@@ -353,10 +412,14 @@ class Scheduler:
         for entry in self._extra_daily_jobs:
             self._cancel_extra_daily_job(entry)
         self._extra_daily_jobs = []
+        self._dynamic_job_groups = []
 
     def _refresh_extra_daily_jobs_if_needed(self) -> None:
         """Re-register extra daily jobs whose provider reports a new valid time."""
-        for entry in self._extra_daily_jobs:
+        for group in list(self._dynamic_job_groups):
+            if time.monotonic() - group["last_sync"] >= group["interval"]:
+                self._sync_dynamic_group(group)
+        for entry in list(self._extra_daily_jobs):
             provider = entry.get("provider")
             if provider is None:
                 continue
@@ -574,7 +637,7 @@ def run_with_schedule(
             name=entry.get("name"),
         )
     for job in extra_daily_jobs or []:
-        scheduler.add_daily_job(**job)
+        scheduler.register_job_definition(job)
     scheduler.set_daily_task(task, run_immediately=run_immediately)
     scheduler.run()
 

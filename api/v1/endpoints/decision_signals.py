@@ -6,9 +6,10 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Security
+from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.security import APIKeyCookie
 
+from api.deps import CurrentUser, get_current_user, require_admin
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.decision_signals import (
     DecisionSignalCreateRequest,
@@ -60,6 +61,14 @@ AUTH_RESPONSE = {
 }
 
 
+def _viewer(user: object) -> Optional[str]:
+    """The requesting user's id: signals from private reports are visible to their owner only.
+
+    Direct (non-HTTP) calls without a resolved user are unrestricted, like system jobs.
+    """
+    return user.user_id if isinstance(user, CurrentUser) else None
+
+
 def _bad_request(exc: Exception, *, error: str = "validation_error") -> HTTPException:
     return HTTPException(
         status_code=400,
@@ -101,6 +110,7 @@ def _guardrail_blocked(exc: DecisionSignalReassessGuardrailBlockedError) -> HTTP
 
 @router.post(
     "",
+    dependencies=[Depends(require_admin)],
     response_model=DecisionSignalMutationResponse,
     responses={
         **AUTH_RESPONSE,
@@ -175,6 +185,7 @@ def list_signals(
     ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> DecisionSignalListResponse:
     service = DecisionSignalService()
     try:
@@ -196,6 +207,8 @@ def list_signals(
                 expires_to=expires_to,
                 holding_only=holding_only,
                 account_id=account_id,
+                holding_user_id=user.user_id,
+                viewer_user_id=_viewer(user),
                 page=page,
                 page_size=page_size,
             )
@@ -210,6 +223,7 @@ def list_signals(
 
 @router.post(
     "/outcomes/run",
+    dependencies=[Depends(require_admin)],
     response_model=DecisionSignalOutcomeRunResponse,
     responses={
         **AUTH_RESPONSE,
@@ -226,7 +240,10 @@ def list_signals(
     ),
     operation_id="runDecisionSignalOutcomes",
 )
-def run_outcomes(request: DecisionSignalOutcomeRunRequest) -> DecisionSignalOutcomeRunResponse:
+def run_outcomes(
+    request: DecisionSignalOutcomeRunRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> DecisionSignalOutcomeRunResponse:
     service = DecisionSignalOutcomeService()
     try:
         return DecisionSignalOutcomeRunResponse(
@@ -240,6 +257,7 @@ def run_outcomes(request: DecisionSignalOutcomeRunRequest) -> DecisionSignalOutc
                 source_type=request.source_type,
                 status=request.status,
                 limit=request.limit,
+                viewer_user_id=_viewer(user),
             )
         )
     except DecisionSignalNotFoundError as exc:
@@ -271,6 +289,7 @@ def list_outcomes(
     outcome: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> DecisionSignalOutcomeListResponse:
     service = DecisionSignalOutcomeService()
     try:
@@ -283,6 +302,7 @@ def list_outcomes(
                 outcome=outcome,
                 page=page,
                 page_size=page_size,
+                viewer_user_id=_viewer(user),
             )
         )
     except ValueError as exc:
@@ -308,6 +328,7 @@ def get_outcome_stats(
     horizons: Optional[List[str]] = Query(None),
     engine_version: Optional[str] = Query(None),
     statuses: Optional[List[str]] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
 ) -> DecisionSignalOutcomeStatsResponse:
     service = DecisionSignalOutcomeService()
     try:
@@ -316,6 +337,7 @@ def get_outcome_stats(
                 horizons=horizons,
                 engine_version=engine_version,
                 statuses=statuses,
+                viewer_user_id=_viewer(user),
             )
         )
     except ValueError as exc:
@@ -344,10 +366,11 @@ def get_outcome_stats(
 def get_stock_review(
     stock_code: str,
     horizon: Optional[str] = Query(None, description="Optional outcome horizon filter: 1d/3d/5d/10d"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> DecisionSignalReviewMemory:
     service = DecisionSignalOutcomeService()
     try:
-        return DecisionSignalReviewMemory(**service.get_stock_review(stock_code, horizon=horizon))
+        return DecisionSignalReviewMemory(**service.get_stock_review(stock_code, horizon=horizon, viewer_user_id=_viewer(user)))
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
@@ -356,6 +379,7 @@ def get_stock_review(
 
 @router.post(
     "/reassess",
+    dependencies=[Depends(require_admin)],
     response_model=DecisionSignalReassessResponse,
     responses={
         **AUTH_RESPONSE,
@@ -371,7 +395,10 @@ def get_stock_review(
     ),
     operation_id="reassessDecisionSignalPreview",
 )
-def reassess_signal(request: DecisionSignalReassessRequest) -> DecisionSignalReassessResponse:
+def reassess_signal(
+    request: DecisionSignalReassessRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> DecisionSignalReassessResponse:
     service = DecisionSignalReassessService()
     try:
         return DecisionSignalReassessResponse(
@@ -379,6 +406,7 @@ def reassess_signal(request: DecisionSignalReassessRequest) -> DecisionSignalRea
                 source_report_id=request.source_report_id,
                 decision_profile=request.decision_profile,
                 persist=request.persist,
+                viewer_user_id=_viewer(user),
             )
         )
     except DecisionSignalSourceReportNotFoundError as exc:
@@ -410,6 +438,7 @@ def get_latest_active(
     stock_code: str,
     market: Optional[str] = Query(None, description="Optional market filter: cn/hk/us/jp/kr/tw"),
     limit: int = Query(1, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ) -> DecisionSignalListResponse:
     service = DecisionSignalService()
     try:
@@ -418,6 +447,7 @@ def get_latest_active(
                 stock_code=stock_code,
                 market=market,
                 limit=limit,
+                viewer_user_id=_viewer(user),
             )
         )
     except DecisionSignalStorageError as exc:
@@ -441,10 +471,10 @@ def get_latest_active(
     description="按 ID 查询单条 DecisionSignal；读取前会执行懒过期。",
     operation_id="getDecisionSignal",
 )
-def get_signal(signal_id: int) -> DecisionSignalItem:
+def get_signal(signal_id: int, user: CurrentUser = Depends(get_current_user)) -> DecisionSignalItem:
     service = DecisionSignalService()
     try:
-        return DecisionSignalItem(**service.get_signal(signal_id))
+        return DecisionSignalItem(**service.get_signal(signal_id, viewer_user_id=_viewer(user)))
     except DecisionSignalNotFoundError as exc:
         raise _not_found(exc)
     except DecisionSignalStorageError as exc:
@@ -466,10 +496,12 @@ def get_signal(signal_id: int) -> DecisionSignalItem:
     description="返回指定 signal_id 在当前 engine_version 下的后验结果。",
     operation_id="listDecisionSignalOutcomesBySignal",
 )
-def list_signal_outcomes(signal_id: int) -> DecisionSignalOutcomeListResponse:
+def list_signal_outcomes(
+    signal_id: int, user: CurrentUser = Depends(get_current_user)
+) -> DecisionSignalOutcomeListResponse:
     service = DecisionSignalOutcomeService()
     try:
-        return DecisionSignalOutcomeListResponse(**service.list_signal_outcomes(signal_id))
+        return DecisionSignalOutcomeListResponse(**service.list_signal_outcomes(signal_id, viewer_user_id=_viewer(user)))
     except DecisionSignalNotFoundError as exc:
         raise _not_found(exc)
     except Exception as exc:
@@ -489,10 +521,10 @@ def list_signal_outcomes(signal_id: int) -> DecisionSignalOutcomeListResponse:
     description="没有反馈时返回 feedback_value=null；信号不存在时返回 404。",
     operation_id="getDecisionSignalFeedback",
 )
-def get_feedback(signal_id: int) -> DecisionSignalFeedbackItem:
+def get_feedback(signal_id: int, user: CurrentUser = Depends(get_current_user)) -> DecisionSignalFeedbackItem:
     service = DecisionSignalOutcomeService()
     try:
-        return DecisionSignalFeedbackItem(**service.get_feedback(signal_id))
+        return DecisionSignalFeedbackItem(**service.get_feedback(signal_id, viewer_user_id=_viewer(user)))
     except DecisionSignalNotFoundError as exc:
         raise _not_found(exc)
     except Exception as exc:
@@ -501,6 +533,7 @@ def get_feedback(signal_id: int) -> DecisionSignalFeedbackItem:
 
 @router.put(
     "/{signal_id}/feedback",
+    dependencies=[Depends(require_admin)],
     response_model=DecisionSignalFeedbackItem,
     responses={
         **AUTH_RESPONSE,
@@ -513,7 +546,11 @@ def get_feedback(signal_id: int) -> DecisionSignalFeedbackItem:
     description="按 signal_id upsert 最新 useful/not_useful 反馈。",
     operation_id="putDecisionSignalFeedback",
 )
-def put_feedback(signal_id: int, request: DecisionSignalFeedbackRequest) -> DecisionSignalFeedbackItem:
+def put_feedback(
+    signal_id: int,
+    request: DecisionSignalFeedbackRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> DecisionSignalFeedbackItem:
     service = DecisionSignalOutcomeService()
     try:
         return DecisionSignalFeedbackItem(
@@ -523,6 +560,7 @@ def put_feedback(signal_id: int, request: DecisionSignalFeedbackRequest) -> Deci
                 reason_code=request.reason_code,
                 note=request.note,
                 source=request.source,
+                viewer_user_id=_viewer(user),
             )
         )
     except DecisionSignalNotFoundError as exc:
@@ -535,6 +573,7 @@ def put_feedback(signal_id: int, request: DecisionSignalFeedbackRequest) -> Deci
 
 @router.patch(
     "/{signal_id}/status",
+    dependencies=[Depends(require_admin)],
     response_model=DecisionSignalItem,
     responses={
         **AUTH_RESPONSE,
@@ -551,7 +590,11 @@ def put_feedback(signal_id: int, request: DecisionSignalFeedbackRequest) -> Deci
     ),
     operation_id="updateDecisionSignalStatus",
 )
-def update_status(signal_id: int, request: DecisionSignalStatusUpdateRequest) -> DecisionSignalItem:
+def update_status(
+    signal_id: int,
+    request: DecisionSignalStatusUpdateRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> DecisionSignalItem:
     service = DecisionSignalService()
     try:
         return DecisionSignalItem(
@@ -560,6 +603,7 @@ def update_status(signal_id: int, request: DecisionSignalStatusUpdateRequest) ->
                 status=request.status,
                 metadata=request.metadata,
                 replace_metadata="metadata" in request.model_fields_set,
+                viewer_user_id=_viewer(user),
             )
         )
     except DecisionSignalNotFoundError as exc:

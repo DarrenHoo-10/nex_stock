@@ -10,6 +10,7 @@ import { RecordBuyDialog } from '../../components/plan/mine/RecordBuyDialog';
 import { StockDetail } from '../../components/plan/mine/StockDetail';
 import { StockList } from '../../components/plan/mine/StockList';
 import { useMineOverview, useStockPlanDetail } from '../../components/plan/mine/useMineData';
+import { ModelKeyBanner } from '../../components/auth/ModelKeyBanner';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
 import { QuoteSearch } from '../../components/plan/quote/QuoteSearch';
 import { watchlistCodeOf } from '../../utils/watchlistCode';
@@ -319,6 +320,7 @@ const MinePage: React.FC = () => {
   return (
     <>
       {header}
+      <ModelKeyBanner variant="plan" />
       <div className={`grid2${paramCode ? ' show-detail' : ''}`}>
         <section className="win side" aria-label="账户和股票列表">
           <AccountStrip account={account} onEdit={openHoldings} onRetry={() => overview.reloadAccount()} />

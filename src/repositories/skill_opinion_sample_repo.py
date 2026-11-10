@@ -5,17 +5,35 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.storage import AnalysisHistory, DatabaseManager, SkillOpinionSampleRecord
 
 
 class SkillOpinionSampleRepository:
-    """Persist low-sensitivity samples without mutating an existing sample."""
+    """Persist low-sensitivity samples without mutating an existing sample.
+
+    Samples (and the outcomes / skill weights derived from them) are shared system output: a private report
+    (``AnalysisHistory.is_private``, docs/design/multi-user.md 17) never yields a sample.
+    """
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
+
+    @staticmethod
+    def shared_sample_condition():
+        """SQL predicate on ``SkillOpinionSampleRecord``: its source report is not private."""
+        private_source = (
+            select(AnalysisHistory.id)
+            .where(
+                AnalysisHistory.id == SkillOpinionSampleRecord.analysis_history_id,
+                AnalysisHistory.is_private.is_(True),
+            )
+            .correlate(SkillOpinionSampleRecord)
+            .exists()
+        )
+        return ~private_source
 
     def insert_missing(self, rows: Iterable[Dict[str, Any]]) -> int:
         values = list(rows)
@@ -32,7 +50,10 @@ class SkillOpinionSampleRepository:
                 return 0
             existing_history_ids = set(
                 session.execute(
-                    select(AnalysisHistory.id).where(AnalysisHistory.id.in_(history_ids))
+                    select(AnalysisHistory.id).where(
+                        AnalysisHistory.id.in_(history_ids),
+                        or_(AnalysisHistory.is_private.is_(None), AnalysisHistory.is_private.is_(False)),
+                    )
                 ).scalars()
             )
             eligible_values = [

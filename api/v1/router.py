@@ -9,7 +9,9 @@ API v1 路由聚合
 2. 统一添加 /api/v1 前缀
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from api.deps import require_admin
 
 from api.v1.endpoints import (
     agent,
@@ -27,6 +29,7 @@ from api.v1.endpoints import (
     health,
     history,
     intelligence,
+    me,
     portfolio,
     stocks,
     system_config,
@@ -81,16 +84,25 @@ router.include_router(
     tags=["Backtest"]
 )
 
+# Process-level surfaces (system settings, scheduler control, global LLM usage): admin only.
 router.include_router(
     system_config.router,
     prefix="/system",
-    tags=["SystemConfig"]
+    tags=["SystemConfig"],
+    dependencies=[Depends(require_admin)],
 )
 
 router.include_router(
     usage.router,
     prefix="/usage",
-    tags=["Usage"]
+    tags=["Usage"],
+    dependencies=[Depends(require_admin)],
+)
+
+router.include_router(
+    me.router,
+    prefix="/me",
+    tags=["Me"]
 )
 
 router.include_router(

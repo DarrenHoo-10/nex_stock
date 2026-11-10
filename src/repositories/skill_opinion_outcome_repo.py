@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import and_, case, func, select
 
+from src.repositories.skill_opinion_sample_repo import SkillOpinionSampleRepository
 from src.storage import (
     AnalysisHistory,
     DatabaseManager,
@@ -78,7 +79,8 @@ class SkillOpinionOutcomeRepository:
                     (
                         SkillOpinionOutcomeRecord.id.is_(None)
                         | (SkillOpinionOutcomeRecord.eval_status == "pending")
-                    )
+                    ),
+                    SkillOpinionSampleRepository.shared_sample_condition(),
                 ]
                 if sample_id is not None:
                     conditions.append(SkillOpinionSampleRecord.id == sample_id)
@@ -214,7 +216,8 @@ class SkillOpinionOutcomeRepository:
         status = SkillOpinionOutcomeRecord.eval_status
         outcome = SkillOpinionOutcomeRecord.outcome
         conditions = [
-            SkillOpinionOutcomeRecord.engine_version == engine_version
+            SkillOpinionOutcomeRecord.engine_version == engine_version,
+            SkillOpinionSampleRepository.shared_sample_condition(),
         ]
         if skill_id is not None:
             conditions.append(SkillOpinionSampleRecord.skill_id == skill_id)

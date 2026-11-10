@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """Watchlist API regressions for stock-code variant matching."""
 
+from api.deps import CurrentUser
 from api.v1.endpoints.stocks import add_to_watchlist, get_watchlist, remove_from_watchlist
 from api.v1.schemas.history import WatchlistRequest
+
+
+PRIMARY = CurrentUser(user_id="local", handle="local", display_name="local", role="admin", is_admin=True)
 
 
 class FakeSystemConfigService:
@@ -29,6 +33,7 @@ def test_watchlist_add_deduplicates_raw_hk_code_against_prefixed_variant() -> No
     response = add_to_watchlist(
         WatchlistRequest(stock_code="HK00700"),
         service=service,
+        user=PRIMARY,
     )
 
     assert response.stock_codes == ["00700"]
@@ -42,6 +47,7 @@ def test_watchlist_remove_deletes_raw_hk_code_from_prefixed_variant_request() ->
     response = remove_from_watchlist(
         WatchlistRequest(stock_code="HK00700"),
         service=service,
+        user=PRIMARY,
     )
 
     assert response.stock_codes == []
@@ -55,10 +61,12 @@ def test_watchlist_matching_is_case_insensitive_for_us_tickers() -> None:
     add_response = add_to_watchlist(
         WatchlistRequest(stock_code="AAPL"),
         service=service,
+        user=PRIMARY,
     )
     remove_response = remove_from_watchlist(
         WatchlistRequest(stock_code="AAPL"),
         service=service,
+        user=PRIMARY,
     )
 
     assert add_response.stock_codes == ["aapl"]
@@ -69,7 +77,7 @@ def test_watchlist_matching_is_case_insensitive_for_us_tickers() -> None:
 def test_watchlist_reads_common_copy_paste_separators() -> None:
     service = FakeSystemConfigService("600519，300750  AAPL")
 
-    response = get_watchlist(service=service)
+    response = get_watchlist(service=service, user=PRIMARY)
 
     assert response.stock_codes == ["600519", "300750", "AAPL"]
 
@@ -80,6 +88,7 @@ def test_watchlist_add_normalizes_existing_mixed_separators_on_write() -> None:
     response = add_to_watchlist(
         WatchlistRequest(stock_code="AAPL"),
         service=service,
+        user=PRIMARY,
     )
 
     assert response.stock_codes == ["600519", "300750", "AAPL"]

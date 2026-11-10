@@ -23,6 +23,7 @@ import { formatDateTime } from '../../utils/format';
 import { areAssetAwareCodesEquivalent, toAssetAwareCodeKey, type AssetAwareAssetType } from '../../utils/stockCode';
 import { truncateStockName } from '../../utils/stockName';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { useCurrentUser } from '../../hooks/useCurrentUser';
 import type { UiTextKey, UiTextParams } from '../../i18n/uiText';
 import { isWatchlistRowPendingAnalysis } from './watchlistRowState';
 
@@ -90,6 +91,9 @@ interface HomeStockWorkspaceProps {
   isBatchAnalyzing: boolean;
   batchStatus: BatchStatus | null;
   todayItems: StockBarItem[];
+  /** Multi-user: the 只看我的 filter of the today tab (`mine_only`); omit `onTodayMineOnlyChange` to hide it. */
+  todayMineOnly?: boolean;
+  onTodayMineOnlyChange?: (mineOnly: boolean) => void;
   isLoadingTodayItems: boolean;
   todayLoadError: boolean;
   watchlistAnalyzedTodayCount: number;
@@ -399,6 +403,8 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   isBatchAnalyzing,
   batchStatus,
   todayItems,
+  todayMineOnly = false,
+  onTodayMineOnlyChange,
   isLoadingTodayItems,
   todayLoadError,
   watchlistAnalyzedTodayCount,
@@ -413,6 +419,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   className = '',
 }) => {
   const { t } = useUiLanguage();
+  const { isMultiUser } = useCurrentUser();
   const [draftCode, setDraftCode] = useState('');
   // PR #2312: the notice carries the *triggering row's own* identity
   // (code + assetType). Reusing the candidate row's assetType for the notice
@@ -636,6 +643,17 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               leading={<CalendarDays className="h-4 w-4 text-cyan" aria-hidden="true" />}
               actions={<span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: todayItems.length })}</span>}
             />
+            {isMultiUser && onTodayMineOnlyChange ? (
+              <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-text select-none">
+                <input
+                  type="checkbox"
+                  checked={todayMineOnly}
+                  onChange={(event) => onTodayMineOnlyChange(event.target.checked)}
+                  className="h-3.5 w-3.5 cursor-pointer accent-primary"
+                />
+                {t('history.mineOnly')}
+              </label>
+            ) : null}
             <div className="flex flex-wrap gap-1.5">
               <Badge variant="default" className="gap-1 shadow-none text-[11px]">
                 {t('watchlist.watchlistCoverage')} {watchlistAnalyzedTodayCount}/{watchlistRows.length}

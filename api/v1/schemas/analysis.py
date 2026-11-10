@@ -51,7 +51,14 @@ class AnalyzeRequest(BaseModel):
     )
     force_refresh: bool = Field(
         False,
-        description="是否强制刷新（忽略缓存）"
+        description="是否强制刷新（忽略缓存）；同时关闭已有报告的复用"
+    )
+    force_regenerate: bool = Field(
+        False,
+        description=(
+            "强制重新生成报告：不复用已有的共享报告（同股票 / 交易日 / 模型渠道 / 语言 / 报告类型）。"
+            "重新生成需要自己的模型 Key"
+        ),
     )
     async_mode: bool = Field(
         False,
@@ -178,7 +185,20 @@ class AnalysisResultResponse(BaseModel):
     report: Optional[Any] = Field(None, description="分析报告")
     diagnostic_summary: Optional[Any] = Field(None, description="运行诊断摘要")
     created_at: str = Field(..., description="创建时间")
-    
+    reused: Optional[bool] = Field(
+        None,
+        description="true 表示直接复用了已有的共享报告（没有调用模型）；此时 query_id 是该报告自己的 query_id",
+    )
+    reused_report_id: Optional[int] = Field(None, description="被复用的历史报告主键 ID")
+    metadata_reused_from: Optional[int] = Field(
+        None,
+        description=(
+            "重新分析时复用了同股票同交易日更早一份报告已采集的输入（行情 / 筹码 / 基本面 / 市场结构 / 资讯，"
+            "不含任何结论）的来源报告主键 ID；该报告对请求人一定可见（共享，或请求人自己的）。"
+            "与 reused 不同：此时仍调用了模型、生成了新报告"
+        ),
+    )
+
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "query_id": "abc123def456",

@@ -8,19 +8,63 @@ API 依赖注入模块
 1. 提供数据库 Session 依赖
 2. 提供配置依赖
 3. 提供服务层依赖
+4. 提供当前用户与管理员守卫依赖（多用户，docs/design/multi-user.md 第 2 节）
 """
 
+from dataclasses import dataclass
 from typing import Generator
 
-from fastapi import Request
+from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from api.v1.errors import api_error
+from src.auth import is_user_center_mode
 from src.storage import DatabaseManager
-from src.config import get_config, Config
+from src.config import get_config, get_primary_user_id, Config
 from src.services.system_config_service import SystemConfigService
 from src.services.runtime_scheduler import RuntimeSchedulerService
 from src.services.agent_chat_session_service import AgentChatSessionService
+
+
+@dataclass(frozen=True)
+class CurrentUser:
+    """The user a request acts as."""
+
+    user_id: str
+    handle: str
+    display_name: str
+    role: str
+    is_admin: bool
+
+
+def get_current_user(request: Request) -> CurrentUser:
+    """Resolve the acting user.
+
+    * ``AUTH_MODE=user_center``: the session the auth middleware verified and attached to
+      ``request.state.user_center_session`` (``user_id`` is the user-center ``userId``).
+    * ``AUTH_MODE=local``: always the primary user (``PRIMARY_USER_ID``) with the admin
+      role, so single-user and desktop deployments behave as before.
+    """
+    if is_user_center_mode():
+        session = getattr(request.state, "user_center_session", None)
+        if session is None or not session.user_id:
+            raise api_error(401, "AUTH_REQUIRED", "Login required")
+        return CurrentUser(
+            user_id=session.user_id,
+            handle=session.handle,
+            display_name=session.display_name,
+            role=session.role,
+            is_admin=session.role == "admin",
+        )
+    primary = get_primary_user_id()
+    return CurrentUser(user_id=primary, handle=primary, display_name=primary, role="admin", is_admin=True)
+
+
+def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Guard for process-level endpoints (system settings, scheduler, shared maintenance, global usage)."""
+    if not user.is_admin:
+        raise api_error(403, "ADMIN_REQUIRED", "Administrator role required")
+    return user
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -101,10 +145,10 @@ def get_board_anomaly_service():
     return BoardAnomalyService()
 
 
-def get_daily_plan_service():
-    """Lazily build the daily plan service; 503 while the module is unavailable."""
+def get_daily_plan_service(user: CurrentUser = Depends(get_current_user)):
+    """Lazily build the daily plan service bound to the acting user; 503 while the module is unavailable."""
     try:
         from src.services.daily_plan_service import DailyPlanService
     except ImportError as exc:
         raise _daily_plan_unavailable() from exc
-    return DailyPlanService()
+    return DailyPlanService(user_id=user.user_id)

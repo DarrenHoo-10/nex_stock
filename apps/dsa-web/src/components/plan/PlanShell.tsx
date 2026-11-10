@@ -4,6 +4,7 @@ import { LayoutGroup, MotionConfig, motion } from 'motion/react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { useCurrentUser } from '../../hooks/useCurrentUser';
 import type { UiTextKey } from '../../i18n/uiText';
 import { RouteOutletBoundary } from '../layout/RouteBoundary';
 import { PLAN_INSTANT, PLAN_SPRING } from './motion/springs';
@@ -38,6 +39,16 @@ const SETTINGS_ITEM: OrnamentItem = {
   labelKey: 'plan.nav.preferences',
 };
 
+const PERSONAL_SETTINGS_ITEM: OrnamentItem = {
+  to: '/settings/personal',
+  icon: 'settings',
+  shortKey: 'plan.nav.preferences',
+  labelKey: 'layout.nav.personalSettings',
+};
+
+/** Pages whose purpose is an administrator-only endpoint (screening run). */
+const ADMIN_ONLY_PATHS: ReadonlySet<string> = new Set(['/picks']);
+
 const OrnamentLink: React.FC<{ item: OrnamentItem; reduced: boolean }> = ({ item, reduced }) => {
   const { t } = useUiLanguage();
   return (
@@ -67,6 +78,7 @@ const OrnamentLink: React.FC<{ item: OrnamentItem; reduced: boolean }> = ({ item
 export const PlanShell: React.FC = () => {
   const { t } = useUiLanguage();
   const { authMode, userCenter } = useAuth();
+  const { user, isAdmin, isMultiUser, displayName } = useCurrentUser();
   const location = useLocation();
   const reduced = usePlanReducedMotion();
   const mainRef = useRef<HTMLElement>(null);
@@ -120,11 +132,18 @@ export const PlanShell: React.FC = () => {
 
         <LayoutGroup id="plan-nav">
           <nav className="ornament glass" aria-label={t('layout.mainNav')}>
-            {MAIN_ITEMS.map((item) => (
+            {user && isMultiUser ? (
+              <span className="orn-user" data-testid="current-user-badge" aria-label={t('me.userLabel', { name: displayName })}>
+                <b>{displayName}</b>
+                <span>{isAdmin ? t('me.role.admin') : t('me.role.user')}</span>
+              </span>
+            ) : null}
+            {MAIN_ITEMS.filter((item) => isAdmin || !ADMIN_ONLY_PATHS.has(item.to)).map((item) => (
               <OrnamentLink key={item.to} item={item} reduced={reduced} />
             ))}
             <span className="orn-sep" aria-hidden="true" />
-            <OrnamentLink item={SETTINGS_ITEM} reduced={reduced} />
+            {/* Regular users have no system preferences (they read /system/config); their settings are personal. */}
+            <OrnamentLink item={isAdmin ? SETTINGS_ITEM : PERSONAL_SETTINGS_ITEM} reduced={reduced} />
             {logoutUrl ? (
               <a className="orn-btn" href={logoutUrl} aria-label={t('layout.logout')}>
                 <PlanIcon name="logout" />

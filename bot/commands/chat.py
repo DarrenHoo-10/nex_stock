@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from bot.commands.base import BotCommand
 from bot.models import BotMessage, BotResponse, ChatType
-from src.config import get_config
+from src.config import get_config, get_primary_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class ChatCommand(BotCommand):
         
         try:
             from src.agent.factory import build_agent_executor
-            executor = build_agent_executor(config)
+            executor = build_agent_executor(config, user_id=get_primary_user_id())
             result = executor.chat(message=user_message, session_id=session_id)
             
             if result.success:

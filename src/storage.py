@@ -58,8 +58,12 @@ from sqlalchemy.orm import (
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
-from src.config import get_config
+from src.config import get_config, get_primary_user_id
 from src.schemas.decision_profile import extract_legacy_decision_profile
+from src.storage_multi_user_migration import (
+    backup_before_multi_user_migration,
+    run_multi_user_migration,
+)
 from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
@@ -97,6 +101,131 @@ class DatabaseSchemaMigration(Base):
     version = Column(String(64), primary_key=True)
     description = Column(String(255), nullable=False)
     applied_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
+
+def _default_user_id() -> str:
+    """Python-side default of every ``user_id`` column: the primary user (PRIMARY_USER_ID).
+
+    Resolved at insert time so single-user code paths keep working unchanged
+    (docs/design/multi-user.md section 2.3).
+    """
+    return get_primary_user_id()
+
+
+# A viewer id that owns nothing: with it the visibility readers return shared reports / signals only. For code that
+# turns past reports into the input of something other people will read (agent memory in a shared report).
+SHARED_ONLY_VIEWER_ID = "\x00shared-only"
+
+
+def analysis_history_visibility_clause(viewer_user_id: str) -> Any:
+    """SQL predicate: reports ``viewer_user_id`` may see = shared ones + the viewer's own private ones.
+
+    A report is private when ``is_private`` is true (it was produced with personal context such as holdings);
+    ``NULL`` counts as shared. Legacy rows without a requester belong to the primary user.
+    """
+    clause = or_(
+        AnalysisHistory.is_private.is_(None),
+        AnalysisHistory.is_private.is_(False),
+        analysis_history_requester_clause(viewer_user_id),
+    )
+    return clause
+
+
+def analysis_record_visible_to(record: Any, viewer_user_id: Optional[str]) -> bool:
+    """Python twin of :func:`analysis_history_visibility_clause` (``viewer_user_id=None`` = unrestricted)."""
+    if record is None:
+        return False
+    if viewer_user_id is None or not getattr(record, "is_private", None):
+        return True
+    return (getattr(record, "requester_user_id", None) or get_primary_user_id()) == viewer_user_id
+
+
+def analysis_history_requester_clause(viewer_user_id: str) -> Any:
+    """SQL predicate: reports requested by ``viewer_user_id`` ("mine only")."""
+    own = AnalysisHistory.requester_user_id == viewer_user_id
+    if viewer_user_id == get_primary_user_id():
+        return or_(own, AnalysisHistory.requester_user_id.is_(None))
+    return own
+
+
+class AppUser(Base):
+    """Known users (user-center ``userId``); lets scheduled jobs enumerate users."""
+
+    __tablename__ = 'app_user'
+
+    user_id = Column(String(64), primary_key=True)
+    handle = Column(String(64))
+    display_name = Column(String(128))
+    role = Column(String(16))
+    first_seen_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    last_seen_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class UserSetting(Base):
+    """Personal-layer setting overrides; secret values are stored encrypted (src/user_secrets.py)."""
+
+    __tablename__ = 'user_setting'
+
+    user_id = Column(String(64), primary_key=True)
+    key = Column(String(128), primary_key=True)
+    value = Column(Text, nullable=False, default="")
+    is_secret = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, nullable=False)
+
+
+class UserDataKey(Base):
+    """One random data key per user, wrapped with the root key (src/user_secrets.py)."""
+
+    __tablename__ = 'user_data_key'
+
+    user_id = Column(String(64), primary_key=True)
+    wrapped_key = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class UserNotificationChannel(Base):
+    """A personal push channel of a non-primary user (docs/design/multi-user.md section 5).
+
+    ``config_encrypted`` is the JSON channel configuration (webhook URL, tokens, SMTP account ...) encrypted with
+    the owner's own data key (src/user_secrets.py). The primary user has no rows: their channels are ``.env``.
+    """
+
+    __tablename__ = 'user_notification_channel'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), nullable=False, index=True)
+    channel_type = Column(String(32), nullable=False)
+    name = Column(String(64), nullable=False, default="")
+    config_encrypted = Column(Text, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, nullable=False)
+
+
+class UserNoticeMarker(Base):
+    """"Already told this user once" markers (e.g. the no-model reminder), so a notice is not pushed every day."""
+
+    __tablename__ = 'user_notice_marker'
+
+    user_id = Column(String(64), primary_key=True)
+    notice_key = Column(String(64), primary_key=True)
+    sent_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class UserWatchlist(Base):
+    """Watchlist of a non-primary user; the primary user's watchlist stays in ``.env`` ``STOCK_LIST``."""
+
+    __tablename__ = 'user_watchlist'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), nullable=False, index=True)
+    code = Column(String(32), nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'code', name='uix_user_watchlist_user_code'),
+    )
 
 
 class StockDaily(Base):
@@ -441,10 +570,25 @@ class AnalysisHistory(Base):
     stop_loss = Column(Float)
     take_profit = Column(Float)
 
+    # 发起人与生成该报告的模型渠道摘要（服务商 + Base URL + 模型名），只记录、不参与过滤
+    # （docs/design/multi-user.md 第 4、7 节）
+    requester_user_id = Column(String(64), default=_default_user_id)
+    model_channel_fingerprint = Column(String(64))
+    # 隐私标记：带个人上下文（持仓 / 持仓分析 / Agent 读取了持仓快照）生成的报告只对发起人可见；
+    # NULL 与 False 都表示共享。report_trade_date / report_language 用于第 7 节的同日报告复用比对
+    # （docs/design/multi-user.md 第 7、17 节）。
+    is_private = Column(Boolean, default=False, index=True)
+    report_trade_date = Column(String(10))
+    report_language = Column(String(8))
+    # 生成该报告的有效策略集摘要（见 src/agent/factory.py compute_strategy_fingerprint）；NULL = 旧报告 / 无法判定，
+    # 永远不会被直接复用（docs/design/multi-user.md 第 7 节）。
+    skill_fingerprint = Column(String(64))
+
     created_at = Column(DateTime, default=datetime.now, index=True)
 
     __table_args__ = (
         Index('ix_analysis_code_time', 'code', 'created_at'),
+        Index('ix_analysis_reuse_key', 'code', 'report_type', 'report_trade_date', 'model_channel_fingerprint'),
     )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -600,6 +744,8 @@ class PortfolioAccount(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     owner_id = Column(String(64), index=True)
+    # 账户归属用户；owner_id 是前端自由填写的文本，保留原语义，不复用
+    user_id = Column(String(64), default=_default_user_id, index=True)
     name = Column(String(64), nullable=False)
     broker = Column(String(64))
     market = Column(String(8), nullable=False, default='cn', index=True)  # cn/hk/us
@@ -814,6 +960,7 @@ class ConversationSessionState(Base):
     __tablename__ = 'conversation_session_states'
 
     session_id = Column(String(100), primary_key=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     selected_skill_ids_json = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
@@ -849,6 +996,15 @@ class ChatSessionStateConflict(Exception):
         super().__init__("Conversation changed; refresh the session before retrying.")
 
 
+class ChatSessionNotFound(Exception):
+    """The chat session does not exist for this user (it may belong to someone else: never distinguished)."""
+
+    code = "session_not_found"
+
+    def __init__(self):
+        super().__init__("Chat session not found")
+
+
 class ConversationSummary(Base):
     """Rolling summary for visible Agent chat history."""
 
@@ -870,6 +1026,7 @@ class AssistantNote(Base):
     __tablename__ = 'assistant_note'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), default=_default_user_id)
     scope = Column(String(16), nullable=False)  # global / stock / board
     subject = Column(String(32), nullable=True)  # stock code / board id; NULL for global
     title = Column(String(64), nullable=False)
@@ -878,10 +1035,11 @@ class AssistantNote(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint('scope', 'subject', name='uix_assistant_note_scope_subject'),
-        # NULL subjects never collide in a plain UNIQUE; keep one global page.
+        UniqueConstraint('user_id', 'scope', 'subject', name='uix_assistant_note_user_scope_subject'),
+        # NULL subjects never collide in a plain UNIQUE; keep one global page per user.
         Index(
             'uix_assistant_note_global',
+            'user_id',
             'scope',
             unique=True,
             sqlite_where=text("subject IS NULL"),
@@ -915,6 +1073,7 @@ class AssistantNoteProposal(Base):
     __tablename__ = 'assistant_note_proposal'
 
     id = Column(String(36), primary_key=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     scope = Column(String(16), nullable=False)
     subject = Column(String(32), nullable=True)
     title = Column(String(64), nullable=False)
@@ -991,6 +1150,7 @@ class LLMUsage(Base):
     __tablename__ = 'llm_usage'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     # 'analysis' | 'agent' | 'market_review'
     call_type = Column(String(32), nullable=False, index=True)
     model = Column(String(128), nullable=False)
@@ -1156,6 +1316,7 @@ class AlertRuleRecord(Base):
     __tablename__ = 'alert_rules'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     name = Column(String(64), nullable=False)
     target_scope = Column(String(32), nullable=False, default='single_symbol', index=True)
     target = Column(String(64), nullable=False, index=True)
@@ -1285,6 +1446,9 @@ class DecisionSignalRecord(Base):
     created_at = Column(DateTime, default=utc_naive_now, index=True)
     updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
     metadata_json = Column(Text)
+    # 信号所有者：NULL = 共享信号（所有人可见）；非 NULL = 来自私有报告的信号，只有该用户可见
+    # （docs/design/multi-user.md 第 17 节）
+    owner_user_id = Column(String(64), index=True)
 
     __table_args__ = (
         Index('ix_decision_signal_stock_status_time', 'stock_code', 'status', 'created_at'),
@@ -1723,10 +1887,15 @@ class BoardFollow(Base):
     __tablename__ = 'board_follow'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    board_ref = Column(String(64), nullable=False, unique=True)
+    user_id = Column(String(64), default=_default_user_id)
+    board_ref = Column(String(64), nullable=False)
     board_name = Column(String(64), nullable=False)
     board_type = Column(String(16), nullable=False)
     created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'board_ref', name='uix_board_follow_user_board'),
+    )
 
 
 class BoardRecommendation(Base):
@@ -1808,6 +1977,7 @@ class DailyPlanAccount(Base):
     __tablename__ = 'plan_account'
 
     id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), default=_default_user_id, unique=True, index=True)
     cash = Column(Float, nullable=False, default=0.0)  # 元
     updated_at = Column(DateTime, default=utc_naive_now, nullable=False)
 
@@ -1818,12 +1988,17 @@ class DailyPlanHolding(Base):
     __tablename__ = 'plan_holding'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(10), nullable=False, unique=True)  # 6 位 A 股代码
+    user_id = Column(String(64), default=_default_user_id)
+    code = Column(String(10), nullable=False)  # 6 位 A 股代码
     shares = Column(Integer, nullable=False)
     cost = Column(Float, nullable=False)  # 持仓成本价，元
     buy_date = Column(Date)  # 选填，用于 T+1 判断
     horizon = Column(String(8))  # short / swing，空表示未指定
     position = Column(Integer, nullable=False, default=0)  # 录入顺序
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'code', name='uix_plan_holding_user_code'),
+    )
 
 
 class DailyPlanRun(Base):
@@ -1833,6 +2008,7 @@ class DailyPlanRun(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(64), nullable=False, unique=True, index=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     trade_date = Column(Date, nullable=False, index=True)
     status = Column(String(16), nullable=False, default='running')  # running / succeeded / partial / failed / skipped
     trigger = Column(String(16), nullable=False, default='manual')  # schedule / manual
@@ -1861,6 +2037,7 @@ class DailyPlanStock(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(64), index=True)
+    user_id = Column(String(64), default=_default_user_id, index=True)
     trade_date = Column(Date, nullable=False)
     code = Column(String(10), nullable=False)
     status = Column(String(16), nullable=False, default='ready')  # ready / failed
@@ -1952,8 +2129,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 autoflush=False,
             )
 
+            # 多用户 P1：旧库首次迁移前先备份（SQLite backup API，WAL 安全），失败即拒绝启动
+            backup_before_multi_user_migration(self._engine)
+
             # 创建所有表
             Base.metadata.create_all(self._engine)
+            # 必须紧随 create_all：后续 _ensure_* 会用 ORM 查询已带 user_id 的表
+            run_multi_user_migration(self._engine, get_primary_user_id())
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_stock_daily_canonical_id()
@@ -3663,10 +3845,20 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         report_type: str,
         news_content: Optional[str],
         context_snapshot: Optional[Dict[str, Any]] = None,
-        save_snapshot: bool = True
+        save_snapshot: bool = True,
+        requester_user_id: Optional[str] = None,
+        is_private: bool = False,
+        model_channel_fingerprint: Optional[str] = None,
+        report_trade_date: Optional[str] = None,
+        report_language: Optional[str] = None,
+        skill_fingerprint: Optional[str] = None,
     ) -> int:
         """
         保存分析结果历史记录。
+
+        ``requester_user_id`` 缺省为主用户；``is_private`` 表示该报告带个人上下文，只对发起人可见；
+        ``model_channel_fingerprint`` / ``report_trade_date`` / ``report_language`` / ``skill_fingerprint``
+        用于同日报告复用。
 
         Returns:
             新保存的 AnalysisHistory.id；保存失败返回 0。
@@ -3699,6 +3891,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     stop_loss=sniper_points.get("stop_loss"),
                     take_profit=sniper_points.get("take_profit"),
                     created_at=datetime.now(),
+                    is_private=bool(is_private),
+                    model_channel_fingerprint=model_channel_fingerprint,
+                    report_trade_date=report_trade_date,
+                    report_language=report_language,
+                    skill_fingerprint=skill_fingerprint,
+                    **({"requester_user_id": requester_user_id} if requester_user_id else {}),
                 )
                 session.add(history)
                 session.flush()
@@ -3797,6 +3995,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         days: int = 30,
         limit: int = 50,
         exclude_query_id: Optional[str] = None,
+        viewer_user_id: Optional[str] = None,
     ) -> List[AnalysisHistory]:
         """
         Query analysis history records.
@@ -3805,6 +4004,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         - If query_id is provided, perform exact lookup and ignore days window.
         - If query_id is not provided, apply days-based time filtering.
         - exclude_query_id: exclude records with this query_id (for history comparison).
+        - viewer_user_id: only shared reports and the viewer's own private ones (``None`` = unrestricted,
+          for system jobs).
         """
         cutoff_date = datetime.now() - timedelta(days=days)
 
@@ -3822,6 +4023,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             # exclude_query_id only applies when not doing exact lookup (query_id is None)
             if exclude_query_id and not query_id:
                 conditions.append(AnalysisHistory.query_id != exclude_query_id)
+
+            if viewer_user_id is not None:
+                conditions.append(analysis_history_visibility_clause(viewer_user_id))
 
             results = session.execute(
                 select(AnalysisHistory)
@@ -3860,6 +4064,72 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 .limit(1)
             ).scalar_one_or_none()
     
+    def find_reusable_analysis(
+        self,
+        *,
+        code_candidates: List[str],
+        report_type: str,
+        report_trade_date: str,
+        model_channel_fingerprint: str,
+        report_language: str,
+        skill_fingerprint: str,
+    ) -> Optional[AnalysisHistory]:
+        """Newest shared report with the same stock / trade date / model channel / language / report type / strategy.
+
+        Private reports are never candidates (they carry one user's personal context). Rows saved before the
+        reuse columns existed have no fingerprint (model channel or strategy set) and therefore never match.
+        """
+        codes = [code for code in code_candidates if code]
+        if not (
+            codes and report_type and report_trade_date and model_channel_fingerprint and report_language
+            and skill_fingerprint
+        ):
+            return None
+        with self.get_session() as session:
+            return session.execute(
+                select(AnalysisHistory)
+                .where(
+                    AnalysisHistory.code.in_(codes),
+                    AnalysisHistory.report_type == report_type,
+                    AnalysisHistory.report_trade_date == report_trade_date,
+                    AnalysisHistory.model_channel_fingerprint == model_channel_fingerprint,
+                    AnalysisHistory.report_language == report_language,
+                    AnalysisHistory.skill_fingerprint == skill_fingerprint,
+                    or_(AnalysisHistory.is_private.is_(None), AnalysisHistory.is_private.is_(False)),
+                )
+                .order_by(desc(AnalysisHistory.created_at), desc(AnalysisHistory.id))
+                .limit(1)
+            ).scalars().first()
+
+    def find_metadata_source_analyses(
+        self,
+        *,
+        code_candidates: List[str],
+        report_trade_date: str,
+        viewer_user_id: str,
+        limit: int = 5,
+    ) -> List[AnalysisHistory]:
+        """Newest reports of the same stock and trading date whose collected inputs ``viewer_user_id`` may reuse.
+
+        Only reports the viewer may see qualify (shared ones + the viewer's own private ones: never another user's
+        private report) and only those that kept a context snapshot (the stored inputs).
+        """
+        codes = [code for code in code_candidates if code]
+        if not (codes and report_trade_date and viewer_user_id):
+            return []
+        with self.get_session() as session:
+            return list(session.execute(
+                select(AnalysisHistory)
+                .where(
+                    AnalysisHistory.code.in_(codes),
+                    AnalysisHistory.report_trade_date == report_trade_date,
+                    AnalysisHistory.context_snapshot.is_not(None),
+                    analysis_history_visibility_clause(viewer_user_id),
+                )
+                .order_by(desc(AnalysisHistory.created_at), desc(AnalysisHistory.id))
+                .limit(max(1, int(limit)))
+            ).scalars().all())
+
     def get_analysis_history_paginated(
         self,
         code: Optional[Union[str, List[str]]] = None,
@@ -3867,7 +4137,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         offset: int = 0,
-        limit: int = 20
+        limit: int = 20,
+        viewer_user_id: Optional[str] = None,
+        mine_only: bool = False,
     ) -> Tuple[List[AnalysisHistory], int]:
         """
         分页查询分析历史记录（带总数）
@@ -3903,6 +4175,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             if end_date:
                 # created_at < end_date+1 00:00:00 (即 <= end_date 23:59:59)
                 conditions.append(AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time()))
+            if viewer_user_id is not None:
+                conditions.append(analysis_history_visibility_clause(viewer_user_id))
+                if mine_only:
+                    conditions.append(analysis_history_requester_clause(viewer_user_id))
             
             # 构建 where 子句
             where_clause = and_(*conditions) if conditions else True
@@ -3923,7 +4199,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             
             return list(results), total
     
-    def get_analysis_history_by_id(self, record_id: int) -> Optional[AnalysisHistory]:
+    def get_analysis_history_by_id(
+        self, record_id: int, viewer_user_id: Optional[str] = None
+    ) -> Optional[AnalysisHistory]:
         """
         根据数据库主键 ID 查询单条分析历史记录
         
@@ -3940,6 +4218,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             result = session.execute(
                 select(AnalysisHistory).where(AnalysisHistory.id == record_id)
             ).scalars().first()
+            if result is not None and not analysis_record_visible_to(result, viewer_user_id):
+                return None  # viewer_user_id set: another user's private report counts as missing
             return result
 
     def delete_analysis_history_records(self, record_ids: List[int]) -> int:
@@ -4032,6 +4312,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         end_date: Optional[date] = None,
         limit: int = 200,
         include_market_review: bool = False,
+        viewer_user_id: Optional[str] = None,
     ) -> List[AnalysisHistory]:
         """
         获取历史记录中的不重复股票列表，每只股票取最新一条记录。
@@ -4063,6 +4344,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 subq = subq.where(
                     AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time())
                 )
+            if viewer_user_id is not None:
+                subq = subq.where(analysis_history_visibility_clause(viewer_user_id))
             if not include_market_review:
                 subq = subq.where(
                     and_(
@@ -4095,6 +4378,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         *,
         code: Optional[str] = None,
         report_type: Optional[str] = None,
+        viewer_user_id: Optional[str] = None,
     ) -> Optional[AnalysisHistory]:
         """
         根据 query_id 查询最新一条分析历史记录
@@ -4115,6 +4399,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 conditions.append(AnalysisHistory.code == code)
             if report_type:
                 conditions.append(AnalysisHistory.report_type == report_type)
+            if viewer_user_id is not None:
+                conditions.append(analysis_history_visibility_clause(viewer_user_id))
 
             result = session.execute(
                 select(AnalysisHistory)
@@ -4540,11 +4826,52 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             "updated_at": state.active_stock_updated_at.isoformat() if state.active_stock_updated_at else None,
         }
 
+    @staticmethod
+    def _chat_session_owner_in(session: Session, session_id: str) -> Optional[str]:
+        """Owner of a session inside an open DB session; ``None`` when the session does not exist.
+
+        Ownership lives on ``conversation_session_states.user_id``. A session that only has messages
+        (written before the state table existed or by an older writer) belongs to the primary user:
+        the multi-user migration backfilled every state row the same way.
+        """
+        state = session.get(ConversationSessionState, session_id)
+        if state is not None:
+            return state.user_id or get_primary_user_id()
+        has_messages = session.execute(
+            select(ConversationMessage.id).where(ConversationMessage.session_id == session_id).limit(1)
+        ).first()
+        return get_primary_user_id() if has_messages else None
+
+    def get_chat_session_owner(self, session_id: str) -> Optional[str]:
+        """Owner (``user_id``) of a chat session, or ``None`` when no such session exists."""
+        with self.session_scope() as session:
+            return self._chat_session_owner_in(session, session_id)
+
+    def require_chat_session_access(self, session_id: str, user_id: Optional[str] = None) -> None:
+        """Raise ``ChatSessionNotFound`` when the session exists and belongs to another user.
+
+        A session that does not exist yet is not an error (the caller creates or reads it empty).
+        ``user_id=None`` is the primary user (CLI, bots, MCP and other context-less entry points).
+        """
+        user_id = user_id or get_primary_user_id()
+        owner = self.get_chat_session_owner(session_id)
+        if owner is not None and owner != user_id:
+            raise ChatSessionNotFound()
+
     def ensure_chat_session_generation(
-        self, session_id: str, *, expected_generation: Optional[str] = None,
+        self, session_id: str, *, expected_generation: Optional[str] = None, user_id: Optional[str] = None,
     ) -> str:
-        """Bind an instance before preparation, without accepting any business state."""
+        """Bind an instance before preparation, without accepting any business state.
+
+        Creates the session for ``user_id`` (``None`` = primary user) when it does not exist and
+        refuses (``ChatSessionNotFound``) a session that belongs to another user.
+        """
+        user_id = user_id or get_primary_user_id()
+
         def write(session: Session) -> str:
+            owner = self._chat_session_owner_in(session, session_id)
+            if owner is not None and owner != user_id:
+                raise ChatSessionNotFound()
             state = session.get(ConversationSessionState, session_id)
             if expected_generation is not None and (
                 state is None or state.session_generation != expected_generation
@@ -4552,7 +4879,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 raise ChatSessionStateConflict()
             if state is None:
                 state = ConversationSessionState(
-                    session_id=session_id, selected_skill_ids_json="null",
+                    session_id=session_id, user_id=user_id, selected_skill_ids_json="null",
                     session_generation=str(uuid.uuid4()),
                 )
                 session.add(state)
@@ -4588,6 +4915,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )).scalar_one_or_none()
             return {
                 "session_id": session_id,
+                # Verified owner of the session: downstream agent code takes the acting user from here.
+                "user_id": self._chat_session_owner_in(session, session_id),
                 "session_generation": state.session_generation if state else None,
                 "session_state_version": state.state_version if state else 0,
                 "selected_skill_ids": json.loads(state.selected_skill_ids_json) if state else None,
@@ -5134,9 +5463,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         limit: int = 50,
         session_prefix: Optional[str] = None,
         extra_session_ids: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         获取聊天会话列表（从 conversation_messages 聚合）
+
+        Only sessions owned by ``user_id`` are listed (``None`` = primary user; message-only legacy
+        sessions belong to the primary user).
 
         Args:
             limit: Maximum number of sessions to return.
@@ -5151,6 +5484,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """
         from sqlalchemy import func
 
+        owner_id = user_id or get_primary_user_id()
         with self.session_scope() as session:
             normalized_prefix = None
             if session_prefix:
@@ -5165,6 +5499,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     func.min(ConversationMessage.created_at).label("created_at"),
                     func.max(ConversationMessage.created_at).label("last_active"),
                 )
+                .select_from(ConversationMessage)
+                .outerjoin(
+                    ConversationSessionState,
+                    ConversationSessionState.session_id == ConversationMessage.session_id,
+                )
+                .where(func.coalesce(ConversationSessionState.user_id, get_primary_user_id()) == owner_id)
             )
             conditions = []
             if normalized_prefix:
@@ -5240,20 +5580,29 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             ).scalars().all()
         return [f"{session_id}:{int(message_id)}" for message_id in ids]
 
-    def delete_conversation_session(self, session_id: str) -> int:
+    def delete_conversation_session(self, session_id: str, user_id: Optional[str] = None) -> int:
         """
         删除指定会话的所有消息；若启用了长期回忆插件，同步删除对应回忆文档。
+
+        ``user_id`` (``None`` = primary user) must own the session, otherwise ``ChatSessionNotFound``
+        is raised and nothing is deleted.
 
         Returns:
             删除的消息数
         """
+        self.require_chat_session_access(session_id, user_id)
         try:
             document_ids = self.get_conversation_turn_document_ids(session_id)
         except Exception as exc:  # recall bookkeeping must never block deletion
             logger.warning("Failed to collect recall document ids for %s: %s", session_id, exc)
             document_ids = []
 
+        owner_id = user_id or get_primary_user_id()
+
         def write(session: Session) -> int:
+            owner = self._chat_session_owner_in(session, session_id)
+            if owner is not None and owner != owner_id:
+                raise ChatSessionNotFound()
             session.execute(
                 delete(ConversationSessionState).where(
                     ConversationSessionState.session_id == session_id
@@ -5281,7 +5630,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             try:
                 from src.agent.recall import forget_documents
 
-                forget_documents(document_ids)
+                forget_documents(document_ids, user_id=owner_id)
             except Exception as exc:  # weak dependency: never fail the delete
                 logger.warning("Recall forget for session %s was not queued: %s", session_id, exc)
         return deleted
@@ -5298,9 +5647,14 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         completion_tokens: int,
         total_tokens: int,
         stock_code: Optional[str] = None,
+        user_id: Optional[str] = None,
         **telemetry: Any,
     ) -> None:
-        """Append one LLM call record to llm_usage."""
+        """Append one LLM call record to llm_usage.
+
+        ``user_id`` is the user the call was made for; ``None`` (system jobs, the primary user's
+        own calls) leaves the column to its default, ``PRIMARY_USER_ID``.
+        """
         row_values: Dict[str, Any] = {
             "call_type": call_type,
             "model": model or "unknown",
@@ -5309,6 +5663,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
         }
+        if user_id:
+            row_values["user_id"] = user_id
         for column in _LLM_USAGE_TELEMETRY_COLUMN_SQL:
             row_values[column] = None if column in _LLM_USAGE_DROPPED_FREE_TEXT_COLUMNS else telemetry.get(column)
         row = LLMUsage(**row_values)
@@ -5319,6 +5675,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         self,
         from_dt: datetime,
         to_dt: datetime,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return aggregated token usage between from_dt and to_dt.
 
@@ -5334,6 +5691,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 LLMUsage.called_at >= from_dt,
                 LLMUsage.called_at <= to_dt,
             )
+            if user_id is not None:  # one user's own usage; None = every user (admin view)
+                base_filter = and_(base_filter, LLMUsage.user_id == user_id)
 
             # Overall totals
             totals = session.execute(
@@ -5407,6 +5766,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         from_dt: datetime,
         to_dt: datetime,
         limit: int = 50,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Return recent LLM usage audit rows between from_dt and to_dt.
 
@@ -5415,6 +5775,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         newest call first, and limit is clamped to the public API range.
         """
         normalized_limit = max(1, min(int(limit or 50), 200))
+        record_filter = and_(
+            LLMUsage.called_at >= from_dt,
+            LLMUsage.called_at <= to_dt,
+        )
+        if user_id is not None:  # one user's own rows; None = every user (admin view)
+            record_filter = and_(record_filter, LLMUsage.user_id == user_id)
         with self.session_scope() as session:
             rows = session.execute(
                 select(
@@ -5427,12 +5793,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     LLMUsage.total_tokens,
                     LLMUsage.called_at,
                 )
-                .where(
-                    and_(
-                        LLMUsage.called_at >= from_dt,
-                        LLMUsage.called_at <= to_dt,
-                    )
-                )
+                .where(record_filter)
                 .order_by(desc(LLMUsage.called_at), desc(LLMUsage.id))
                 .limit(normalized_limit)
             ).all()
@@ -5463,8 +5824,13 @@ def persist_llm_usage(
     model: str,
     call_type: str,
     stock_code: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> None:
-    """Fire-and-forget: write one LLM call record to llm_usage. Never raises."""
+    """Fire-and-forget: write one LLM call record to llm_usage. Never raises.
+
+    ``user_id`` is the user the call was made for (a non-primary user's config view); calls made
+    by system jobs or for the primary user omit it and are recorded under ``PRIMARY_USER_ID``.
+    """
     try:
         if usage is None:
             usage = {}
@@ -5523,6 +5889,7 @@ def persist_llm_usage(
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             stock_code=stock_code,
+            **({"user_id": user_id} if user_id else {}),
             **telemetry,
         )
     except Exception as exc:

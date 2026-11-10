@@ -57,11 +57,18 @@ class EmailSender:
         Args:
             config: 配置对象
         """
+        smtp_host = getattr(config, 'email_smtp_host', None)
+        smtp_username = getattr(config, 'email_smtp_username', None)
         self._email_config = {
             'sender': config.email_sender,
             'sender_name': getattr(config, 'email_sender_name', 'daily_stock_analysis股票分析助手'),
             'password': config.email_password,
             'receivers': config.email_receivers or ([config.email_sender] if config.email_sender else []),
+            # Only a personal e-mail channel (src/services/user_notification_service.py) sets an explicit SMTP
+            # server; the system config has none and keeps the domain-based auto detection below.
+            'smtp_host': smtp_host.strip() if isinstance(smtp_host, str) else '',
+            'smtp_port': getattr(config, 'email_smtp_port', None),
+            'username': smtp_username.strip() if isinstance(smtp_username, str) else '',
         }
         self._stock_email_groups = getattr(config, 'stock_email_groups', None) or []
         
@@ -113,6 +120,14 @@ class EmailSender:
         """Encode display name safely so non-ASCII sender names work across SMTP providers."""
         sender_name = self._email_config.get('sender_name') or '股票分析助手'
         return formataddr((str(Header(str(sender_name), 'utf-8')), sender))
+
+    def _connect_personal_smtp(self, timeout: float) -> smtplib.SMTP:
+        """Session to the user's own SMTP server: public host only, pinned address, TLS (src/utils/safe_smtp.py)."""
+        from src.utils.safe_smtp import connect_pinned_smtp
+
+        return connect_pinned_smtp(
+            self._email_config['smtp_host'], int(self._email_config['smtp_port'] or 0), timeout=timeout
+        )
 
     @staticmethod
     def _close_server(server: Optional[smtplib.SMTP]) -> None:
@@ -182,32 +197,35 @@ class EmailSender:
             msg.attach(text_part)
             msg.attach(html_part)
             
-            # 自动识别 SMTP 配置
-            domain = sender.split('@')[-1].lower()
-            smtp_config = SMTP_CONFIGS.get(domain)
-            
-            if smtp_config:
-                smtp_server = smtp_config['server']
-                smtp_port = smtp_config['port']
-                use_ssl = smtp_config['ssl']
-                logger.info(f"自动识别邮箱类型: {domain} -> {smtp_server}:{smtp_port}")
+            if self._email_config['smtp_host']:
+                server = self._connect_personal_smtp(timeout_seconds or 30)
             else:
-                # 未知邮箱，尝试通用配置
-                smtp_server = f"smtp.{domain}"
-                smtp_port = 465
-                use_ssl = True
-                logger.warning(f"未知邮箱类型 {domain}，尝试通用配置: {smtp_server}:{smtp_port}")
-            
-            # 根据配置选择连接方式
-            if use_ssl:
-                # SSL 连接（端口 465）
-                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=timeout_seconds or 30)
-            else:
-                # TLS 连接（端口 587）
-                server = smtplib.SMTP(smtp_server, smtp_port, timeout=timeout_seconds or 30)
-                server.starttls()
-            
-            server.login(sender, password)
+                # 自动识别 SMTP 配置
+                domain = sender.split('@')[-1].lower()
+                smtp_config = SMTP_CONFIGS.get(domain)
+
+                if smtp_config:
+                    smtp_server = smtp_config['server']
+                    smtp_port = smtp_config['port']
+                    use_ssl = smtp_config['ssl']
+                    logger.info(f"自动识别邮箱类型: {domain} -> {smtp_server}:{smtp_port}")
+                else:
+                    # 未知邮箱，尝试通用配置
+                    smtp_server = f"smtp.{domain}"
+                    smtp_port = 465
+                    use_ssl = True
+                    logger.warning(f"未知邮箱类型 {domain}，尝试通用配置: {smtp_server}:{smtp_port}")
+
+                # 根据配置选择连接方式
+                if use_ssl:
+                    # SSL 连接（端口 465）
+                    server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=timeout_seconds or 30)
+                else:
+                    # TLS 连接（端口 587）
+                    server = smtplib.SMTP(smtp_server, smtp_port, timeout=timeout_seconds or 30)
+                    server.starttls()
+
+            server.login(self._email_config['username'] or sender, password)
             server.send_message(msg)
             
             logger.info(f"邮件发送成功，收件人: {receivers}")
@@ -257,21 +275,24 @@ class EmailSender:
             img_part.add_header('Content-ID', '<report-image>')
             msg.attach(img_part)
 
-            domain = sender.split('@')[-1].lower()
-            smtp_config = SMTP_CONFIGS.get(domain)
-            if smtp_config:
-                smtp_server, smtp_port = smtp_config['server'], smtp_config['port']
-                use_ssl = smtp_config['ssl']
+            if self._email_config['smtp_host']:
+                server = self._connect_personal_smtp(30)
             else:
-                smtp_server, smtp_port = f"smtp.{domain}", 465
-                use_ssl = True
+                domain = sender.split('@')[-1].lower()
+                smtp_config = SMTP_CONFIGS.get(domain)
+                if smtp_config:
+                    smtp_server, smtp_port = smtp_config['server'], smtp_config['port']
+                    use_ssl = smtp_config['ssl']
+                else:
+                    smtp_server, smtp_port = f"smtp.{domain}", 465
+                    use_ssl = True
 
-            if use_ssl:
-                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
-            else:
-                server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
-                server.starttls()
-            server.login(sender, password)
+                if use_ssl:
+                    server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+                else:
+                    server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
+                    server.starttls()
+            server.login(self._email_config['username'] or sender, password)
             server.send_message(msg)
             logger.info("邮件（内联图片）发送成功，收件人: %s", receivers)
             return True

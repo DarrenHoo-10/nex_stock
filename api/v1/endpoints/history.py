@@ -15,7 +15,7 @@ from typing import Any, Mapping, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends, Body
 from fastapi.responses import HTMLResponse, Response
 
-from api.deps import get_database_manager
+from api.deps import CurrentUser, get_current_user, get_database_manager
 from api.v1.schemas.history import (
     HistoryListResponse,
     HistoryItem,
@@ -72,6 +72,17 @@ router = APIRouter()
 _DELETE_BY_CODE_BATCH_SIZE = 10_000
 
 
+def _viewer_id(user: object) -> Optional[str]:
+    """The requesting user's id (``None`` for direct, non-HTTP calls without a resolved user)."""
+    return user.user_id if isinstance(user, CurrentUser) else None
+
+
+def _history_service(db_manager: DatabaseManager, user: object) -> HistoryService:
+    """History reads for ``user``: shared reports plus their own private ones; another user's private report is missing."""
+    viewer = _viewer_id(user)
+    return HistoryService(db_manager, viewer_user_id=viewer) if viewer is not None else HistoryService(db_manager)
+
+
 def _history_share_image_payload(result: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
     """Return the exact persisted payload used by the deterministic poster."""
 
@@ -89,10 +100,11 @@ def _history_share_image_payload(result: Mapping[str, Any]) -> Optional[Mapping[
 def _history_share_image_input(
     record_id: str,
     db_manager: DatabaseManager,
+    user: object = None,
 ) -> tuple[Mapping[str, Any], str]:
     """Load the shared persisted input used by PNG and desktop HTML renderers."""
 
-    service = HistoryService(db_manager)
+    service = _history_service(db_manager, user)
     result = service.resolve_and_get_detail(record_id)
     if result is None:
         raise HTTPException(
@@ -237,7 +249,9 @@ def get_history_list(
     end_date: Optional[str] = Query(None, description="结束日期 (YYYY-MM-DD)"),
     page: int = Query(1, ge=1, description="页码（从 1 开始）"),
     limit: int = Query(20, ge=1, le=100, description="每页数量"),
-    db_manager: DatabaseManager = Depends(get_database_manager)
+    mine_only: bool = Query(False, description="只看我发起的报告（默认显示共享报告和我自己的私有报告）"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> HistoryListResponse:
     """
     获取历史分析列表
@@ -257,8 +271,8 @@ def get_history_list(
         HistoryListResponse: 历史记录列表
     """
     try:
-        service = HistoryService(db_manager)
-        
+        service = _history_service(db_manager, user)
+
         # 使用 def 而非 async def，FastAPI 自动在线程池中执行
         result = service.get_history_list(
             stock_code=stock_code,
@@ -266,7 +280,8 @@ def get_history_list(
             start_date=start_date,
             end_date=end_date,
             page=page,
-            limit=limit
+            limit=limit,
+            **({"mine_only": True} if mine_only is True else {}),
         )
         
         # 转换为响应模型
@@ -292,6 +307,10 @@ def get_history_list(
                 created_at=item.get("created_at"),
                 market_phase_summary=item.get("market_phase_summary"),
                 asset_type=item.get("asset_type"),
+                requester_user_id=item.get("requester_user_id"),
+                requester_name=item.get("requester_name"),
+                is_mine=item.get("is_mine"),
+                is_private=item.get("is_private"),
             )
             for item in result.get("items", [])
         ]
@@ -329,6 +348,7 @@ def get_history_list(
 def delete_history_by_code(
     stock_code: str,
     db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> DeleteHistoryResponse:
     try:
         candidates = HistoryService._history_code_filter_candidates(stock_code)
@@ -340,9 +360,17 @@ def delete_history_by_code(
 
         deleted = 0
         while True:
+            # A user deletes what they may see; a non-admin only the reports they requested themselves
+            # (deleting someone else's shared report would change what that person sees).
+            scope_kwargs = (
+                {"viewer_user_id": user.user_id, "mine_only": not user.is_admin}
+                if isinstance(user, CurrentUser)
+                else {}
+            )
             records, _ = db_manager.get_analysis_history_paginated(
                 code=candidates,
                 limit=_DELETE_BY_CODE_BATCH_SIZE,
+                **scope_kwargs,
             )
             record_ids = [r.id for r in records if r.id is not None]
             if not record_ids:
@@ -380,7 +408,8 @@ def delete_history_by_code(
 )
 def delete_history_records(
     request: DeleteHistoryRequest = Body(...),
-    db_manager: DatabaseManager = Depends(get_database_manager)
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> DeleteHistoryResponse:
     """
     按主键 ID 批量删除历史分析记录。
@@ -396,8 +425,11 @@ def delete_history_records(
         )
 
     try:
-        service = HistoryService(db_manager)
-        deleted = service.delete_history_records(record_ids)
+        service = _history_service(db_manager, user)
+        if isinstance(user, CurrentUser):
+            deleted = service.delete_history_records(record_ids, is_admin=user.is_admin)
+        else:
+            deleted = service.delete_history_records(record_ids)
         return DeleteHistoryResponse(deleted=deleted)
     except HTTPException:
         raise
@@ -427,12 +459,14 @@ def get_stock_bar(
     end_date: Optional[str] = Query(None, description="结束日期 (YYYY-MM-DD)"),
     limit: int = Query(200, ge=1, le=500, description="最大返回数量"),
     db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockBarResponse:
     try:
         from datetime import date as date_type
         from src.utils.data_processing import parse_json_field
 
-        service = HistoryService(db_manager)
+        service = _history_service(db_manager, user)
+        viewer_kwargs = {"viewer_user_id": _viewer_id(user)} if _viewer_id(user) is not None else {}
         start = date_type.fromisoformat(start_date) if start_date else None
         end = date_type.fromisoformat(end_date) if end_date else None
 
@@ -443,6 +477,7 @@ def get_stock_bar(
             start_date=start,
             end_date=end,
             limit=fetch_limit,
+            **viewer_kwargs,
         )
 
         # Deduplicate by normalized code, keeping the record with highest id
@@ -482,6 +517,7 @@ def get_stock_bar(
             analysis_count = db_manager.get_analysis_history_paginated(
                 code=HistoryService._history_code_filter_candidates(display_stock_code),
                 limit=1,
+                **viewer_kwargs,
             )[1]
             items.append(
                 StockBarItem(
@@ -531,7 +567,8 @@ def get_stock_bar(
 )
 def get_history_detail(
     record_id: str,
-    db_manager: DatabaseManager = Depends(get_database_manager)
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> AnalysisReport:
     """
     获取历史报告详情
@@ -550,7 +587,7 @@ def get_history_detail(
         HTTPException: 404 - 报告不存在
     """
     try:
-        service = HistoryService(db_manager)
+        service = _history_service(db_manager, user)
         
         # Try integer ID first, fall back to query_id string lookup
         result = service.resolve_and_get_detail(record_id)
@@ -611,8 +648,12 @@ def get_history_detail(
             asset_type=asset_type_from_canonical_code(
                 result.get("storage_stock_code") or result.get("stock_code")
             ),
+            requester_user_id=result.get("requester_user_id"),
+            requester_name=result.get("requester_name"),
+            is_mine=result.get("is_mine"),
+            is_private=result.get("is_private"),
         )
-        
+
         summary = ReportSummary(
             analysis_summary=result.get("analysis_summary"),
             operation_advice=localize_operation_advice(
@@ -705,12 +746,13 @@ def get_history_detail(
 def get_history_diagnostics(
     record_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> RunDiagnosticSummaryResponse:
     """
     获取历史报告运行诊断摘要。
     """
     try:
-        service = HistoryService(db_manager)
+        service = _history_service(db_manager, user)
         summary = service.resolve_and_get_diagnostics(record_id)
         if summary is None:
             raise HTTPException(
@@ -748,12 +790,13 @@ def get_history_diagnostics(
 def get_history_run_flow(
     record_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> RunFlowSnapshot:
     """
     获取历史报告运行流。
     """
     try:
-        service = HistoryService(db_manager)
+        service = _history_service(db_manager, user)
         snapshot = service.resolve_and_get_run_flow(record_id)
         if snapshot is None:
             raise HTTPException(
@@ -789,6 +832,7 @@ def get_history_run_flow(
 )
 def get_history_news(
     record_id: str,
+    user: CurrentUser = Depends(get_current_user),
     limit: int = Query(20, ge=1, le=100, description="返回数量限制"),
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> NewsIntelResponse:
@@ -807,7 +851,7 @@ def get_history_news(
         NewsIntelResponse: 新闻情报列表
     """
     try:
-        service = HistoryService(db_manager)
+        service = _history_service(db_manager, user)
         items = service.resolve_and_get_news(record_id=record_id, limit=limit)
 
         response_items = [
@@ -850,8 +894,9 @@ def get_history_news(
 def get_history_share_image_html(
     record_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> HTMLResponse:
-    result, markdown_content = _history_share_image_input(record_id, db_manager)
+    result, markdown_content = _history_share_image_input(record_id, db_manager, user)
     config = get_config()
     max_chars = getattr(config, "markdown_to_image_max_chars", 15000)
     if len(markdown_content) > max_chars:
@@ -904,8 +949,9 @@ def get_history_share_image_html(
 def get_history_share_image(
     record_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> Response:
-    result, markdown_content = _history_share_image_input(record_id, db_manager)
+    result, markdown_content = _history_share_image_input(record_id, db_manager, user)
 
     config = get_config()
     image_bytes = markdown_to_image(
@@ -948,7 +994,8 @@ def get_history_share_image(
 )
 def get_history_markdown(
     record_id: str,
-    db_manager: DatabaseManager = Depends(get_database_manager)
+    db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> MarkdownReportResponse:
     """
     获取历史报告的 Markdown 格式内容
@@ -966,7 +1013,7 @@ def get_history_markdown(
         HTTPException: 404 - 报告不存在
         HTTPException: 500 - 报告生成失败（服务器内部错误）
     """
-    service = HistoryService(db_manager)
+    service = _history_service(db_manager, user)
 
     try:
         markdown_content = service.get_markdown_report(record_id)

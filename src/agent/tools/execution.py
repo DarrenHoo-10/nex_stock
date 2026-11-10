@@ -106,6 +106,9 @@ class ToolAccessContext:
     audit_context: Dict[str, Any] = field(default_factory=dict)
     stock_identity: Any = None  # validated once, bound only for this handler call
     analysis_target: Any = None
+    # Acting user (session owner). Handed to ``user_scoped`` tools as an explicit argument; a call
+    # without it fails closed instead of falling back to the primary user.
+    user_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -484,8 +487,12 @@ def execute_runner_tool_call(
     tool_registry: ToolRegistry,
     stock_scope: Any = None,
     non_retriable_tool_results: Optional[Dict[str, str]] = None,
+    user_id: Optional[str] = None,
 ) -> tuple[Any, str, bool, float, bool, Optional[Dict[str, Any]]]:
-    """Execute a single tool call using the legacy runner semantics."""
+    """Execute a single tool call using the legacy runner semantics.
+
+    ``user_id`` is the acting user (session owner); it reaches only ``user_scoped`` tools.
+    """
     t0 = time.time()
     guard_result, access = _resolve_tool_stock_access(
         tool_registry, tool_call.name, tool_call.arguments, stock_scope,
@@ -518,14 +525,15 @@ def execute_runner_tool_call(
         return tool_call, non_retriable_tool_results[cache_key], False, dur, True, None
 
     context_token = None
-    arguments = tool_call.arguments
+    # The acting user comes only from the runtime; a model-supplied ``user_id`` is never forwarded.
+    arguments = {key: value for key, value in tool_call.arguments.items() if key != "user_id"}
     if identity is not None:
         arguments = dict(arguments, stock_code=identity.stock_code)
         context_token = bind_tool_execution_context(ToolAccessContext(
             stock_scope=stock_scope, stock_identity=identity, analysis_target=access.target,
         ))
     try:
-        res = tool_registry.execute(tool_call.name, **arguments)
+        res = tool_registry.execute(tool_call.name, user_id=user_id, **arguments)
         res_str = serialize_tool_result(res)
         ok = True
         if cache_key and non_retriable_tool_results is not None and _is_non_retriable_tool_result(res):

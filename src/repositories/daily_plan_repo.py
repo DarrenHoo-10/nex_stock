@@ -4,6 +4,9 @@
 Also the read-side queries the plan needs on the local market tables (``market_stock_daily``, ``stock_daily``,
 ``board_membership``); nothing here fetches from the network. Every write is one transaction through
 ``DatabaseManager._run_write_transaction``.
+
+Account, runs and stock plans are personal data (docs/design/multi-user.md section 4): every method that touches
+them takes an explicit ``user_id`` and filters / stamps rows with it. The market-data queries below are shared.
 """
 
 from __future__ import annotations
@@ -54,12 +57,16 @@ class DailyPlanRepository:
         self.db = db_manager or DatabaseManager.get_instance()
 
     # ------------------------------------------------------------------ account
-    def get_account(self) -> Dict[str, Any]:
+    def get_account(self, user_id: str) -> Dict[str, Any]:
         """``{"cash", "updated_at", "holdings": [...]}``; never saved -> cash 0, no holdings, ``updated_at`` None."""
         with self.db.get_session() as session:
-            account = session.get(DailyPlanAccount, 1)
+            account = session.execute(
+                select(DailyPlanAccount).where(DailyPlanAccount.user_id == user_id)
+            ).scalar_one_or_none()
             rows = session.execute(
-                select(DailyPlanHolding).order_by(DailyPlanHolding.position, DailyPlanHolding.id)
+                select(DailyPlanHolding)
+                .where(DailyPlanHolding.user_id == user_id)
+                .order_by(DailyPlanHolding.position, DailyPlanHolding.id)
             ).scalars().all()
             return {
                 "cash": float(account.cash) if account else 0.0,
@@ -71,31 +78,33 @@ class DailyPlanRepository:
                 ],
             }
 
-    def replace_account(self, cash: float, holdings: Sequence[Dict[str, Any]]) -> None:
-        """Replace the whole snapshot (cash + holdings) in one transaction."""
+    def replace_account(self, user_id: str, cash: float, holdings: Sequence[Dict[str, Any]]) -> None:
+        """Replace the whole snapshot (cash + holdings) of one user in one transaction."""
         def _write(session) -> None:
             now = utc_naive_now()
-            account = session.get(DailyPlanAccount, 1)
+            account = session.execute(
+                select(DailyPlanAccount).where(DailyPlanAccount.user_id == user_id)
+            ).scalar_one_or_none()
             if account is None:
-                session.add(DailyPlanAccount(id=1, cash=float(cash), updated_at=now))
+                session.add(DailyPlanAccount(user_id=user_id, cash=float(cash), updated_at=now))
             else:
                 account.cash = float(cash)
                 account.updated_at = now
-            session.execute(delete(DailyPlanHolding))
+            session.execute(delete(DailyPlanHolding).where(DailyPlanHolding.user_id == user_id))
             for position, item in enumerate(holdings):
                 session.add(DailyPlanHolding(
-                    code=item["code"], shares=int(item["shares"]), cost=float(item["cost"]),
+                    user_id=user_id, code=item["code"], shares=int(item["shares"]), cost=float(item["cost"]),
                     buy_date=item.get("buy_date"), horizon=item.get("horizon"), position=position,
                 ))
 
-        self.db._run_write_transaction("replace plan account", _write)
+        self.db._run_write_transaction(f"replace plan account[{user_id}]", _write)
 
     # ------------------------------------------------------------------ runs
-    def create_run(self, run_id: str, trade_date: date, trigger: str, steps: List[Dict[str, Any]],
+    def create_run(self, user_id: str, run_id: str, trade_date: date, trigger: str, steps: List[Dict[str, Any]],
                    push: Dict[str, Any]) -> None:
         def _write(session) -> None:
             session.add(DailyPlanRun(
-                run_id=run_id, trade_date=trade_date, status="running", trigger=trigger,
+                user_id=user_id, run_id=run_id, trade_date=trade_date, status="running", trigger=trigger,
                 started_at=utc_naive_now(), steps_json=_dumps(steps), push_json=_dumps(push),
                 failures_json="[]", model_calls_json="[]", data_gaps_json="[]",
             ))
@@ -110,9 +119,11 @@ class DailyPlanRepository:
         "model_calls": "model_calls_json", "data_gaps": "data_gaps_json",
     }
 
-    def update_run(self, run_id: str, **fields: Any) -> None:
+    def update_run(self, user_id: str, run_id: str, **fields: Any) -> None:
         def _write(session) -> None:
-            row = session.execute(select(DailyPlanRun).where(DailyPlanRun.run_id == run_id)).scalar_one_or_none()
+            row = session.execute(
+                select(DailyPlanRun).where(DailyPlanRun.run_id == run_id, DailyPlanRun.user_id == user_id)
+            ).scalar_one_or_none()
             if row is None:
                 raise ValueError(f"plan_run {run_id} 不存在")
             for key, value in fields.items():
@@ -123,33 +134,47 @@ class DailyPlanRepository:
 
         self.db._run_write_transaction(f"update plan_run[{run_id}]", _write)
 
-    def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+    def get_run(self, user_id: str, run_id: str) -> Optional[Dict[str, Any]]:
+        """The run of ``user_id`` with this id; another user's run id is simply not found."""
         with self.db.get_session() as session:
-            row = session.execute(select(DailyPlanRun).where(DailyPlanRun.run_id == run_id)).scalar_one_or_none()
+            row = session.execute(
+                select(DailyPlanRun).where(DailyPlanRun.run_id == run_id, DailyPlanRun.user_id == user_id)
+            ).scalar_one_or_none()
             return self._run_dict(row) if row is not None else None
 
-    def closing_report_dates(self) -> List[date]:
+    def closing_report_dates(self, user_id: str) -> List[date]:
+        """Trade dates on which ``user_id`` has a plan push preview (previews hold that user's holdings)."""
         with self.db.get_session() as session:
-            dates = select(DailyPlanRun.trade_date).where(DailyPlanRun.push_preview != "").distinct()
+            dates = select(DailyPlanRun.trade_date).where(
+                DailyPlanRun.user_id == user_id, DailyPlanRun.push_preview != "",
+            ).distinct()
             return list(session.scalars(dates))
 
-    def closing_report(self, trade_date: date) -> Optional[str]:
-        """A later retry without a report must not hide an earlier completed preview."""
+    def closing_report(self, user_id: str, trade_date: date) -> Optional[str]:
+        """A later retry without a report must not hide an earlier completed preview (own runs only)."""
         with self.db.get_session() as session:
             stmt = select(DailyPlanRun.push_preview).where(
+                DailyPlanRun.user_id == user_id,
                 DailyPlanRun.trade_date == trade_date, DailyPlanRun.push_preview != "",
             ).order_by(DailyPlanRun.id.desc()).limit(1)
             return session.scalar(stmt)
 
-    def latest_run(self) -> Optional[Dict[str, Any]]:
+    def latest_run(self, user_id: str) -> Optional[Dict[str, Any]]:
         with self.db.get_session() as session:
-            row = session.execute(select(DailyPlanRun).order_by(DailyPlanRun.id.desc()).limit(1)).scalar_one_or_none()
+            row = session.execute(
+                select(DailyPlanRun).where(DailyPlanRun.user_id == user_id).order_by(DailyPlanRun.id.desc()).limit(1)
+            ).scalar_one_or_none()
             return self._run_dict(row) if row is not None else None
 
-    def fail_interrupted(self, keep_run_id: Optional[str], error: str) -> int:
-        """Mark active runs other than ``keep_run_id`` (the one this process is executing) as failed."""
+    def fail_interrupted(self, user_id: str, keep_run_id: Optional[str], error: str) -> int:
+        """Mark one user's active runs other than ``keep_run_id`` (the one this process is executing) as failed.
+
+        Scoped to the user so one user's request never fails another user's run that is still executing.
+        """
         def _write(session) -> int:
-            stmt = select(DailyPlanRun).where(DailyPlanRun.status.in_(ACTIVE_RUN_STATUSES))
+            stmt = select(DailyPlanRun).where(
+                DailyPlanRun.status.in_(ACTIVE_RUN_STATUSES), DailyPlanRun.user_id == user_id,
+            )
             count = 0
             for row in session.execute(stmt).scalars():
                 if keep_run_id is not None and row.run_id == keep_run_id:
@@ -160,7 +185,7 @@ class DailyPlanRepository:
                 count += 1
             return count
 
-        return self.db._run_write_transaction("fail interrupted plan_runs", _write)
+        return self.db._run_write_transaction(f"fail interrupted plan_runs[{user_id}]", _write)
 
     @staticmethod
     def _run_dict(row: DailyPlanRun) -> Dict[str, Any]:
@@ -184,12 +209,12 @@ class DailyPlanRepository:
         }
 
     # ------------------------------------------------------------------ stock plans
-    def save_stock_plan(self, run_id: Optional[str], trade_date: date, code: str, status: str,
+    def save_stock_plan(self, user_id: str, run_id: Optional[str], trade_date: date, code: str, status: str,
                         fingerprint: str, payload: Dict[str, Any], meta: Dict[str, Any]) -> int:
-        """Insert one plan row and return its id."""
+        """Insert one plan row of ``user_id`` and return its id."""
         def _write(session) -> int:
             row = DailyPlanStock(
-                run_id=run_id, trade_date=trade_date, code=code, status=status, fingerprint=fingerprint,
+                user_id=user_id, run_id=run_id, trade_date=trade_date, code=code, status=status, fingerprint=fingerprint,
                 payload_json=_dumps(payload), meta_json=_dumps(meta), created_at=utc_naive_now(),
             )
             session.add(row)
@@ -198,22 +223,26 @@ class DailyPlanRepository:
 
         return self.db._run_write_transaction(f"save plan_stock[{code}]", _write)
 
-    def update_stock_plan_payload(self, row_id: int, payload: Dict[str, Any]) -> None:
+    def update_stock_plan_payload(self, user_id: str, row_id: int, payload: Dict[str, Any]) -> None:
         def _write(session) -> None:
             row = session.get(DailyPlanStock, row_id)
-            if row is not None:
+            if row is not None and row.user_id == user_id:
                 row.payload_json = _dumps(payload)
 
         self.db._run_write_transaction(f"update plan_stock[{row_id}]", _write)
 
-    def latest_stock_plans(self, codes: Sequence[str], trade_date: date) -> Dict[str, Dict[str, Any]]:
-        """Newest stored plan per code for ``trade_date``: ``{code: {id, run_id, status, fingerprint, payload, meta}}``."""
+    def latest_stock_plans(self, user_id: str, codes: Sequence[str], trade_date: date) -> Dict[str, Dict[str, Any]]:
+        """``user_id``'s newest stored plan per code for ``trade_date``: ``{code: {id, run_id, status, ...}}``."""
         if not codes:
             return {}
         with self.db.get_session() as session:
             newest = (
                 select(func.max(DailyPlanStock.id))
-                .where(DailyPlanStock.trade_date == trade_date, DailyPlanStock.code.in_(list(codes)))
+                .where(
+                    DailyPlanStock.user_id == user_id,
+                    DailyPlanStock.trade_date == trade_date,
+                    DailyPlanStock.code.in_(list(codes)),
+                )
                 .group_by(DailyPlanStock.code)
             )
             rows = session.execute(select(DailyPlanStock).where(DailyPlanStock.id.in_(newest))).scalars().all()

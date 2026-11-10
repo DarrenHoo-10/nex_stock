@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, ChartColumn, Database, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2, Target, WalletCards } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, ChartColumn, Database, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2, Target, UserRound, WalletCards } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useCurrentUser } from '../../hooks/useCurrentUser';
 import { useAgentChatStore } from '../../stores/agentChatStore';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey } from '../../i18n/uiText';
@@ -24,28 +25,36 @@ type NavItem = {
   icon: React.ComponentType<{ className?: string }>;
   exact?: boolean;
   badge?: 'completion';
+  /** Only calls administrator-only endpoints (docs/design/multi-user.md 2.4): hidden from regular users. */
+  adminOnly?: boolean;
+  /** Only meaningful when more than one person can sign in (AUTH_MODE=user_center). */
+  multiUserOnly?: boolean;
 };
 
 const NAV_ITEMS: NavItem[] = [
   { key: 'boards', labelKey: 'layout.nav.boards', to: '/boards', icon: ChartColumn },
-  { key: 'picks', labelKey: 'layout.nav.picks', to: '/picks', icon: Target },
+  { key: 'picks', labelKey: 'layout.nav.picks', to: '/picks', icon: Target, adminOnly: true },
   { key: 'mine', labelKey: 'layout.nav.mine', to: '/mine', icon: WalletCards },
   { key: 'home', labelKey: 'layout.nav.home', to: '/home', icon: Home, exact: true },
   { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
-  { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
+  { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search, adminOnly: true },
   { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
   { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
   { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
   { key: 'data', labelKey: 'layout.nav.dataCenter', to: '/data', icon: Database },
   { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
-  { key: 'settings', labelKey: 'layout.nav.settings', to: '/settings', icon: Settings2 },
+  // `end`: /settings/personal must not also light up the system settings entry.
+  { key: 'settings', labelKey: 'layout.nav.settings', to: '/settings', icon: Settings2, exact: true, adminOnly: true },
+  { key: 'personal-settings', labelKey: 'layout.nav.personalSettings', to: '/settings/personal', icon: UserRound, multiUserOnly: true },
 ];
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate, variant = 'default' }) => {
   const { authMode, authEnabled, logout } = useAuth();
+  const { user, isAdmin, isMultiUser, displayName } = useCurrentUser();
   const location = useLocation();
   const { t } = useUiLanguage();
+  const navItems = NAV_ITEMS.filter((item) => (!item.adminOnly || isAdmin) && (!item.multiUserOnly || isMultiUser));
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const isRail = variant === 'rail';
@@ -88,7 +97,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
       </div>
 
       <nav className={cn('flex flex-col gap-1.5', isRail ? 'min-h-0 overflow-y-auto' : 'flex-1')} aria-label={t('layout.mainNav')}>
-        {NAV_ITEMS.map(({ key, labelKey, to, icon: Icon, exact, badge }) => {
+        {navItems.map(({ key, labelKey, to, icon: Icon, exact, badge }) => {
           const label = t(labelKey);
           return (
           <NavLink
@@ -149,6 +158,22 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
         />
       </div>
 
+      {user && isMultiUser ? (
+        <div
+          data-testid="current-user-badge"
+          className={cn(
+            'mt-1.5 flex shrink-0 flex-col gap-0.5 rounded-2xl border border-border/50 bg-card/50 px-2 py-1.5 text-xs',
+            collapsed ? 'items-center' : ''
+          )}
+          aria-label={t('me.userLabel', { name: displayName })}
+        >
+          <span className="max-w-full truncate font-medium text-foreground">{displayName}</span>
+          <span className="max-w-full truncate text-[11px] text-muted-text">
+            {isAdmin ? t('me.role.admin') : t('me.role.user')}
+          </span>
+        </div>
+      ) : null}
+
       {authEnabled ? (
         <button
           type="button"
@@ -168,7 +193,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
         isOpen={showLogoutConfirm}
         title={t('layout.logoutTitle')}
         message={t(
-          /^\/settings\/?$/.test(location.pathname)
+          /^\/settings(\/personal)?\/?$/.test(location.pathname)
             ? 'layout.logoutSettingsMessage'
             : authMode === 'user_center'
               ? 'layout.logoutMessageUserCenter'

@@ -165,9 +165,25 @@ def _sanitize(exc: BaseException) -> str:
 
 
 def _default_holdings() -> List[Tuple[str, str]]:
+    from src.config import get_primary_user_id
     from src.repositories.portfolio_repo import PortfolioRepository
 
-    return PortfolioRepository().list_cached_position_identities()
+    return PortfolioRepository().list_cached_position_identities(user_id=get_primary_user_id())
+
+
+def _default_user_holdings(user_id: str) -> List[Tuple[str, str]]:
+    from src.repositories.portfolio_repo import PortfolioRepository
+
+    return PortfolioRepository().list_cached_position_identities(user_id=user_id)
+
+
+def _default_other_users() -> List[str]:
+    """Known non-primary users (``app_user``), oldest first."""
+    from src.config import get_primary_user_id
+    from src.repositories.user_repo import UserRepository
+
+    primary = get_primary_user_id()
+    return [row["user_id"] for row in UserRepository().list_app_users() if row["user_id"] != primary]
 
 
 def in_trading_window(now: datetime, is_trading_day: Callable[[date], bool] = _is_cn_trading_day) -> bool:
@@ -183,6 +199,8 @@ class NewsPoolService:
         is_trading_day: Callable[[date], bool] = _is_cn_trading_day,
         holdings_provider: Callable[[], Sequence[Tuple[str, str]]] = _default_holdings,
         sleep_fn: Callable[[float], None] = time.sleep,
+        other_users_provider: Callable[[], Sequence[str]] = _default_other_users,
+        user_holdings_provider: Callable[[str], Sequence[Tuple[str, str]]] = _default_user_holdings,
         events_runner: Optional[Callable[[], Dict[str, Any]]] = None,
         risk_lists_runner: Optional[Callable[[], Dict[str, Any]]] = None,
         macro_runner: Optional[Callable[[], Dict[str, Any]]] = None,
@@ -196,6 +214,8 @@ class NewsPoolService:
         self.config = config
         self._is_trading_day = is_trading_day
         self._holdings_provider = holdings_provider
+        self._other_users_provider = other_users_provider
+        self._user_holdings_provider = user_holdings_provider
         self._sleep = sleep_fn
         self._events_runner = events_runner
         self._risk_lists_runner = risk_lists_runner
@@ -412,15 +432,64 @@ class NewsPoolService:
     # daily job: announcements + 财经早餐
     # ------------------------------------------------------------------
     def wanted_codes(self) -> List[str]:
-        """Watchlist (``STOCK_LIST``) plus current A-share holdings, normalised and sorted."""
-        codes = {normalize_a_share_code(c) for c in (getattr(self.config, "stock_list", None) or [])}
+        """Announcement codes of the shared fetch: the primary user's watchlist + current A-share holdings (all of
+        them, as before) plus a bounded share of every other user's watchlist + holdings, normalised and sorted.
+
+        The news pool is shared, so only the *set* of codes grows; nothing records, returns or logs which user a code
+        came from. Other users contribute at most ``NEWS_POOL_MAX_CODES_PER_USER`` codes each (holdings first) and at
+        most ``NEWS_POOL_MAX_CODES_TOTAL`` new codes together (taken round-robin, so no single user can crowd the
+        others out), which keeps the per-code fetch bounded however many users there are.
+        """
+        from src.config import get_primary_user_id
+        from src.services.watchlist_service import WatchlistService
+
+        watchlist = WatchlistService(config=self.config).list_codes(get_primary_user_id())
+        codes = {normalize_a_share_code(c) for c in watchlist}
         try:
             for market, symbol in self._holdings_provider() or []:
                 if str(market).lower() == "cn":
                     codes.add(normalize_a_share_code(symbol))
         except Exception as exc:  # noqa: BLE001 - holdings are an add-on; the watchlist still works
             logger.warning("[News] 读取持仓失败，仅按自选股取公告: %s", exc)
+        codes.update(self._other_users_codes(exclude=codes))
         return sorted(code for code in codes if code)
+
+    def _other_users_codes(self, *, exclude: Iterable[str]) -> List[str]:
+        per_user = int(getattr(self.config, "news_pool_max_codes_per_user", 50) or 0)
+        total = int(getattr(self.config, "news_pool_max_codes_total", 300) or 0)
+        if per_user <= 0 or total <= 0:
+            return []
+        from src.services.watchlist_service import WatchlistService
+
+        known = set(exclude)
+        queues: List[List[str]] = []
+        try:
+            users = list(self._other_users_provider() or [])
+        except Exception as exc:  # noqa: BLE001 - the primary user's coverage never depends on this
+            logger.warning("[News] 读取用户列表失败，仅按主用户取公告: %s", exc)
+            return []
+        for user_id in users:
+            ordered: List[str] = []
+            try:
+                for market, symbol in self._user_holdings_provider(user_id) or []:
+                    if str(market).lower() == "cn":
+                        ordered.append(normalize_a_share_code(symbol))
+                ordered.extend(normalize_a_share_code(c) for c in WatchlistService(config=self.config).list_codes(user_id))
+            except Exception as exc:  # noqa: BLE001 - one user's data problem never affects the others
+                logger.warning("[News] 读取一位用户的自选 / 持仓失败，已跳过: %s", type(exc).__name__)
+            queue = [code for code in dict.fromkeys(ordered) if code and code not in known]
+            if queue:
+                queues.append(queue[:per_user])
+        picked: List[str] = []
+        taken = set(known)
+        depth = 0
+        while len(picked) < total and any(depth < len(queue) for queue in queues):
+            for queue in queues:
+                if depth < len(queue) and queue[depth] not in taken and len(picked) < total:
+                    picked.append(queue[depth])
+                    taken.add(queue[depth])
+            depth += 1
+        return picked
 
     def run_daily_fetch(self, *, day: Optional[date] = None, now: Optional[datetime] = None) -> Dict[str, Any]:
         if not _DAILY_LOCK.acquire(blocking=False):

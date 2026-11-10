@@ -3038,6 +3038,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_resolves_bare_code_from_stock_index_before_default_market(self) -> None:
@@ -3077,6 +3078,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_resolves_bare_4_digit_jp_code_before_name_resolution(self) -> None:
@@ -3117,6 +3119,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_async_index_submits_structured_target(self) -> None:
@@ -3606,6 +3609,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             force_refresh=False,
             notify=True,
             report_language="en",
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_async_passes_and_returns_analysis_phase(self) -> None:
@@ -3649,6 +3653,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="intraday",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_accepts_hk_suffix_code_from_autocomplete(self) -> None:
@@ -3686,6 +3691,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_accepts_bse_suffix_code_from_autocomplete(self) -> None:
@@ -3724,6 +3730,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_rejects_non_bse_code_with_bj_exchange_hint(self) -> None:
@@ -3793,6 +3800,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_allows_stock_names_with_star_and_hyphen(self) -> None:
@@ -3830,6 +3838,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_accepts_resolvable_free_text_input(self) -> None:
@@ -3867,6 +3876,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_preserves_batch_metadata(self) -> None:
@@ -3903,6 +3913,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_trigger_analysis_rejects_cross_request_duplicate_for_equivalent_code_shapes(self) -> None:
@@ -3997,6 +4008,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            reuse_metadata=True,
         )
 
     def test_spa_fallback_returns_json_404_for_bare_api_path(self) -> None:
@@ -4463,7 +4475,10 @@ class BatchTaskQueueContractTestCase(unittest.TestCase):
                     raise RuntimeError("executor down")
                 return Future()
 
-        queue = AnalysisTaskQueue(max_workers=1)
+        # Tasks reach the executor only while a worker slot and the owner's concurrency cap are free, so allow
+        # both tasks to start at once for the second submit to fail.
+        queue = AnalysisTaskQueue(max_workers=2)
+        queue._per_user_limit = 2
         queue._executor = FailingExecutor()
 
         with self.assertRaisesRegex(RuntimeError, "executor down"):

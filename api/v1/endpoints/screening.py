@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from api.deps import get_config_dep, get_database_manager
+from api.deps import CurrentUser, get_config_dep, get_current_user, get_database_manager, require_admin
 from api.v1.errors import api_error
-from src.config import Config
+from src.config import Config, get_primary_user_id
 from src.services.screening.config import Config as ScreeningRuntimeConfig
 from src.services.screening.filter import check_hard_filters, validate_check_snapshot
 from src.services.screening.strategy import load_all_strategies_with_extra
@@ -199,6 +199,7 @@ def screening_hotspot_detail(
     refresh: bool = Query(False),
     include_search: bool = Query(False),
     config: Config = Depends(get_config_dep),
+    user: CurrentUser = Depends(get_current_user),
 ) -> Dict[str, Any]:
     refresh_value = refresh if isinstance(refresh, bool) else bool(getattr(refresh, "default", False))
     include_search_value = (
@@ -206,6 +207,8 @@ def screening_hotspot_detail(
         if isinstance(include_search, bool)
         else bool(getattr(include_search, "default", False))
     )
+    if isinstance(user, CurrentUser) and not user.is_admin:
+        include_search_value = False  # web search uses the system search keys; personal accounts skip it
     return _service(config).hotspot_detail(
         topic=topic,
         provider=provider,
@@ -238,12 +241,19 @@ def screening_check(
     )
 
 
-@router.post("/screen/tasks", status_code=202, response_model=ScreeningScreenAccepted)
+# Screening ranks candidates with the SYSTEM model and enriches them with the SYSTEM search keys (its runtime
+# bridges them through process-wide environment variables), so running it is an administrator action; every user
+# can still read the shared results (history, strategies, hotspots).
+@router.post(
+    "/screen/tasks", status_code=202, response_model=ScreeningScreenAccepted,
+    dependencies=[Depends(require_admin)],
+)
 def screening_start_screen_task(
     request: ScreeningScreenRequest,
     http_request: Request,
     config: Config = Depends(get_config_dep),
     db_manager: DatabaseManager = Depends(get_database_manager),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ScreeningScreenAccepted:
     task_id = uuid.uuid4().hex
     task_queue = get_task_queue()
@@ -296,6 +306,12 @@ def screening_start_screen_task(
         message="选股任务已提交",
         task_id=task_id,
         trace_id=task_id,
+        # Only the submitting administrator sees the task in the task list / stream.
+        **(
+            {"user_id": user.user_id}
+            if isinstance(user, CurrentUser) and user.user_id != get_primary_user_id()
+            else {}
+        ),
     )
     return ScreeningScreenAccepted(
         task_id=task.task_id,
@@ -353,7 +369,7 @@ def screening_screen_task_status(
     return ScreeningScreenTaskStatus(trace_id=persisted["task_id"], **persisted)
 
 
-@router.post("/screen")
+@router.post("/screen", dependencies=[Depends(require_admin)])
 def screening_screen(
     request: ScreeningScreenRequest,
     http_request: Request,

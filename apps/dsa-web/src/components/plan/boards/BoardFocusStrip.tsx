@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useState } from 'react';
+import { useCurrentUser } from '../../../hooks/useCurrentUser';
 import type { FollowedBoard, RecommendationResponse } from '../../../types/boards';
 import { BOARD_STATE_LABEL, BOARD_TYPE_LABEL, formatPct, signClass } from './boardMeta';
 import { PlanSkeleton } from './PlanStatePanels';
@@ -47,6 +48,8 @@ export const BoardFocusStrip: React.FC<BoardFocusStripProps> = ({
   onSelect,
   onMessage,
 }) => {
+  // Regenerating the shared recommendation (POST /boards/recommendations/refresh) is an administrator action.
+  const { isAdmin } = useCurrentUser();
   const [requesting, setRequesting] = useState(false);
   const data = recommendations.status === 'ready' ? recommendations.data : null;
   const generating = data?.status === 'generating' || requesting;
@@ -144,14 +147,16 @@ export const BoardFocusStrip: React.FC<BoardFocusStripProps> = ({
           <h2 id="focus-rec-title">今日建议</h2>
           {data && data.items.length ? <span className="focus-meta">{sourceLine(data)}</span> : null}
           <span className="spacer" aria-hidden="true" />
-          <button
-            type="button"
-            className="btn quiet sm"
-            disabled={generating || data?.status === 'no_run'}
-            onClick={() => void regenerate()}
-          >
-            {generating ? '生成中…' : '重新生成'}
-          </button>
+          {isAdmin ? (
+            <button
+              type="button"
+              className="btn quiet sm"
+              disabled={generating || data?.status === 'no_run'}
+              onClick={() => void regenerate()}
+            >
+              {generating ? '生成中…' : '重新生成'}
+            </button>
+          ) : null}
         </div>
         {recBody}
       </section>

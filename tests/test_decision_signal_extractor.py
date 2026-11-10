@@ -690,3 +690,34 @@ def test_extract_and_persist_index_signal_with_market_override(isolated_db) -> N
     latest = service.get_latest_active(stock_code="csi930955", market="cn")
     assert latest["total"] == 1
     assert latest["items"][0]["source_report_id"] == 955
+
+
+@pytest.mark.parametrize(
+    ("owner", "expected"),
+    [("uid-primary", "holding"), (None, "holding"), ("uid-other", "unknown")],
+)
+def test_shared_signal_records_holding_state_only_for_the_primary_users_position(
+    isolated_db, monkeypatch, owner, expected,
+) -> None:
+    """Signals are shared across users: another user's holding must not be recorded in them."""
+    monkeypatch.setattr("src.services.decision_signal_extractor.get_primary_user_id", lambda: "uid-primary")
+    context = {"quantity": 10, "avg_cost": 12.3, "account_id": 7}
+    if owner is not None:
+        context["owner_user_id"] = owner
+    service = DecisionSignalService(db_manager=isolated_db)
+
+    created = extract_and_persist_from_analysis_result(
+        _result(),
+        portfolio_context=context,
+        source_report_id=902,
+        trace_id=f"trace-owner-{owner}",
+        query_source="portfolio",
+        report_type="full",
+        profile_source="auto_default",
+        service=service,
+    )
+
+    assert created is not None
+    persisted = service.list_signals(source_report_id=902)["items"][0]
+    assert persisted["metadata"]["holding_state"] == expected
+    assert "12.3" not in str(persisted) and "owner_user_id" not in str(persisted)

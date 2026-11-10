@@ -36,6 +36,34 @@ describe('dailyPlan / boards api', () => {
     await expect(getLatestRun()).resolves.toBeNull();
   });
 
+  it('carries the personal push fields (channel, reason, per-type results) of a regular user\'s run', async () => {
+    get.mockResolvedValueOnce({
+      data: {
+        run: {
+          id: 'r2',
+          trade_date: '2026-11-06',
+          push: {
+            channel: 'personal',
+            status: 'sent',
+            sent_at: '2026-11-06T09:05:00',
+            error: null,
+            configured: true,
+            reason: null,
+            channels: [{ channel: 'feishu', success: true }, { channel: 'email', success: false }],
+          },
+        },
+      },
+    });
+
+    const run = await getLatestRun();
+
+    expect(run?.push).toMatchObject({
+      channel: 'personal',
+      sentAt: '2026-11-06T09:05:00',
+      channels: [{ channel: 'feishu', success: true }, { channel: 'email', success: false }],
+    });
+  });
+
   it('sends snake_case query params and bodies', async () => {
     get.mockResolvedValue({ data: { trade_date: '2026-11-06', boards: [], change_5d_pct: 1 } });
     await getBoardAnomalies({ tradeDate: '2026-11-06', boardType: 'industry', state: 'first_launch' });

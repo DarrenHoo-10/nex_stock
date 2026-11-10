@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, time as dtime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from src.repositories.intelligence_repo import IntelligenceRepository
 from src.services.news_akshare_source import (
@@ -31,6 +31,7 @@ from src.services.news_akshare_source import (
     KIND_ANNOUNCEMENT,
     KIND_MORNING_BRIEF,
     NO_URL_PREFIX,
+    PER_CODE_KINDS,
     SOURCE_LABELS,
     SOURCE_TYPE,
     normalize_a_share_code,
@@ -122,6 +123,47 @@ def _within(row: Any, when: Optional[datetime], since: datetime, until: datetime
     return since <= when <= until
 
 
+def viewer_announcement_codes(viewer_user_id: Optional[str]) -> Optional[Set[str]]:
+    """Codes whose per-code pool rows (announcements, investor Q&A) ``viewer_user_id`` may see: their own watchlist +
+    holdings, normalised.
+
+    ``None`` = no restriction (the primary user / no viewer: the shared pool is theirs, unchanged). The pool also holds
+    rows fetched only because *some other user* watches or holds the code (``NewsPoolService.wanted_codes``);
+    showing those to everyone would tell a user which codes other users follow, so a non-primary viewer gets
+    the per-code rows of their own codes only (``PER_CODE_KINDS``). General news (flashes, morning briefs, board /
+    market news) is not affected.
+    """
+    from src.config import get_primary_user_id
+
+    if not viewer_user_id or viewer_user_id == get_primary_user_id():
+        return None
+    from src.repositories.portfolio_repo import PortfolioRepository
+    from src.services.watchlist_service import WatchlistService
+
+    own: Set[str] = set()
+    try:
+        own.update(normalize_a_share_code(code) for code in WatchlistService().list_codes(viewer_user_id))
+        own.update(
+            normalize_a_share_code(symbol)
+            for market, symbol in PortfolioRepository().list_cached_position_identities(user_id=viewer_user_id)
+            if str(market).lower() == "cn"
+        )
+    except Exception as exc:  # noqa: BLE001 - when the viewer's codes cannot be read no announcement is shown
+        logger.warning("[NewsDigest] cannot read the codes of user %s: %s", viewer_user_id, type(exc).__name__)
+    own.discard("")
+    return own
+
+
+def announcement_visible(kind: Optional[str], codes: Sequence[Any], own_codes: Optional[Set[str]]) -> bool:
+    """Whether a pool row may be shown to a viewer whose allowed codes are ``own_codes`` (see ``viewer_announcement_codes``).
+
+    Applies to every per-code kind (``PER_CODE_KINDS``: announcements and investor Q&A), not only announcements.
+    """
+    if own_codes is None or kind not in PER_CODE_KINDS:
+        return True
+    return bool(own_codes.intersection(normalize_a_share_code(code) for code in codes))
+
+
 def build_news_digest(
     since: datetime,
     until: Optional[datetime] = None,
@@ -131,9 +173,14 @@ def build_news_digest(
     limit: int = 30,
     *,
     repo: Optional[IntelligenceRepository] = None,
+    viewer_user_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Stored news between ``since`` and ``until`` (default now), filtered and ranked; see module doc."""
+    """Stored news between ``since`` and ``until`` (default now), filtered and ranked; see module doc.
+
+    ``viewer_user_id`` (a non-primary user) hides announcements of codes outside that user's own watchlist / holdings.
+    """
     repo = repo or IntelligenceRepository()
+    own_codes = viewer_announcement_codes(viewer_user_id)
     since_cn = _as_china(since)
     until_cn = _as_china(until) if until is not None else datetime.now(CN_TZ)
     if until_cn < since_cn:
@@ -154,6 +201,8 @@ def build_news_digest(
         if not _within(row, when, since_cn, until_cn):
             continue
         item = _row_to_dict(row, when=when, summary_chars=_DIGEST_SUMMARY_CHARS)
+        if not announcement_visible(item["kind"], item["codes"], own_codes):
+            continue
         if wanted_codes and not wanted_codes.intersection(item["codes"]):
             continue
         if wanted_boards and not wanted_boards.intersection(item["board_ids"]):

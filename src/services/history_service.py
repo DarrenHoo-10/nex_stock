@@ -39,7 +39,7 @@ from src.report_language import (
     normalize_strategy_synthesis_payload,
     strategy_invalid_opinion_count,
 )
-from src.storage import DatabaseManager
+from src.storage import DatabaseManager, analysis_record_visible_to
 from src.services.run_diagnostics import build_run_diagnostic_summary
 from src.services.empty_news import (
     empty_news_disclosure,
@@ -88,14 +88,55 @@ class HistoryService:
     Encapsulates query logic for historical analysis records.
     """
     
-    def __init__(self, db_manager: Optional[DatabaseManager] = None):
+    def __init__(
+        self,
+        db_manager: Optional[DatabaseManager] = None,
+        viewer_user_id: Optional[str] = None,
+    ):
         """
         Initialize the history query service.
-        
+
         Args:
             db_manager: Database manager (optional, defaults to singleton instance)
+            viewer_user_id: The user the reads are made for. Set, the service shows shared reports plus that
+                user's own private ones and treats another user's private report as missing. ``None`` is
+                unrestricted (system jobs).
         """
         self.db = db_manager or DatabaseManager.get_instance()
+        self.viewer_user_id = viewer_user_id
+        self._requester_names: Optional[Dict[str, str]] = None
+
+    def _visible(self, record: Any) -> bool:
+        return analysis_record_visible_to(record, self.viewer_user_id)
+
+    def _requester_name(self, user_id: Optional[str]) -> Optional[str]:
+        """Display name of a requester (best effort: the user registry only knows users who logged in)."""
+        if not user_id:
+            return None
+        if self._requester_names is None:
+            try:
+                from src.repositories.user_repo import UserRepository
+
+                self._requester_names = {
+                    row["user_id"]: (row.get("display_name") or row.get("handle") or "")
+                    for row in UserRepository(self.db).list_app_users()
+                }
+            except Exception as exc:  # noqa: BLE001 - attribution is decoration, never a reason to fail
+                logger.debug("requester names unavailable: %s", exc)
+                self._requester_names = {}
+        return self._requester_names.get(user_id) or None
+
+    def _attribution(self, record: Any) -> Dict[str, Any]:
+        """Who requested a report and whether the viewer owns it / it is private."""
+        from src.config import get_primary_user_id
+
+        requester = getattr(record, "requester_user_id", None) or get_primary_user_id()
+        return {
+            "requester_user_id": requester,
+            "requester_name": self._requester_name(requester),
+            "is_mine": (requester == self.viewer_user_id) if self.viewer_user_id is not None else None,
+            "is_private": bool(getattr(record, "is_private", None)),
+        }
 
     @staticmethod
     def _serialize_created_at(value: Optional[datetime]) -> Optional[str]:
@@ -255,6 +296,7 @@ class HistoryService:
         limit: int = 20,
         include_ambiguous_numeric_aliases: bool = True,
         market_hint: Optional[str] = None,
+        mine_only: bool = False,
     ) -> Dict[str, Any]:
         """
         Get history analysis list.
@@ -305,13 +347,17 @@ class HistoryService:
             offset = (page - 1) * limit
             
             # Use new paginated query method
+            viewer_kwargs: Dict[str, Any] = {}
+            if self.viewer_user_id is not None:
+                viewer_kwargs = {"viewer_user_id": self.viewer_user_id, "mine_only": mine_only}
             records, total = self.db.get_analysis_history_paginated(
                 code=stock_code,
                 report_type=report_type,
                 start_date=start_dt,
                 end_date=end_dt,
                 offset=offset,
-                limit=limit
+                limit=limit,
+                **viewer_kwargs,
             )
             
             # Convert to response format
@@ -463,6 +509,7 @@ class HistoryService:
             "created_at": self._serialize_created_at(record.created_at),
             "market_phase_summary": market_phase_summary,
             "asset_type": self._asset_type_for_record(record),
+            **self._attribution(record),
             **market_fields,
         }
 
@@ -501,19 +548,21 @@ class HistoryService:
         try:
             int_id = int(record_id)
             record = self.db.get_analysis_history_by_id(int_id)
-            if record:
+            if record and self._visible(record):
                 return record
         except (ValueError, TypeError):
             pass
         # Fall back to query_id lookup. Keep the old no-kwargs call for
         # unfiltered paths so existing test doubles and integrations remain compatible.
         if code is None and report_type is None:
-            return self.db.get_latest_analysis_by_query_id(record_id)
-        return self.db.get_latest_analysis_by_query_id(
-            record_id,
-            code=code,
-            report_type=report_type,
-        )
+            record = self.db.get_latest_analysis_by_query_id(record_id)
+        else:
+            record = self.db.get_latest_analysis_by_query_id(
+                record_id,
+                code=code,
+                report_type=report_type,
+            )
+        return record if self._visible(record) else None
 
     def resolve_and_get_detail(self, record_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -641,7 +690,7 @@ class HistoryService:
         """
         try:
             record = self.db.get_analysis_history_by_id(record_id)
-            if not record:
+            if not record or not self._visible(record):
                 return None
             return self._record_to_detail_dict(record)
         except Exception as e:
@@ -801,6 +850,7 @@ class HistoryService:
             "raw_result": raw_result,
             "context_snapshot": context_snapshot,
             "market_phase_summary": market_phase_summary,
+            **self._attribution(record),
         }
 
     def _decision_action_fields_for_record(self, record, raw_result: Any) -> Dict[str, Any]:
@@ -815,12 +865,17 @@ class HistoryService:
             guardrail_reason=extract_decision_guardrail_reason(raw),
         )
 
-    def delete_history_records(self, record_ids: List[int]) -> int:
+    def delete_history_records(self, record_ids: List[int], *, is_admin: bool = True) -> int:
         """
         Delete specified analysis history records.
 
+        With a ``viewer_user_id`` only reports the viewer can see are considered (another user's private report
+        is missing), and a non-admin viewer may delete only the reports they requested themselves: deleting a
+        shared report would change what everyone else sees.
+
         Args:
             record_ids: List of history record primary key IDs
+            is_admin: Whether the viewer may delete shared reports requested by others
 
         Returns:
             Number of records actually deleted
@@ -829,6 +884,20 @@ class HistoryService:
             Exception: Re-raises any storage-layer exception so the API caller
                        receives a proper 500 error instead of a silent success.
         """
+        if self.viewer_user_id is not None:
+            from src.config import get_primary_user_id
+
+            allowed: List[int] = []
+            for record_id in record_ids:
+                record = self.db.get_analysis_history_by_id(record_id)
+                if record is None or not self._visible(record):
+                    continue
+                requester = getattr(record, "requester_user_id", None) or get_primary_user_id()
+                if is_admin or requester == self.viewer_user_id:
+                    allowed.append(record_id)
+            if not allowed:
+                return 0
+            record_ids = allowed
         return self.db.delete_analysis_history_records(record_ids)
 
     def get_news_intel(self, query_id: str, limit: int = 20) -> List[Dict[str, str]]:
@@ -881,7 +950,7 @@ class HistoryService:
         try:
             # Look up the corresponding AnalysisHistory record by record_id
             record = self.db.get_analysis_history_by_id(record_id)
-            if not record:
+            if not record or not self._visible(record):
                 logger.warning(f"No analysis record found for record_id={record_id}")
                 return []
 

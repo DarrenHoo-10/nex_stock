@@ -12,7 +12,9 @@ import { formatDateTime } from '../../utils/format';
 import { Badge, Button, Card } from '../common';
 import { DashboardStateBlock } from '../dashboard';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { useCurrentUser } from '../../hooks/useCurrentUser';
 import type { UiTextKey } from '../../i18n/uiText';
+import { RequesterBadges } from './RequesterBadges';
 
 interface StockHistoryTrendDrawerProps {
   report: AnalysisReport;
@@ -25,6 +27,8 @@ interface StockHistoryTrendDrawerProps {
   filters: StockHistoryFilters;
   onClose: () => void;
   onRangeChange: (range: StockHistoryRange) => void;
+  /** Show the 只看我的 filter (`mine_only`) in multi-user deployments. */
+  onMineOnlyChange?: (mineOnly: boolean) => void;
   onLoadMore: () => void;
   onSelectRecord: (recordId: number) => void;
   onRetry: () => void;
@@ -148,11 +152,24 @@ const MetricCard: React.FC<{ label: string; value: React.ReactNode; hint?: strin
 const RangeControls: React.FC<{
   filters: StockHistoryFilters;
   onRangeChange: (range: StockHistoryRange) => void;
-}> = ({ filters, onRangeChange }) => {
+  onMineOnlyChange?: (mineOnly: boolean) => void;
+}> = ({ filters, onRangeChange, onMineOnlyChange }) => {
   const { t } = useUiLanguage();
+  const { isMultiUser } = useCurrentUser();
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {isMultiUser && onMineOnlyChange ? (
+        <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-border/70 bg-background/50 px-3 py-1.5 text-xs font-medium text-secondary-text select-none hover:text-foreground">
+          <input
+            type="checkbox"
+            checked={filters.mineOnly === true}
+            onChange={(event) => onMineOnlyChange(event.target.checked)}
+            className="h-3.5 w-3.5 accent-primary"
+          />
+          {t('history.mineOnly')}
+        </label>
+      ) : null}
       {RANGE_OPTIONS.map((option) => (
         <button
           key={option.value}
@@ -182,6 +199,7 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
   filters,
   onClose,
   onRangeChange,
+  onMineOnlyChange,
   onLoadMore,
   onSelectRecord,
   onRetry,
@@ -243,7 +261,7 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
                 {t('stockTrend.moreEmptyDescription')}
               </p>
             </div>
-            <RangeControls filters={filters} onRangeChange={onRangeChange} />
+            <RangeControls filters={filters} onRangeChange={onRangeChange} onMineOnlyChange={onMineOnlyChange} />
           </div>
         </Card>
       ) : (
@@ -277,7 +295,7 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <RangeControls filters={filters} onRangeChange={onRangeChange} />
+                <RangeControls filters={filters} onRangeChange={onRangeChange} onMineOnlyChange={onMineOnlyChange} />
                 {hasMore ? (
                   <Button
                     variant="secondary"
@@ -334,6 +352,7 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
                       >
                         <td className="whitespace-nowrap px-3 py-3 font-mono text-sm text-secondary-text">
                           {formatHistoryTime(item.createdAt)}
+                          <RequesterBadges info={item} className="mt-1 flex flex-wrap items-center gap-1" />
                         </td>
                         <td className="whitespace-nowrap px-3 py-3">
                           <Badge

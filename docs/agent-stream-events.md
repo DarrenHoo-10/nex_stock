@@ -119,7 +119,9 @@ Preparation/commit conflicts emit `error_code=session_state_conflict` without
 `accepted`, `done`, tool progress, or partial message/Skill/stock updates.
 The non-stream API returns HTTP 409 with an `error`/`message` JSON payload.
 Clients should preserve the draft and request an explicit refresh/retry, not
-automatically resend. A fixed clarification is a normal accepted user turn
+automatically resend. A session id that belongs to another user is treated as missing:
+the stream emits `error_code=session_not_found` (non-stream API: HTTP 404 with an
+`error`/`message` payload) before anything is accepted or written. A fixed clarification is a normal accepted user turn
 followed by `done` (`total_steps=0`), without analysis preparation or a model call.
 
 Failure, timeout, stop or disconnect after commit does not undo accepted state.

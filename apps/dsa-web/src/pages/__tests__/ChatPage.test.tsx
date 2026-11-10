@@ -4,6 +4,9 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-d
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { CurrentUserProvider } from '../../test-utils/currentUser';
+import { adminUser, regularUser } from '../../test-utils/currentUserFixtures';
+import type { CurrentUser } from '../../types/me';
 import { historyApi } from '../../api/history';
 import type { ActiveStockContext } from '../../api/agent';
 import type { Message, ProgressStep } from '../../stores/agentChatStore';
@@ -2174,5 +2177,57 @@ describe('watchlist button with code variants', () => {
       expect(mockRemoveFromWatchlist).toHaveBeenCalledWith('00700');
     });
     expect(mockAddToWatchlist).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChatPage in a multi-user deployment', () => {
+  function renderAs(user: CurrentUser | null) {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    return render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <CurrentUserProvider user={user}>
+          <ChatPage />
+        </CurrentUserProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('prompts a user without a model key and does not touch the administrator-only system config', async () => {
+    renderAs({ ...regularUser, modelKeyConfigured: false });
+
+    expect(await screen.findByTestId('model-key-banner')).toHaveTextContent('尚未配置你自己的模型 Key');
+    expect(screen.getByRole('link', { name: '去个人设置' })).toHaveAttribute('href', '/settings/personal');
+    expect(mockGetSystemConfig).not.toHaveBeenCalled();
+    expect(screen.queryByText('上下文压缩')).toBeNull();
+  });
+
+  it('turns a model_key_required refusal into the dedicated prompt with a settings link', async () => {
+    mockStoreState.chatError = createParsedApiError({
+      title: '请求失败',
+      message: 'No model configured',
+      status: 400,
+      category: 'http_error',
+      code: 'model_key_required',
+    });
+    renderAs(regularUser);
+
+    expect(await screen.findByText('需要先配置你自己的模型 Key')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '前往个人设置' })).toHaveAttribute('href', '/settings/personal');
+  });
+
+  it('keeps the context-compression switch for an administrator', async () => {
+    renderAs(adminUser);
+
+    expect(await screen.findByText('上下文压缩')).toBeInTheDocument();
+    await waitFor(() => expect(mockGetSystemConfig).toHaveBeenCalled());
+    expect(screen.queryByTestId('model-key-banner')).toBeNull();
+  });
+
+  it('is unchanged in local mode', async () => {
+    renderAs(null);
+
+    expect(await screen.findByText('上下文压缩')).toBeInTheDocument();
+    await waitFor(() => expect(mockGetSystemConfig).toHaveBeenCalled());
+    expect(screen.queryByTestId('model-key-banner')).toBeNull();
   });
 });

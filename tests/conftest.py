@@ -282,6 +282,11 @@ def _no_live_company_event_fetch(monkeypatch):
     except Exception:  # noqa: BLE001
         return
     monkeypatch.setattr(stock_event_service.StockEventService, "_needs_code_fetch", lambda self, code: False)
+    # In-process "already fetched" markers, per-user permits and shared fetchers must not leak between tests.
+    from src.services import capital_service, on_demand_fetch
+
+    on_demand_fetch.reset_for_tests()
+    capital_service.reset_cache_for_tests()
     # Screening reads the stored 重点监控名单; tests that need it restore the real method.
     monkeypatch.setattr(stock_event_service.StockEventService, "watched_codes", lambda self, as_of=None: {})
 

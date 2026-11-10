@@ -27,6 +27,7 @@ prompt can mark 「盘前建议调整」 without overwriting the plan.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 import uuid
@@ -99,19 +100,23 @@ def load_news_part(
     since: datetime,
     until: datetime,
     watchlist: Sequence[str],
+    user_id: Optional[str] = None,
 ) -> NewsPart:
-    """Digest + morning brief from ``news_digest_service``; any problem degrades to unavailable."""
+    """Digest + morning brief from ``news_digest_service``; any problem degrades to unavailable.
+
+    ``user_id`` (a non-primary user) hides announcements of codes outside that user's own watchlist / holdings."""
     try:
         from src.services.news_digest_service import build_news_digest, get_morning_brief
     except ImportError:
         logger.info("[PreopenPush] news_digest_service 不存在，资讯部分降级")
         return NewsPart(False, error="news_digest_service not installed")
     try:
-        items = list(build_news_digest(since=since, until=until, limit=NEWS_LIMIT) or [])
+        viewer = {"viewer_user_id": user_id} if user_id else {}
+        items = list(build_news_digest(since=since, until=until, limit=NEWS_LIMIT, **viewer) or [])
         watch_items: List[Dict[str, Any]] = []
         if watchlist:
             seen = {item.get("id") for item in items if item.get("id") is not None}
-            for item in build_news_digest(since=since, until=until, codes=list(watchlist), limit=NEWS_LIMIT) or []:
+            for item in build_news_digest(since=since, until=until, codes=list(watchlist), limit=NEWS_LIMIT, **viewer) or []:
                 if item.get("id") is None or item.get("id") not in seen:
                     watch_items.append(item)
         brief = None
@@ -295,24 +300,39 @@ def _norm_code(code: str) -> str:
 # ----------------------------------------------------------------------
 # the run
 # ----------------------------------------------------------------------
-def run_preopen_push(
+@dataclass
+class SharedPreopen:
+    """Inputs of one trading day's pre-open push that do not depend on a user's watchlist.
+
+    Computed once and handed to every user's run of the same scheduled batch (the US fetch writes ``stock_daily``
+    and is the expensive part), so N users do not mean N overnight fetches.
+    """
+
+    us_service: Any
+    us_result: UsOvernightResult
+    notes: List[str] = field(default_factory=list)
+    degraded: List[str] = field(default_factory=list)
+    resolution: BoardResolution = field(default_factory=BoardResolution)
+    crossed_ids: Sequence[int] = ()
+    members: Dict[int, Dict[str, str]] = field(default_factory=dict)
+    ingested_date: Optional[date] = None
+    repo: Any = None
+
+
+def build_shared_preopen(
     config: Any,
     *,
-    day: Optional[date] = None,
-    now: Optional[datetime] = None,
+    day: date,
+    now: datetime,
     us_service: Optional[UsOvernightService] = None,
     repo: Any = None,
-    news_loader: Callable[..., NewsPart] = load_news_part,
-    analyze_and_push: Optional[Callable[..., Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    """Overnight US -> context -> analysis with injected context -> push. Returns a status dict.
+    load_members: bool = True,
+) -> SharedPreopen:
+    """Overnight US (Eastmoney, yfinance fallback) and the board mapping with the members of the crossed boards.
 
-    Each stage degrades instead of raising: a failed US fetch falls back to the stored session, a
-    missing news module shows 「资讯暂不可用」, a missing board catalog only drops the board mapping.
-    ``status``: ``succeeded`` / ``partial`` (something degraded) / ``failed`` (nothing was pushed).
+    Each stage degrades instead of raising (see :func:`run_preopen_push`). ``load_members`` False skips reading
+    board members (nobody has a watchlist to match them against).
     """
-    now = now or datetime.now(timezone.utc)
-    day = day or now.astimezone(_CN_TZ).date()
     notes: List[str] = []
     degraded: List[str] = []
 
@@ -339,29 +359,81 @@ def run_preopen_push(
     elif not us_result.complete:
         degraded.append("us_partial")
 
-    # 2. board mapping, watchlist membership, stock names ----------------------------------
-    watchlist = _load_watchlist(config)
+    # 2. board mapping and the members of the boards the overnight leaders map to ----------------------------------
     resolution = BoardResolution()
     members: Dict[int, Dict[str, str]] = {}
-    names: Dict[str, str] = {}
+    crossed_ids: List[int] = []
+    ingested_date: Optional[date] = None
     try:
         repo = repo or _default_board_repo()
         resolution = resolve_leader_boards(us_service.leaders, repo.list_catalog())
-        crossed_ids = set(resolution.board_ids_for([m.symbol for m in us_result.crossed]))
-        if crossed_ids and watchlist:
+        crossed_ids = list(set(resolution.board_ids_for([m.symbol for m in us_result.crossed])))
+        if crossed_ids and load_members:
             all_members = repo.get_all_members_on(day)
             members = {bid: all_members.get(bid, {}) for bid in crossed_ids}
             ingested = repo.list_ingested_dates(upto=day, limit=1)
-            if ingested:
-                rows = repo.get_stock_rows(ingested[0], [_norm_code(c) for c in watchlist])
-                names = {code: row.get("name") for code, row in rows.items() if row.get("name")}
+            ingested_date = ingested[0] if ingested else None
     except Exception as exc:  # noqa: BLE001 - boards are optional context
         logger.warning("[PreopenPush] 板块映射 / 成分读取失败: %s", exc, exc_info=True)
         degraded.append("boards")
         notes.append("板块映射暂不可用")
+    return SharedPreopen(
+        us_service=us_service, us_result=us_result, notes=notes, degraded=degraded, resolution=resolution,
+        crossed_ids=crossed_ids, members=members, ingested_date=ingested_date, repo=repo,
+    )
 
-    # 3. news digest (previous trading day 15:00 China time -> now) ------------------------
+
+def run_preopen_push(
+    config: Any,
+    *,
+    day: Optional[date] = None,
+    now: Optional[datetime] = None,
+    us_service: Optional[UsOvernightService] = None,
+    repo: Any = None,
+    news_loader: Callable[..., NewsPart] = load_news_part,
+    analyze_and_push: Optional[Callable[..., Dict[str, Any]]] = None,
+    shared: Optional[SharedPreopen] = None,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Overnight US -> context -> analysis with injected context -> push. Returns a status dict.
+
+    Each stage degrades instead of raising: a failed US fetch falls back to the stored session, a
+    missing news module shows 「资讯暂不可用」, a missing board catalog only drops the board mapping.
+    ``status``: ``succeeded`` / ``partial`` (something degraded) / ``failed`` (nothing was pushed).
+
+    ``user_id`` (a non-primary user; ``config`` is then that user's config view) runs the push for that user: their
+    watchlist, their model, their own channels. ``shared`` is the batch-wide :class:`SharedPreopen` (computed here
+    when absent, i.e. for the primary user's own run).
+    """
+    now = now or datetime.now(timezone.utc)
+    day = day or now.astimezone(_CN_TZ).date()
+
+    watchlist = _load_watchlist(config) if user_id is None else _load_watchlist(config, user_id)
+    if shared is None:
+        shared = build_shared_preopen(
+            config, day=day, now=now, us_service=us_service, repo=repo, load_members=bool(watchlist),
+        )
+    us_service, us_result, resolution = shared.us_service, shared.us_result, shared.resolution
+    notes: List[str] = list(shared.notes)
+    degraded: List[str] = list(shared.degraded)
+
+    # 2. stock names of this user's watchlist (the board members themselves are shared) ----------------------------
+    names: Dict[str, str] = {}
+    if shared.crossed_ids and watchlist and shared.ingested_date is not None:
+        try:
+            rows = shared.repo.get_stock_rows(shared.ingested_date, [_norm_code(c) for c in watchlist])
+            names = {code: row.get("name") for code, row in rows.items() if row.get("name")}
+        except Exception as exc:  # noqa: BLE001 - boards are optional context
+            logger.warning("[PreopenPush] 板块映射 / 成分读取失败: %s", exc, exc_info=True)
+            if "boards" not in degraded:
+                degraded.append("boards")
+                notes.append("板块映射暂不可用")
+    members = shared.members if watchlist else {}
+
+    # 3. news digest (previous trading day 15:00 China time -> now) ------------------------------------------------
     since = news_since(day)
+    if user_id and news_loader is load_news_part:
+        news_loader = functools.partial(load_news_part, user_id=user_id)
     news = news_loader(day, since, now.astimezone(_CN_TZ), watchlist)
     if not news.available:
         degraded.append("news")
@@ -372,7 +444,9 @@ def run_preopen_push(
     )
 
     # 4. existing analysis with the context injected, then the labelled push ---------------
-    outcome = (analyze_and_push or _analyze_and_push)(config, watchlist, context, day, now)
+    if analyze_and_push is None:
+        analyze_and_push = _analyze_and_push if user_id is None else functools.partial(_analyze_and_push, user_id=user_id)
+    outcome = analyze_and_push(config, watchlist, context, day, now)
     if not outcome.get("analyzed"):
         degraded.append("analysis")
     if not outcome.get("pushed"):
@@ -388,14 +462,12 @@ def run_preopen_push(
     }
 
 
-def _load_watchlist(config: Any) -> List[str]:
-    refresh = getattr(config, "refresh_stock_list", None)
-    if callable(refresh):
-        try:
-            refresh()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[PreopenPush] 刷新 STOCK_LIST 失败: %s", exc)
-    return list(getattr(config, "stock_list", None) or [])
+def _load_watchlist(config: Any, user_id: Optional[str] = None) -> List[str]:
+    """The watchlist of the run's user: the primary user's (``.env``) unless ``user_id`` names another user."""
+    from src.config import get_primary_user_id
+    from src.services.watchlist_service import WatchlistService
+
+    return WatchlistService(config=config).list_codes(user_id or get_primary_user_id())
 
 
 def _default_board_repo() -> Any:
@@ -423,8 +495,15 @@ def _open_codes(config: Any, codes: Sequence[str]) -> List[str]:
         return list(codes)
 
 
-def _analyze_and_push(config: Any, watchlist: Sequence[str], context: PreopenContext, day: date, now: datetime) -> Dict[str, Any]:
-    """Run ``StockAnalysisPipeline`` for the watchlist with ``context.section`` injected, push 「盘前版」."""
+def _analyze_and_push(
+    config: Any, watchlist: Sequence[str], context: PreopenContext, day: date, now: datetime,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run ``StockAnalysisPipeline`` for the watchlist with ``context.section`` injected, push 「盘前版」.
+
+    For a non-primary ``user_id`` the pipeline runs on that user's config view (their model and search keys) and its
+    notifier is the user's personal one, so the push reaches their own channels only.
+    """
     from src.core.pipeline import StockAnalysisPipeline
 
     codes = _open_codes(config, watchlist)
@@ -437,6 +516,7 @@ def _analyze_and_push(config: Any, watchlist: Sequence[str], context: PreopenCon
         daily_market_context_enabled=bool(getattr(config, "daily_market_context_enabled", True)),
         daily_market_context_allow_generate=False,
         extra_context_section=context.section,
+        **({"user_id": user_id} if user_id else {}),
     )
     results: List[Any] = []
     if codes:

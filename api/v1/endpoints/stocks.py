@@ -18,7 +18,7 @@ import re
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, Depends
 
-from api.deps import get_system_config_service
+from api.deps import CurrentUser, get_current_user, get_system_config_service
 
 from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
@@ -53,13 +53,18 @@ from src.services.import_parser import (
     parse_import_from_bytes,
     parse_import_from_text,
 )
+from src.services.on_demand_fetch import OnDemandFetchLimited
 from src.services.stock_code_guard import LegacyBseCodeError, resolve_bse_code
 from src.services.stock_service import StockService
 from src.services.stock_profile_service import InvalidStockProfileCode, StockProfileService
 from src.services.run_diagnostics import sanitize_diagnostic_text
-from src.services.stock_list_parser import split_stock_list
 from src.services.system_config_service import SystemConfigService
+from src.services.user_config_service import get_user_config, require_usable_model
+from src.services.watchlist_service import WatchlistService
 from data_provider.base import normalize_stock_code
+from src.config import get_primary_user_id
+from src.llm.credentials_guard import ModelKeyRequiredError
+from src.utils.url_safety import UnsafeUrlError
 
 logger = logging.getLogger(__name__)
 
@@ -67,29 +72,6 @@ router = APIRouter()
 
 # 须在 /{stock_code} 路由之前定义
 ALLOWED_MIME_STR = ", ".join(ALLOWED_MIME)
-
-
-def _read_watchlist_codes(service: SystemConfigService) -> list:
-    """Read STOCK_LIST codes as-is (no normalization)."""
-    config_data = service.get_config(include_schema=False)
-    stock_list_str = ""
-    for item in config_data.get("items", []):
-        if item.get("key") == "STOCK_LIST":
-            stock_list_str = str(item.get("value", ""))
-            break
-    return split_stock_list(stock_list_str)
-
-
-def _write_watchlist_codes(service: SystemConfigService, codes: list) -> None:
-    """Persist stock codes to STOCK_LIST as-is (no normalization)."""
-    config_data = service.get_config(include_schema=False)
-    config_version = config_data.get("config_version", "")
-    service.update(
-        config_version=config_version,
-        items=[{"key": "STOCK_LIST", "value": ",".join(codes)}],
-        mask_token="******",
-        reload_now=True,
-    )
 
 
 # Stock code validation patterns (aligned with frontend validateStockCode)
@@ -131,14 +113,6 @@ def _validate_and_normalize_stock_code(code: str) -> str:
     return normalize_stock_code(stripped)
 
 
-def _watchlist_match_key(code: str) -> str:
-    """Return the equivalence key used for watchlist add/remove matching."""
-    normalized = normalize_stock_code(code.strip())
-    if re.fullmatch(r"\d{5}", normalized):
-        return f"HK{normalized}"
-    return normalized.upper()
-
-
 @router.post(
     "/extract-from-image",
     response_model=ExtractFromImageResponse,
@@ -153,12 +127,18 @@ def _watchlist_match_key(code: str) -> str:
 def extract_from_image(
     file: Optional[UploadFile] = File(None, description="图片文件（表单字段名 file）"),
     include_raw: bool = Query(False, description="是否在结果中包含原始 LLM 响应"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ExtractFromImageResponse:
     """
     从上传的图片中提取股票代码（使用 Vision LLM）。
 
     表单字段请使用 file 上传图片。优先级：Gemini / Anthropic / OpenAI（首个可用）。
+    非主用户使用自己的模型 Key；没有时返回 400 ``model_key_required``。
     """
+    # Gate before the upload is even read: a user without a model of their own never reaches a provider.
+    vision_config = None
+    if isinstance(user, CurrentUser) and user.user_id != get_primary_user_id():
+        vision_config = require_usable_model(get_user_config(user.user_id))
     if not file or not file.filename:
         raise HTTPException(
             status_code=400,
@@ -196,7 +176,10 @@ def extract_from_image(
         )
 
     try:
-        items, raw_text = extract_stock_codes_from_image(data, content_type)
+        if vision_config is not None:
+            items, raw_text = extract_stock_codes_from_image(data, content_type, config=vision_config)
+        else:
+            items, raw_text = extract_stock_codes_from_image(data, content_type)
         extract_items = [
             ExtractItem(code=code, name=name, confidence=conf) for code, name, conf in items
         ]
@@ -206,6 +189,8 @@ def extract_from_image(
             items=extract_items,
             raw_text=raw_text if include_raw else None,
         )
+    except (ModelKeyRequiredError, UnsafeUrlError):
+        raise  # mapped to 400 model_key_required / unsafe_url by the global error handlers
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": "extract_failed", "message": str(e)})
     except Exception as e:
@@ -342,13 +327,14 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取自选队列",
-    description="返回当前 STOCK_LIST 配置中的所有股票代码。",
+    description="返回当前用户的自选股票代码（主用户即 STOCK_LIST 配置，其他用户存数据库）。",
 )
 def get_watchlist(
     service: SystemConfigService = Depends(get_system_config_service),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WatchlistResponse:
     try:
-        codes = _read_watchlist_codes(service)
+        codes = WatchlistService(config_service=service).list_codes(user.user_id)
         return WatchlistResponse(stock_codes=codes, message=f"当前自选 {len(codes)} 只股票")
     except Exception as e:
         logger.error(f"获取自选队列失败: {e}", exc_info=True)
@@ -367,11 +353,12 @@ def get_watchlist(
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="加入自选队列",
-    description="将指定股票代码加入 STOCK_LIST。",
+    description="将指定股票代码加入当前用户的自选。",
 )
 def add_to_watchlist(
     request: WatchlistRequest,
     service: SystemConfigService = Depends(get_system_config_service),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WatchlistResponse:
     try:
         validated = _validate_and_normalize_stock_code(request.stock_code)
@@ -382,12 +369,8 @@ def add_to_watchlist(
             raise HTTPException(status_code=400, detail={"error": "legacy_bse_code", "message": str(exc)})
         if renamed != validated:
             # Old 北交所 codes return frozen quotes in some sources: store the new code.
-            validated, entered = renamed, renamed
-        codes = _read_watchlist_codes(service)
-        existing_keys = [_watchlist_match_key(c) for c in codes]
-        if _watchlist_match_key(validated) not in existing_keys:
-            codes.append(entered)
-            _write_watchlist_codes(service, codes)
+            entered = renamed
+        codes, _ = WatchlistService(config_service=service).add(user.user_id, entered)
         note = f"（{request.stock_code.strip()} 是北交所旧代码，已换成新代码）" if entered != request.stock_code.strip() else ""
         return WatchlistResponse(stock_codes=codes, message=f"已加入 {entered}{note}")
     except HTTPException:
@@ -409,21 +392,16 @@ def add_to_watchlist(
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="从自选队列删除",
-    description="从 STOCK_LIST 中移除指定股票代码。",
+    description="从当前用户的自选中移除指定股票代码。",
 )
 def remove_from_watchlist(
     request: WatchlistRequest,
     service: SystemConfigService = Depends(get_system_config_service),
+    user: CurrentUser = Depends(get_current_user),
 ) -> WatchlistResponse:
     try:
-        validated = _validate_and_normalize_stock_code(request.stock_code)
-        codes = _read_watchlist_codes(service)
-        existing_keys = [_watchlist_match_key(c) for c in codes]
-        requested_key = _watchlist_match_key(validated)
-        if requested_key in existing_keys:
-            idx = existing_keys.index(requested_key)
-            codes.pop(idx)
-            _write_watchlist_codes(service, codes)
+        _validate_and_normalize_stock_code(request.stock_code)
+        codes, _ = WatchlistService(config_service=service).remove(user.user_id, request.stock_code)
         return WatchlistResponse(stock_codes=codes, message=f"已移除 {request.stock_code.strip()}")
     except HTTPException:
         raise
@@ -448,12 +426,13 @@ def remove_from_watchlist(
 def get_stock_profile(
     stock_code: str,
     history_days: int = Query(60, ge=1, le=365, description="日线历史天数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockProfileResponse:
     """Return partial profile data without failing on one optional block."""
     _validate_and_normalize_stock_code(stock_code)
     try:
         return StockProfileResponse(
-            **StockProfileService().get_profile(stock_code, history_days=history_days)
+            **StockProfileService(user_id=user.user_id).get_profile(stock_code, history_days=history_days)
         )
     except InvalidStockProfileCode:
         raise HTTPException(
@@ -654,6 +633,7 @@ def get_stock_events(
     stock_code: str,
     kinds: Optional[str] = Query(None, description="逗号分隔的事件类型，留空返回全部"),
     days: int = Query(30, ge=1, le=120, description="回看天数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockEventsResponse:
     from src.services.stock_code_guard import require_stock_code
     from src.services.stock_event_service import KIND_LABELS, StockEventService
@@ -670,7 +650,7 @@ def get_stock_events(
             detail={"error": "invalid_kind", "message": f"未知事件类型：{', '.join(unknown)}"},
         )
     try:
-        result = StockEventService().events_for(code, kinds=wanted, days=days)
+        result = StockEventService(**_on_demand_kwargs(user)).events_for(code, kinds=wanted, days=days)
     except Exception as e:
         logger.error(f"获取公司事件失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取公司事件失败"})
@@ -681,6 +661,23 @@ def get_stock_events(
                 for event in result["events"] if event["kind"] in KIND_LABELS],
         risks=result["risks"],
         fetch=result["fetch"],
+    )
+
+
+def _on_demand_kwargs(user: CurrentUser) -> dict:
+    """Constructor kwargs of the services that fetch from external sources on demand.
+
+    The primary user is passed nothing (unlimited, system credentials: exactly as before multi-user); anyone else
+    is named so their own data-source token is used when set and their fetches are rate limited
+    (``src/services/on_demand_fetch.py``).
+    """
+    return {} if user.user_id == get_primary_user_id() else {"user_id": user.user_id}
+
+
+def _on_demand_limited(exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail={"error": "rate_limited", "message": "按需取数次数已达每小时上限，请稍后再试"},
     )
 
 
@@ -711,12 +708,13 @@ def _require_a_share(stock_code: str) -> str:
 def get_stock_research(
     stock_code: str,
     days: int = Query(90, ge=7, le=120, description="回看天数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockResearchResponse:
     from src.services.stock_event_service import KIND_LABELS, StockEventService, research_summary
 
     code = _require_a_share(stock_code)
     try:
-        service = StockEventService()
+        service = StockEventService(**_on_demand_kwargs(user))
         result = service.events_for(code, kinds=("research",), days=days)
     except Exception as e:
         logger.error(f"获取券商研报失败: {e}", exc_info=True)
@@ -751,18 +749,20 @@ def get_stock_research(
 def get_stock_capital(
     stock_code: str,
     days: int = Query(20, ge=5, le=60, description="两融回看交易日数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockCapitalResponse:
     from src.services.capital_service import CapitalService
     from src.services.stock_event_service import KIND_LABELS
 
     code = _require_a_share(stock_code)
-    result = CapitalService().overview(code, days=days)
+    result = CapitalService(**_on_demand_kwargs(user)).overview(code, days=days)
     result["dragon_tiger"] = [StockEventItem(**{**event, "kind_label": KIND_LABELS["dragon_tiger"]})
                               for event in result["dragon_tiger"]]
     return StockCapitalResponse(**result)
 
 
 _QA_REFRESH_HOURS = 6
+_QA_FAILURE_RETRY_SECONDS = 600
 
 
 @router.get(
@@ -783,12 +783,16 @@ _QA_REFRESH_HOURS = 6
 def get_stock_qa(
     stock_code: str,
     days: int = Query(30, ge=1, le=60, description="回看天数"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockQaResponse:
     import json as _json
     from datetime import timedelta as _timedelta
 
     from src.repositories.intelligence_repo import IntelligenceRepository
+    from src.services.news_akshare_source import normalize_a_share_code
+    from src.services.news_digest_service import viewer_announcement_codes
     from src.services.news_pool_service import NewsPoolService, china_now
+    from src.services.on_demand_fetch import allow_on_demand_fetch, checked_recently, mark_checked
     from src.services.sources.investor_qa import route
     from src.services.stock_code_guard import require_stock_code
 
@@ -810,12 +814,25 @@ def get_stock_qa(
         def stored():
             return repo.list_stock_news(code=code, since=since, kinds=("qa",), limit=100)
 
-        rows = stored()
-        fetched_at = max((row.fetched_at for row in rows if row.fetched_at), default=None)
+        # The pool holds Q&A fetched because some user follows the code. The primary user and a user who follows the
+        # code see the pool as is (the system job keeps it fresh). For anyone else, whether rows are already stored
+        # or fresh would reveal who follows the code, so their view depends on their own fetch only: nothing stored
+        # is shown or counted as fresh until they have refreshed this code themselves (marker per viewer).
+        own_codes = viewer_announcement_codes(user.user_id)
+        shared_view = own_codes is None or normalize_a_share_code(code) in own_codes
+        marker = f"qa:{code}" if shared_view else f"qa:{user.user_id}:{code}"
+        rows = stored() if shared_view or checked_recently(marker) else []
+        fetched_at = max((row.fetched_at for row in rows if row.fetched_at), default=None) if shared_view else None
         fetch: dict = {}
-        if fetched_at is None or now - fetched_at > _timedelta(hours=_QA_REFRESH_HOURS):
-            fetch = NewsPoolService(repo).fetch_qa_for_codes([code], now=now, since=since)
-            rows = stored()
+        # A stock without any answered Q&A has no ``fetched_at`` either, so "checked" is remembered separately.
+        stale = fetched_at is None or now - fetched_at > _timedelta(hours=_QA_REFRESH_HOURS)
+        if stale and not checked_recently(marker):
+            if not allow_on_demand_fetch(_on_demand_kwargs(user).get("user_id")):
+                fetch = {"status": "rate_limited", "error": "按需取数次数已达上限，先显示已存储的数据"}
+            else:
+                fetch = NewsPoolService(repo).fetch_qa_for_codes([code], now=now, since=since)
+                mark_checked(marker, _QA_REFRESH_HOURS * 3600 if fetch.get("status") != "failed" else _QA_FAILURE_RETRY_SECONDS)
+                rows = stored()
     except Exception as e:
         logger.error(f"获取投资者问答失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取投资者问答失败"})
@@ -839,9 +856,13 @@ def get_stock_qa(
 @router.get("/{stock_code}/opening-auction", response_model=OpeningAuctionResponse)
 def get_opening_auction(
     stock_code: str, date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> OpeningAuctionResponse:
     try:
-        result = get_intraday_snapshot_service().get_opening_auction(stock_code, date)
+        # The primary user may use the system's ashareapi key; everyone else gets the free sources only.
+        result = get_intraday_snapshot_service().get_opening_auction(stock_code, date, **_on_demand_kwargs(user))
+    except OnDemandFetchLimited as exc:
+        raise _on_demand_limited(exc)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="股票代码或交易日期无效") from exc
     return OpeningAuctionResponse(**result)
@@ -871,9 +892,12 @@ def get_opening_auction(
 def get_stock_intraday(
     stock_code: str,
     date: str = Query(..., description="交易日 YYYY-MM-DD", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StockIntradayResponse:
     try:
-        result = get_intraday_snapshot_service().get_session_bars(stock_code, date)
+        result = get_intraday_snapshot_service().get_session_bars(stock_code, date, **_on_demand_kwargs(user))
+    except OnDemandFetchLimited as exc:
+        raise _on_demand_limited(exc)
     except ValueError as e:
         raise HTTPException(
             status_code=422,

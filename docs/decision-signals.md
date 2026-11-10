@@ -79,6 +79,13 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 
 这些接口继承现有 `/api/v1/*` 管理员鉴权；`ADMIN_AUTH_ENABLED=true` 时需要有效管理员会话 Cookie。
 
+### 多用户可见性
+
+- 来自**私有报告**（带持仓上下文生成的报告，见 [完整指南](full-guide.md) 的历史接口说明）的信号只属于其发起人（`decision_signals.owner_user_id`），其余信号共享。主用户的持仓分析信号也不再是共享信号。
+- 上面所有读接口（列表、`latest`、详情、后验结果 / 统计、单票复盘、反馈）只返回共享信号和请求人自己的信号；写接口（反馈、状态、重评估）对别人的私有信号按不存在处理（404）。`outcomes/run` 是对全站信号的系统维护任务，只回显请求人可见的条目。
+- 新信号只会使**同所有者**的相反 active 信号失效：一个用户的私有信号不会让共享信号失效，共享信号也不会改变别人的私有信号。
+- 单人 `local` 部署（只有主用户）看到的内容不变，只是持仓分析信号现在只有主用户本人能看到。
+
 ## 决策风格历史表现
 
 #1758 在现有 `GET /api/v1/decision-signals/outcomes/stats` 响应中追加 `profile_calibration`，没有新增 endpoint、数据库表、配置项或行情请求。旧的全局统计字段和八类单维 breakdown 保持原口径；一条样本仍是一条 `(signal_id, horizon, engine_version)` outcome 记录，同一信号的不同复盘周期会分别计数，不能理解成独立信号数量。
@@ -208,7 +215,8 @@ Web 入口位于 `/decision-signals`：
 ## 告警、通知与组合风险
 
 - 股票级真实告警触发会优先关联同标的 latest active 信号，并把低敏 `decision_signal_summary` 写入 `alert_triggers.diagnostics`。
-- 没有 active 信号时，告警 worker 只创建最小 `source_type=alert/action=alert` 信号。
+- 没有 active 信号时，告警 worker 只创建最小 `source_type=alert/action=alert` 信号；非主用户的规则和 `portfolio_holdings` 规则（持仓展开）创建的信号归规则所有者（`owner_user_id`），其余仍为共享。
+- `AGENT_MEMORY_ENABLED=true` 时 Agent 记忆只读共享报告 / 信号，私有（持仓）报告和信号不会进入可能被共享的报告。
 - 告警信号的 `trace_id=alert-rule-<hash>` 只用于同源重试的 best-effort 去重，不覆盖 active 信号本体。
 - 通知只引用公开摘要字段：`action`、`horizon`、`reason`、`watch_conditions`、`risk_summary`、`source_report_id`。
 - 通知中的 `reason` 在脱敏后完整展示，避免固定字符数在句中截断；`watch_conditions` 和 `risk_summary` 仍保持紧凑摘要上限。

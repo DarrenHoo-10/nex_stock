@@ -2,6 +2,9 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
+import { CurrentUserProvider } from '../../../test-utils/currentUser';
+import { adminUser, regularUser } from '../../../test-utils/currentUserFixtures';
+import type { CurrentUser } from '../../../types/me';
 import { usePlanUiStore } from '../../../stores/planUiStore';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { PlanPageHeader } from '../PlanPageHeader';
@@ -105,6 +108,48 @@ describe('RunStatusCapsule / PlanPageHeader', () => {
     expect(button).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(button);
     expect(usePlanUiStore.getState().assistantOpen).toBe(true);
+    await screen.findByText('还没有运行记录');
+  });
+});
+
+describe('PlanShell in a multi-user deployment', () => {
+  function renderAs(user: CurrentUser) {
+    return render(
+      <UiLanguageProvider>
+        <CurrentUserProvider user={user}>
+          <MemoryRouter initialEntries={['/mine']}>
+            <Routes>
+              <Route element={<PlanShell />}>
+                <Route path="/mine" element={<PlanPageHeader title="我的股票" />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </CurrentUserProvider>
+      </UiLanguageProvider>,
+    );
+  }
+  const hrefs = () =>
+    Array.from(screen.getByRole('navigation', { name: '主导航' }).querySelectorAll('a')).map((link) =>
+      link.getAttribute('href'),
+    );
+
+  it('shows who is signed in and hides the screening run page from a regular user', async () => {
+    getLatestRun.mockResolvedValue(null);
+    renderAs(regularUser);
+
+    expect(screen.getByTestId('current-user-badge')).toHaveTextContent('Alice');
+    expect(screen.getByTestId('current-user-badge')).toHaveTextContent('普通用户');
+    // 选股 (screening run) is administrator-only; settings become the personal settings.
+    expect(hrefs()).toEqual(['/boards', '/mine', '/closing-analysis', '/assistant', '/settings/personal']);
+    await screen.findByText('还没有运行记录');
+  });
+
+  it('keeps the full navigation and the system preferences for an administrator', async () => {
+    getLatestRun.mockResolvedValue(null);
+    renderAs(adminUser);
+
+    expect(screen.getByTestId('current-user-badge')).toHaveTextContent('管理员');
+    expect(hrefs()).toEqual(['/boards', '/picks', '/mine', '/closing-analysis', '/assistant', '/preferences']);
     await screen.findByText('还没有运行记录');
   });
 });

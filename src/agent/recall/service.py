@@ -7,6 +7,7 @@ are reported through the returned status or logged, never raised.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -320,5 +321,137 @@ def reset_recall_service() -> None:
     global _service, _service_key
     with _service_lock:
         previous, _service, _service_key = _service, None, None
+        user_services = list(_user_services.values())
+        _user_services.clear()
     if previous is not None:
         previous.shutdown()
+    for _key, user_service in user_services:
+        user_service.shutdown()
+
+
+# -- per-user services (multi-user, docs/design/multi-user.md 3.3) ---------------------------
+
+# user_id -> (config key, service). One service per non-primary user; never shared between users.
+_user_services: "dict[str, Tuple[tuple, RecallService]]" = {}
+_USER_BANK_FALLBACK_BASE = "dsa"
+
+
+def derive_user_bank_id(base_bank_id: str, user_id: str) -> str:
+    """Memory bank of ``user_id`` on a Hindsight server shared by several users.
+
+    ``<HINDSIGHT_BANK_ID>-u-<first 16 hex of sha256(user_id)>``: deterministic (the same user always reads
+    the bank their turns were retained in), URL-safe whatever the user id contains, and different for
+    every user. Without a system bank id the base is ``dsa``.
+    """
+    digest = hashlib.sha256((user_id or "").encode("utf-8")).hexdigest()[:16]
+    base = (base_bank_id or "").strip() or _USER_BANK_FALLBACK_BASE
+    return f"{base}-u-{digest}"
+
+
+def _normalized_server(url: str) -> Optional[Tuple[str, int]]:
+    """``(host, port)`` of a server URL with case, a trailing dot and the scheme's default port normalised.
+
+    Scheme and path are deliberately not part of the identity: ``https://host/.``, ``https://host/x/..`` and
+    ``https://host`` are the same server, and one machine port does not become another server by the path.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit((url or "").strip())
+        host = (parts.hostname or "").lower().rstrip(".")
+        scheme = (parts.scheme or "").lower()
+        port = parts.port or {"http": 80, "https": 443}.get(scheme, 0)
+    except ValueError:
+        return None
+    if not host:
+        return None
+    return host, port
+
+
+def same_hindsight_server(url: str, system_url: str) -> bool:
+    """Whether ``url`` names the system Hindsight server (same host and port, whatever the case / path / slashes)."""
+    mine, system = _normalized_server(url), _normalized_server(system_url)
+    return mine is not None and mine == system
+
+
+def user_recall_settings(user_id: str, view: Any) -> dict:
+    """Effective recall settings of a non-primary user (a mapping ``create_recall_provider`` understands).
+
+    * Own Hindsight endpoint (the user saved their own ``HINDSIGHT_BASE_URL``): their URL, key and bank
+      (a derived bank when they left the bank blank), after a call-time SSRF check of the URL. Redirects are
+      never followed (a user-supplied host must not bounce the request, with its bearer key, elsewhere).
+    * Otherwise the system Hindsight: the server's URL and key, but always a per-user derived bank. A
+      bank id the user typed is ignored here, otherwise two users could point at the same bank. This also
+      applies when the user's URL *is* the system URL (:func:`same_hindsight_server`): typing the system address
+      is not an own endpoint, so neither a typed bank id nor a typed key reaches the system server (the key
+      would be useless there, the bank id would let the user read / write another user's, or the primary's, bank).
+    * Provider ``none`` / nothing configured: recall disabled.
+
+    Residual: a different DNS name that merely resolves to the same server is not recognised as the system one
+    (hosts are not compared by address: a shared CDN address would misclassify innocent users); the system
+    Hindsight is expected to authenticate with ``HINDSIGHT_API_KEY``, which a user does not have.
+    """
+    from src.config import get_config
+    from src.repositories.user_repo import UserRepository
+
+    system = get_config()
+    provider = str(_read(view, "assistant_recall_provider", NONE_PROVIDER_ID) or NONE_PROVIDER_ID).strip().lower()
+    settings = {
+        "assistant_recall_provider": provider,
+        "assistant_recall_timeout_s": _read(view, "assistant_recall_timeout_s", 2.0),
+        "assistant_recall_mask_amounts": _read(view, "assistant_recall_mask_amounts", True),
+        "hindsight_base_url": "",
+        "hindsight_api_key": None,
+        "hindsight_bank_id": "",
+    }
+    if provider == NONE_PROVIDER_ID:
+        return settings
+    own_keys = {row["key"] for row in UserRepository().list_settings(user_id)}
+    system_url = str(_read(system, "hindsight_base_url", "") or "").strip()
+    system_bank = str(_read(system, "hindsight_bank_id", "") or "").strip()
+    own_url = str(_read(view, "hindsight_base_url", "") or "").strip() if "HINDSIGHT_BASE_URL" in own_keys else ""
+    if own_url and not same_hindsight_server(own_url, system_url):
+        base_url = own_url
+        try:
+            from src.utils.url_safety import assert_public_https_url
+
+            assert_public_https_url(base_url)
+        except Exception as exc:  # unsafe or unresolvable: recall off for this user, never the system server
+            logger.warning("Hindsight URL of user %s refused: %s", user_id, exc)
+            settings["assistant_recall_provider"] = NONE_PROVIDER_ID
+            return settings
+        settings["hindsight_base_url"] = base_url
+        settings["hindsight_api_key"] = _read(view, "hindsight_api_key", None)
+        own_bank = str(_read(view, "hindsight_bank_id", "") or "").strip()
+        settings["hindsight_bank_id"] = own_bank or derive_user_bank_id("", user_id)
+        settings["hindsight_allow_redirects"] = False
+        return settings
+    if not system_url or not system_bank:
+        settings["assistant_recall_provider"] = NONE_PROVIDER_ID  # system Hindsight not set up
+        return settings
+    settings["hindsight_base_url"] = system_url
+    settings["hindsight_api_key"] = _read(system, "hindsight_api_key", None)
+    settings["hindsight_bank_id"] = derive_user_bank_id(system_bank, user_id)
+    return settings
+
+
+def get_user_recall_service(user_id: str, view: Any) -> RecallService:
+    """Recall service of one non-primary user (see :func:`user_recall_settings`); rebuilt when it changes."""
+    settings = user_recall_settings(user_id, view)
+    key = _config_key(settings)
+    with _service_lock:
+        cached = _user_services.get(user_id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        service = RecallService(
+            create_recall_provider(settings),
+            timeout_s=resolve_recall_timeout_s(settings),
+            mask_amounts=bool(_read(settings, "assistant_recall_mask_amounts", True)),
+        )
+        _user_services[user_id] = (key, service)
+        if cached is not None:
+            previous = cached[1]
+            threading.Thread(
+                target=lambda: (previous.wait_idle(60.0), previous.shutdown()), daemon=True,
+            ).start()
+        return service

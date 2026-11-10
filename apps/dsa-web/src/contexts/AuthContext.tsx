@@ -1,44 +1,28 @@
 import type React from 'react';
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useState } from 'react';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { authApi, type AuthMode } from '../api/auth';
+import { meApi } from '../api/me';
+import type { CurrentUser } from '../types/me';
+import { AuthContext, type AuthContextValue, type UserCenterSession } from './authState';
 import { useStockPoolStore } from '../stores';
 import { setUserCenterSession } from '../utils/userCenterSession';
 
-/** Session facts from `GET /api/session` (AUTH_MODE=user_center). */
-export type UserCenterSession = {
-  /** The user center knows this browser session. */
-  authenticated: boolean;
-  /** The session also holds the required role (admin); only then is the app usable. */
-  authorized: boolean;
-  username: string | null;
-  role: string | null;
-  loginUrl: string;
-  logoutUrl: string;
-};
+export type { UserCenterSession } from './authState';
 
-type AuthContextValue = {
-  authMode: AuthMode;
-  /** Null outside user_center mode. */
-  userCenter: UserCenterSession | null;
-  authEnabled: boolean;
-  loggedIn: boolean;
-  passwordSet: boolean;
-  passwordChangeable: boolean;
-  setupState: 'enabled' | 'password_retained' | 'no_password';
-  isLoading: boolean;
-  loadError: ParsedApiError | null;
-  login: (password: string, passwordConfirm?: string) => Promise<{ success: boolean; error?: ParsedApiError }>;
-  changePassword: (
-    currentPassword: string,
-    newPassword: string,
-    newPasswordConfirm: string
-  ) => Promise<{ success: boolean; error?: ParsedApiError }>;
-  logout: () => Promise<void>;
-  refreshStatus: () => Promise<void>;
-};
-
-const AuthContext = createContext<AuthContextValue | null>(null);
+/** `/me` could not be read: fall back to what the user-center session itself says (role decides admin). */
+function currentUserFromSession(session: { username: string | null; role: string | null }): CurrentUser {
+  const name = session.username ?? '';
+  return {
+    userId: name,
+    handle: name,
+    displayName: name,
+    role: session.role ?? 'user',
+    isAdmin: session.role === 'admin',
+    authMode: 'user_center',
+    modelKeyConfigured: true,
+  };
+}
 
 function extractLoginError(err: unknown): ParsedApiError {
   const parsed = getParsedApiError(err);
@@ -57,6 +41,7 @@ function extractLoginError(err: unknown): ParsedApiError {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [authMode, setAuthMode] = useState<AuthMode>('local');
   const [userCenter, setUserCenter] = useState<UserCenterSession | null>(null);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [authEnabled, setAuthEnabled] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
   const [passwordSet, setPasswordSet] = useState(false);
@@ -83,6 +68,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           loginUrl: session.loginUrl,
           logoutUrl: session.logoutUrl,
         });
+        if (session.authorized) {
+          // One /me per session load: it decides admin gating and the model-key prompts before the first page renders.
+          try {
+            setCurrentUser(await meApi.getMe());
+          } catch {
+            setCurrentUser(currentUserFromSession(session));
+          }
+        } else {
+          setCurrentUser(null);
+        }
         setAuthEnabled(true);
         setLoggedIn(session.authorized);
         setPasswordSet(false);
@@ -96,6 +91,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUserCenterSession(null);
       setAuthMode('local');
       setUserCenter(null);
+      setCurrentUser(null);
       setAuthEnabled(status.authEnabled);
       setLoggedIn(status.loggedIn);
       setPasswordSet(status.passwordSet ?? false);
@@ -109,6 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUserCenterSession(null);
       setAuthMode('local');
       setUserCenter(null);
+      setCurrentUser(null);
       setAuthEnabled(false);
       setLoggedIn(false);
       setPasswordSet(false);
@@ -123,6 +120,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void fetchStatus();
   }, [fetchStatus]);
+
+  const refreshCurrentUser = useCallback(async () => {
+    if (authMode !== 'user_center') {
+      return;
+    }
+    try {
+      setCurrentUser(await meApi.getMe());
+    } catch {
+      // Keep the last known user; the next page load re-reads it.
+    }
+  }, [authMode]);
 
   const login = useCallback(
     async (
@@ -194,6 +202,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         authMode,
         userCenter,
+        currentUser,
         authEnabled,
         loggedIn,
         passwordSet,
@@ -205,6 +214,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         changePassword,
         logout,
         refreshStatus: fetchStatus,
+        refreshCurrentUser,
       }}
     >
       {children}

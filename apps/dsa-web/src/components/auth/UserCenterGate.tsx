@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
-import type { UserCenterSession } from '../../contexts/AuthContext';
+import type { UserCenterSession } from '../../contexts/authState';
 import { redirectToUserCenter } from '../../utils/userCenterSession';
 
 const REDIRECT_STAMP_KEY = 'dsa.userCenter.loginRedirectAt';

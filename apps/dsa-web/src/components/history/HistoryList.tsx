@@ -5,6 +5,7 @@ import { Badge, Button, ScrollArea } from '../common';
 import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
 import { HistoryListItem } from './HistoryListItem';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { useCurrentUser } from '../../hooks/useCurrentUser';
 
 interface HistoryListProps {
   items: HistoryItem[];
@@ -19,6 +20,9 @@ interface HistoryListProps {
   onToggleItemSelection: (recordId: number) => void;
   onToggleSelectAll: () => void;
   onDeleteSelected: () => void;
+  /** Multi-user: show the 只看我的 filter (`mine_only`); omit to hide it. */
+  mineOnly?: boolean;
+  onMineOnlyChange?: (mineOnly: boolean) => void;
   title?: string;
   emptyTitle?: string;
   emptyDescription?: string;
@@ -42,12 +46,15 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   onToggleItemSelection,
   onToggleSelectAll,
   onDeleteSelected,
+  mineOnly = false,
+  onMineOnlyChange,
   title,
   emptyTitle,
   emptyDescription,
   className = '',
 }) => {
   const { t } = useUiLanguage();
+  const { isMultiUser } = useCurrentUser();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
@@ -118,6 +125,18 @@ export const HistoryList: React.FC<HistoryListProps> = ({
               ) : undefined
             }
           />
+
+          {isMultiUser && onMineOnlyChange ? (
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-[11px] text-muted-text select-none">
+              <input
+                type="checkbox"
+                checked={mineOnly}
+                onChange={(event) => onMineOnlyChange(event.target.checked)}
+                className="h-3.5 w-3.5 cursor-pointer bg-transparent accent-primary focus:ring-primary/30"
+              />
+              {t('history.mineOnly')}
+            </label>
+          ) : null}
 
           {items.length > 0 && (
             <div className="flex items-center gap-2">

@@ -1,15 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Clock3, Cpu, Database, Gauge, RefreshCw } from 'lucide-react';
+import { meApi } from '../api/me';
 import { usageApi, type UsageDashboard, type UsageModelBreakdown, type UsagePeriod } from '../api/usage';
 import type { ParsedApiError } from '../api/error';
 import { ApiErrorAlert, AppPage, Card, EmptyState, PageHeader, StatCard } from '../components/common';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import type { UiLanguage, UiTextKey, UiTextParams } from '../i18n/uiText';
 import { cn } from '../utils/cn';
 
 type Translate = (key: UiTextKey, params?: UiTextParams) => string;
 
 const PERIOD_OPTIONS: UsagePeriod[] = ['today', 'month', 'all'];
+
+/** `own`: GET /me/usage (every user); `all`: GET /usage/dashboard (administrators, every user's calls). */
+type UsageScope = 'own' | 'all';
 
 const PERIOD_LABEL_KEYS: Record<UsagePeriod, UiTextKey> = {
   today: 'usage.period.today',
@@ -101,6 +106,10 @@ const ModelUsageCard: React.FC<{ model: UsageModelBreakdown; language: UiLanguag
 
 const TokenUsagePage: React.FC = () => {
   const { language, t } = useUiLanguage();
+  const { isAdmin, isMultiUser } = useCurrentUser();
+  const [adminScope, setAdminScope] = useState<UsageScope>('all');
+  // Regular users only ever see their own usage; administrators keep the global view (toggle to their own).
+  const scope: UsageScope = isAdmin ? adminScope : 'own';
   const [period, setPeriod] = useState<UsagePeriod>('month');
   const [dashboard, setDashboard] = useState<UsageDashboard | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
@@ -113,7 +122,9 @@ const TokenUsagePage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await usageApi.getDashboard({ period, limit: 50 });
+      const data = scope === 'own'
+        ? await meApi.getUsage({ period, limit: 50 })
+        : await usageApi.getDashboard({ period, limit: 50 });
       if (requestSeq !== requestSeqRef.current) {
         return;
       }
@@ -128,7 +139,7 @@ const TokenUsagePage: React.FC = () => {
         setLoading(false);
       }
     }
-  }, [period, t]);
+  }, [period, scope, t]);
 
   useEffect(() => {
     void loadDashboard();
@@ -147,9 +158,29 @@ const TokenUsagePage: React.FC = () => {
         <PageHeader
           eyebrow={t('usage.eyebrow')}
           title={t('usage.title')}
-          description={t('usage.description')}
+          description={scope === 'own' && isMultiUser ? t('usage.descriptionOwn') : t('usage.description')}
           actions={(
             <div className="flex flex-wrap items-center gap-2">
+              {isAdmin && isMultiUser ? (
+                <div className="inline-flex rounded-xl border border-border/70 bg-card/70 p-1" role="group" aria-label={t('usage.scope.label')}>
+                  {(['all', 'own'] as const).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      aria-pressed={scope === option}
+                      onClick={() => setAdminScope(option)}
+                      className={cn(
+                        'rounded-lg px-3 py-1.5 text-sm transition-colors',
+                        scope === option
+                          ? 'bg-cyan text-background shadow-soft-card'
+                          : 'text-secondary-text hover:bg-hover hover:text-foreground'
+                      )}
+                    >
+                      {option === 'all' ? t('usage.scope.all') : t('usage.scope.own')}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <div className="inline-flex rounded-xl border border-border/70 bg-card/70 p-1">
                 {PERIOD_OPTIONS.map((option) => (
                   <button

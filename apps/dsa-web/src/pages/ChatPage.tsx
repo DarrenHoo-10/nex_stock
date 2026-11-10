@@ -33,6 +33,8 @@ import {
 } from '../utils/stockCode';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { useCurrentUser } from '../hooks/useCurrentUser';
+import { ModelKeyBanner } from '../components/auth/ModelKeyBanner';
 
 // Quick question examples shown on empty state
 type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
@@ -83,6 +85,9 @@ const getPipelineBudgetSkippedLabel = (step: ProgressStep): string => {
 const ChatPage: React.FC = () => {
   const { t } = useUiLanguage();
   const navigate = useNavigate();
+  // The context-compression switch is a system-config write (administrator-only endpoint); regular users keep
+  // the same option in their personal settings (Agent group).
+  const { isAdmin } = useCurrentUser();
   const [searchParams, setSearchParams] = useSearchParams();
   const [input, setInput] = useState('');
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -347,6 +352,9 @@ const ChatPage: React.FC = () => {
   }, [loadAgentStatus]);
 
   useEffect(() => {
+    if (!isAdmin) {
+      return undefined;
+    }
     let active = true;
 
     void systemConfigApi.getConfig(false)
@@ -374,7 +382,7 @@ const ChatPage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [isAdmin]);
 
   const updateContextCompressionEnabled = useCallback(
     async (nextEnabled: boolean) => {
@@ -1304,6 +1312,7 @@ const ChatPage: React.FC = () => {
           {/* Input area */}
           <div className="border-t border-white/6 bg-card/88 p-4 md:p-6 relative z-20">
             <div className="space-y-3">
+              <ModelKeyBanner />
               {chatError ? <ApiErrorAlert error={chatError} /> : null}
               {chatError?.code === 'session_state_conflict' && (
                 <Button variant="secondary" size="xsm" onClick={() => void refreshSession()}>
@@ -1330,7 +1339,7 @@ const ChatPage: React.FC = () => {
                   <ApiErrorAlert
                     error={agentUnavailableError}
                     actionLabel={t('chat.openAgentSettings')}
-                    onAction={() => navigate('/settings?category=agent')}
+                    onAction={() => navigate(isAdmin ? '/settings?category=agent' : '/settings/personal')}
                   />
                   <Button variant="secondary" size="sm" onClick={() => void loadAgentStatus()}>
                     {t('chat.recheckAgentStatus')}
@@ -1366,6 +1375,7 @@ const ChatPage: React.FC = () => {
                   className="rounded-xl px-3 py-2 text-xs shadow-none"
                 />
               ) : null}
+              {isAdmin ? (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/6 bg-surface/25 px-3 py-2">
                 <label
                   className={cn(
@@ -1393,6 +1403,7 @@ const ChatPage: React.FC = () => {
                       : '未启用'}
                 </span>
               </div>
+              ) : null}
               {contextCompressionError ? (
                 <InlineAlert
                   variant="danger"

@@ -37,6 +37,10 @@ RETENTION_DAYS = 120
 PLEDGE_MIN_RATIO = 10.0  # only stocks with at least this pledge ratio are stored
 PLEDGE_LOOKBACK_FRIDAYS = 3
 CODE_REFRESH_HOURS = 24
+# A per-code fetch where some kind failed is retried after this long (not on every request).
+CODE_FAILURE_RETRY_MINUTES = 10
+# "This code was fetched on demand" marker rows in ``stock_event_ingest`` are keyed by this prefix + the code.
+CODE_FETCH_MARKER_PREFIX = "cf:"
 RESEARCH_DAYS = 90            # consensus window of broker forecasts
 DRAGON_TIGER_BACKFILL_DAYS = 10
 SENTIMENT_BACKFILL_DAYS = 5
@@ -615,10 +619,14 @@ def query_rows(fetcher: Any, spec: _KindSpec, **params: Any) -> List[Dict[str, A
 
 
 class StockEventService:
-    def __init__(self, repo: Any = None, fetcher: Any = None, *, today: Callable[[], date] = None) -> None:
+    def __init__(
+        self, repo: Any = None, fetcher: Any = None, *, today: Callable[[], date] = None, user_id: Optional[str] = None,
+    ) -> None:
         self._repo = repo
         self._fetcher = fetcher
         self._today = today or (lambda: datetime.now().date())
+        # The user whose request may trigger an on-demand fetch (None = system job / primary user: not rate limited).
+        self._user_id = user_id
 
     @property
     def repo(self) -> Any:
@@ -632,9 +640,10 @@ class StockEventService:
     def fetcher(self) -> Any:
         if self._fetcher is None:
             from data_provider.base import DataFetchError
-            from data_provider.tushare_fetcher import TushareFetcher
+            from src.services.on_demand_fetch import tushare_fetcher_for
 
-            fetcher = TushareFetcher()
+            # One shared fetcher (one rate limiter) for the system token; the user's own token when they saved one.
+            fetcher = tushare_fetcher_for(self._user_id)
             if not fetcher.is_available():
                 raise DataFetchError("Tushare 未配置（缺少 TUSHARE_TOKEN），无法获取公司事件")
             self._fetcher = fetcher
@@ -820,6 +829,16 @@ class StockEventService:
         status["share_float"] = self._fetch_code_kind(
             "share_float", _SHARE_FLOAT, {"ts_code": ts_code, "start_date": end, "end_date": future})
         status["pledge"] = self._fetch_code_kind("pledge", _PLEDGE, {"ts_code": ts_code})
+        # "Fetched, whatever it found": a stock with no events must not be fetched again on every request. A failed
+        # kind makes the marker short-lived (``CODE_FAILURE_RETRY_MINUTES``) so it is retried, but not per request.
+        failed = [name for name, result in status.items() if result.get("status") != "ok"]
+        try:
+            self.repo.mark_ingested(
+                self._marker_kind(code), today, rows=sum(int(r.get("fetched") or 0) for r in status.values()),
+                status="failed" if failed else "ok", error=", ".join(failed) or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - the marker only saves requests
+            logger.debug("[公司事件] %s 取数记录写入失败: %s", code, exc)
         return status
 
     def _fetch_code_kind(self, kind: str, spec: _KindSpec, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -833,11 +852,21 @@ class StockEventService:
         except Exception as exc:  # noqa: BLE001
             return {"status": "failed", "error": str(exc)[:200]}
 
+    def _marker_kind(self, code: str) -> str:
+        return (CODE_FETCH_MARKER_PREFIX + code)[:24]
+
     def _needs_code_fetch(self, code: str) -> bool:
         """True when neither the daily run (yesterday ingested) nor a recent per-code fetch covers ``code``."""
         yesterday = self._today() - timedelta(days=1)
         if self.repo.ingested_days("holder_trade", since=yesterday).get(yesterday) == "ok":
             return False
+        marker = self.repo.code_fetch_marker(self._marker_kind(code))
+        if marker is not None:
+            from src.storage import utc_naive_now
+
+            status, fetched_at = marker
+            ttl = timedelta(hours=CODE_REFRESH_HOURS) if status == "ok" else timedelta(minutes=CODE_FAILURE_RETRY_MINUTES)
+            return utc_naive_now() - fetched_at > ttl
         # Market-wide lists (热股榜、风险名单…) also store rows for this code; only per-stock kinds count.
         last = self.repo.latest_fetch_for_code(code, kinds=CODE_FETCH_KINDS)
         return last is None or datetime.now() - last > timedelta(hours=CODE_REFRESH_HOURS)
@@ -849,10 +878,16 @@ class StockEventService:
         today = self._today()
         sources: Dict[str, Any] = {}
         if fetch and self._needs_code_fetch(code):
-            try:
-                sources = self.fetch_code(code, days=max(days, BACKFILL_DAYS))
-            except Exception as exc:  # noqa: BLE001 - stored events are still returned
-                sources = {"tushare": {"status": "failed", "error": str(exc)[:200]}}
+            from src.services.on_demand_fetch import allow_on_demand_fetch
+
+            if not allow_on_demand_fetch(self._user_id):
+                # Over the per-user limit: answer from the stored events, do not touch the external source.
+                sources = {"rate_limited": {"status": "rate_limited", "error": "按需取数次数已达上限，先显示已存储的数据"}}
+            else:
+                try:
+                    sources = self.fetch_code(code, days=max(days, BACKFILL_DAYS))
+                except Exception as exc:  # noqa: BLE001 - stored events are still returned
+                    sources = {"tushare": {"status": "failed", "error": str(exc)[:200]}}
         wanted = [k for k in (kinds or ALL_KINDS) if k in KIND_LABELS]
         events = self.repo.list_for_code(code, since=today - timedelta(days=days),
                                          until=today + timedelta(days=SHARE_FLOAT_AHEAD_DAYS), kinds=wanted)
