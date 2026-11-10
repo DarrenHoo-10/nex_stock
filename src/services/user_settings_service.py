@@ -18,6 +18,7 @@ from src.config import get_primary_user_id
 from src.core.config_registry import SCOPE_USER, get_config_scope, get_field_definition
 from src.repositories.user_repo import UserRepository
 from src.services.system_config_service import SystemConfigService
+from src.services.user_schedule_service import SCHEDULE_TIME_KEYS, ScheduleTimeError, validate_schedule_time
 from src.user_secrets import UserSecretError, UserSecretStore
 from src.utils.url_safety import UnsafeUrlError, check_public_https_url, split_url_list
 
@@ -33,6 +34,20 @@ _EXTRA_HEADERS_KEY_RE = re.compile(r"^LLM_[A-Z0-9_]+_EXTRA_HEADERS$")
 # User-scope keys whose value is an address the server will call (model Base URLs incl. ``LLM_<NAME>_BASE_URL``,
 # SearXNG, Hindsight, notification webhooks ...). Matched by name so a newly registered endpoint key is
 # covered without touching this list; every such value must be a public https URL (src/utils/url_safety.py).
+# P2 stored the system's per-channel ``.env`` keys as personal settings, but nothing reads them for a non-primary user:
+# a personal push goes to the channels of ``/me/notification-channels`` (``user_notification_service``) only. They are
+# no longer accepted (``managed_elsewhere``) nor listed; values saved earlier stay inert and can be removed with a reset.
+LEGACY_CHANNEL_KEYS = frozenset({
+    "ASTRBOT_TOKEN", "ASTRBOT_URL",
+    "CUSTOM_WEBHOOK_BEARER_TOKEN", "CUSTOM_WEBHOOK_BODY_TEMPLATE", "CUSTOM_WEBHOOK_URLS",
+    "DINGTALK_SECRET", "DINGTALK_WEBHOOK_URL", "DISCORD_WEBHOOK_URL",
+    "EMAIL_PASSWORD", "EMAIL_RECEIVERS", "EMAIL_SENDER",
+    "FEISHU_WEBHOOK_KEYWORD", "FEISHU_WEBHOOK_SECRET", "FEISHU_WEBHOOK_URL",
+    "GOTIFY_TOKEN", "GOTIFY_URL", "NTFY_TOKEN", "NTFY_URL",
+    "PUSHOVER_API_TOKEN", "PUSHOVER_USER_KEY", "PUSHPLUS_TOKEN", "PUSHPLUS_TOPIC", "SERVERCHAN3_SENDKEY",
+    "SLACK_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_MESSAGE_THREAD_ID",
+    "WECHAT_WEBHOOK_URL",
+})
 _URL_KEY_SUFFIXES = ("_URL", "_URLS", "_BASE_URL", "_BASE_URLS", "_API_BASE")
 _URL_LIST_KEY_SUFFIXES = ("_URLS", "_BASE_URLS")
 
@@ -196,6 +211,12 @@ class UserSettingsService:
                 "scope_not_user",
                 f"{key_upper} is a process-level setting that only the administrator can change",
             )
+        if key_upper in LEGACY_CHANNEL_KEYS:
+            raise UserSettingError(
+                "managed_elsewhere",
+                f"{key_upper} is not a personal setting; add push channels through /api/v1/me/notification-channels",
+                [{"key": key_upper, "code": "managed_elsewhere", "message": "Use the personal notification channels", "severity": "error"}],
+            )
         if not isinstance(value, str):
             raise UserSettingError("invalid_value", f"{key_upper} must be a string")
         if len(value) > _MAX_VALUE_LENGTH:
@@ -213,7 +234,20 @@ class UserSettingsService:
             raise UserSettingError("invalid_value", f"{key_upper} failed validation", errors)
         if is_url_setting_key(key_upper) and value.strip():
             validate_url_setting(key_upper, value)
+        if key_upper in SCHEDULE_TIME_KEYS:
+            value = UserSettingsService._validate_schedule_time(key_upper, value)
         return key_upper, SystemConfigService.normalize_single_value(key_upper, value), is_secret
+
+    @staticmethod
+    def _validate_schedule_time(key: str, value: str) -> str:
+        """Personal plan / pre-open times must fit the system's data-ready and market-open times (user_schedule_service)."""
+        try:
+            return validate_schedule_time(key, value)
+        except ScheduleTimeError as exc:
+            issue = {"key": key, "code": exc.code, "message": exc.message, "severity": "error"}
+            if exc.limit_name:
+                issue[exc.limit_name] = exc.limit
+            raise UserSettingError(exc.code, exc.message, [issue]) from exc
 
     @staticmethod
     def _invalidate(user_id: str) -> None:

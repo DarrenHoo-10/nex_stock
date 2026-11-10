@@ -546,7 +546,9 @@ def test_analysis_service_runs_a_personal_account_on_its_own_view(mu):
 
     personal, system = pipelines
     assert personal["config"].user_view_id == USER_B and personal["user_id"] == USER_B
-    assert personal["process"]["single_stock_notify"] is False  # no system push channel for a personal account
+    # P3a: a personal account's push is on, but it goes to the user's own channels only (the pipeline's notifier is
+    # theirs; tests/test_multi_user_p3a_pushes.py asserts nothing reaches the system channels)
+    assert personal["process"]["single_stock_notify"] is True
     assert personal["config"].report_language == "en"
     from src.config import get_config
 

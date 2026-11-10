@@ -4,19 +4,37 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
 import { CurrentUserProvider } from '../../../test-utils/currentUser';
 import { regularUser } from '../../../test-utils/currentUserFixtures';
+import {
+  channelsResponse,
+  primaryChannelsResponse,
+  scheduleResponse,
+} from '../../../test-utils/personalChannelFixtures';
 import type { PersonalSettingField, PersonalSettingsResponse } from '../../../types/me';
 import { PersonalSettingsPanel } from '../PersonalSettingsPanel';
 
-const { getSettings, updateSettings, resetSetting, testModel } = vi.hoisted(() => ({
+const { getSettings, updateSettings, resetSetting, testModel, listNotificationChannels, getSchedule } = vi.hoisted(() => ({
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
   resetSetting: vi.fn(),
   testModel: vi.fn(),
+  listNotificationChannels: vi.fn(),
+  getSchedule: vi.fn(),
 }));
 
 vi.mock('../../../api/me', () => ({
-  meApi: { getSettings, updateSettings, resetSetting, testModel },
+  meApi: { getSettings, updateSettings, resetSetting, testModel, listNotificationChannels, getSchedule },
 }));
+
+/** Legacy per-channel credential keys the personal settings API still returns (docs/design/multi-user.md 21.1). */
+const LEGACY_CHANNEL_KEYS = [
+  'FEISHU_WEBHOOK_URL',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_CHAT_ID',
+  'EMAIL_SENDER',
+  'EMAIL_PASSWORD',
+  'PUSHPLUS_TOKEN',
+  'CUSTOM_WEBHOOK_URLS',
+];
 
 function field(overrides: Partial<PersonalSettingField> & Pick<PersonalSettingField, 'key'>): PersonalSettingField {
   return {
@@ -67,7 +85,13 @@ function response(overrides: Partial<PersonalSettingsResponse> = {}): PersonalSe
         title: '推送',
         fields: [
           field({ key: 'DAILY_PLAN_ENABLED', group: 'push', title: '次日计划', uiControl: 'switch', dataType: 'boolean', value: 'true', source: 'system_default', configured: true }),
-          field({ key: 'FEISHU_WEBHOOK_URL', group: 'push', title: '飞书 Webhook', isSecret: true, uiControl: 'password', inherits: false }),
+          field({ key: 'DAILY_PLAN_TIME', group: 'push', title: '次日计划时间' }),
+          field({ key: 'PREOPEN_PUSH_ENABLED', group: 'push', title: '盘前推送', uiControl: 'switch', dataType: 'boolean' }),
+          field({ key: 'PREOPEN_PUSH_TIME', group: 'push', title: '盘前推送时间' }),
+          field({ key: 'NOTIFICATION_QUIET_HOURS', group: 'push', title: '静默时段', value: '22:00-07:00', source: 'user', configured: true }),
+          ...LEGACY_CHANNEL_KEYS.map((key) =>
+            field({ key, group: 'push', title: `旧渠道 ${key}`, isSecret: true, uiControl: 'password', inherits: false }),
+          ),
         ],
       },
       {
@@ -102,6 +126,8 @@ beforeEach(() => {
   window.localStorage.setItem('dsa.uiLanguage', 'zh');
   vi.clearAllMocks();
   getSettings.mockResolvedValue(response());
+  listNotificationChannels.mockResolvedValue(channelsResponse());
+  getSchedule.mockResolvedValue(scheduleResponse());
 });
 
 describe('PersonalSettingsPanel', () => {
@@ -111,7 +137,9 @@ describe('PersonalSettingsPanel', () => {
     expect(await screen.findByRole('heading', { name: '个人设置' })).toBeInTheDocument();
     const nav = screen.getByRole('navigation', { name: '个人设置分组' });
     expect(within(nav).getByText('模型')).toBeInTheDocument();
-    expect(within(nav).getByText('推送')).toBeInTheDocument();
+    expect(within(nav).getByText('推送渠道')).toBeInTheDocument();
+    expect(within(nav).getByText('推送与定时')).toBeInTheDocument();
+    expect(within(nav).getByText('推送偏好')).toBeInTheDocument();
     expect(within(nav).getByText('仓位规则')).toBeInTheDocument();
 
     expect(screen.getByTestId('personal-source-LITELLM_MODEL')).toHaveAttribute('data-source', 'user');
@@ -195,14 +223,89 @@ describe('PersonalSettingsPanel', () => {
     expect(screen.getByTestId('personal-source-LITELLM_MODEL')).toHaveAttribute('data-source', 'system_default');
   });
 
-  it('hides push channel credentials but keeps the push preferences', async () => {
+  it('puts the channel list and the schedule in front of the remaining push preferences', async () => {
+    renderPanel();
+    const nav = await screen.findByRole('navigation', { name: '个人设置分组' });
+
+    const order = within(nav).getAllByRole('button').map((button) => button.textContent ?? '');
+    const at = (title: string) => order.findIndex((text) => text.startsWith(title));
+    expect(at('推送渠道')).toBeGreaterThan(at('模型'));
+    expect(at('推送与定时')).toBe(at('推送渠道') + 1);
+    expect(at('推送偏好')).toBe(at('推送与定时') + 1);
+    // The channel badge is the number of channels.
+    expect(within(nav).getByRole('button', { name: /^推送渠道/ })).toHaveTextContent('2');
+  });
+
+  it('hides the legacy channel credential keys and the schedule keys from every settings group', async () => {
+    renderPanel();
+    await screen.findByTestId('personal-field-LITELLM_MODEL');
+    const nav = screen.getByRole('navigation', { name: '个人设置分组' });
+
+    // Visit every tab: no field of the legacy channel keys shows up anywhere.
+    for (const button of within(nav).getAllByRole('button')) {
+      fireEvent.click(button);
+      for (const key of LEGACY_CHANNEL_KEYS) {
+        expect(screen.queryByTestId(`personal-field-${key}`)).toBeNull();
+      }
+    }
+
+    fireEvent.click(within(nav).getByRole('button', { name: /^推送偏好/ }));
+    // Only the remaining preferences are left; the switches and times moved to 推送与定时.
+    expect(await screen.findByTestId('personal-field-NOTIFICATION_QUIET_HOURS')).toBeInTheDocument();
+    expect(screen.queryByTestId('personal-field-DAILY_PLAN_ENABLED')).toBeNull();
+    expect(screen.queryByTestId('personal-field-PREOPEN_PUSH_TIME')).toBeNull();
+    expect(screen.queryByText(/旧渠道/)).toBeNull();
+  });
+
+  it('shows the push channels tab with the channels of the user', async () => {
     renderPanel();
     await screen.findByTestId('personal-field-LITELLM_MODEL');
 
-    fireEvent.click(screen.getByRole('button', { name: /^推送/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^推送渠道/ }));
 
-    expect(await screen.findByTestId('personal-field-DAILY_PLAN_ENABLED')).toBeInTheDocument();
-    expect(screen.queryByTestId('personal-field-FEISHU_WEBHOOK_URL')).toBeNull();
+    expect(await screen.findByTestId('personal-channels')).toBeInTheDocument();
+    expect(within(screen.getByTestId('channel-1')).getByText('我的飞书群')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '添加渠道' })).toBeEnabled();
+  });
+
+  it('saves the schedule through the personal settings and refreshes the current user', async () => {
+    updateSettings.mockResolvedValue(response());
+    const { refreshCurrentUser } = renderPanel();
+    await screen.findByTestId('personal-field-LITELLM_MODEL');
+
+    fireEvent.click(screen.getByRole('button', { name: /^推送与定时/ }));
+    expect(await screen.findByTestId('personal-schedule')).toBeInTheDocument();
+    await screen.findByTestId('schedule-summary');
+    fireEvent.click(screen.getByTestId('schedule-switch-PREOPEN_PUSH_ENABLED'));
+    fireEvent.click(screen.getByRole('button', { name: '保存推送与定时' }));
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith([{ key: 'PREOPEN_PUSH_ENABLED', value: 'true' }]));
+    expect(await screen.findByText('推送与定时已保存。')).toBeInTheDocument();
+    expect(refreshCurrentUser).toHaveBeenCalled();
+  });
+
+  it('jumps from the no-channel notice to the channel tab', async () => {
+    listNotificationChannels.mockResolvedValue(channelsResponse({ channels: [] }));
+    renderPanel();
+    await screen.findByTestId('personal-field-LITELLM_MODEL');
+
+    fireEvent.click(screen.getByRole('button', { name: /^推送与定时/ }));
+    expect(await screen.findByText('未配置推送渠道，定时结果只在网页查看')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '去添加渠道' }));
+
+    expect(await screen.findByTestId('personal-channels')).toBeInTheDocument();
+    expect(screen.getByText(/还没有推送渠道/)).toBeInTheDocument();
+  });
+
+  it('keeps the settings usable when the channel list cannot be loaded', async () => {
+    listNotificationChannels.mockRejectedValue(rejection(500, { error: 'internal_error', message: 'boom' }));
+    renderPanel();
+
+    expect(await screen.findByTestId('personal-field-LITELLM_MODEL')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^推送与定时/ }));
+    await screen.findByTestId('schedule-summary');
+    // Nothing is known about the channels, so no "no channel" claim is made.
+    expect(screen.queryByText('未配置推送渠道，定时结果只在网页查看')).toBeNull();
   });
 
   describe('model test', () => {
@@ -335,6 +438,50 @@ describe('PersonalSettingsPanel', () => {
     expect(screen.queryByRole('button', { name: /恢复默认/ })).toBeNull();
     expect(document.getElementById('setting-LITELLM_MODEL')).toBeDisabled();
     expect((document.getElementById('setting-OPENAI_API_KEY') as HTMLInputElement).value).toBe('******');
+  });
+
+  it('shows the primary user the .env channels and the effective schedule read-only', async () => {
+    getSettings.mockResolvedValue(
+      response({
+        isPrimary: true,
+        managedInSystemSettings: true,
+        groups: [
+          { id: 'model', title: '模型', fields: [field({ key: 'LITELLM_MODEL', title: '主模型', value: 'openai/gpt-x', source: 'user', configured: true, editable: false })] },
+        ],
+      }),
+    );
+    listNotificationChannels.mockResolvedValue(primaryChannelsResponse());
+    getSchedule.mockResolvedValue(scheduleResponse({ isPrimary: true, managedInSystemSettings: true }));
+    renderPanel();
+    await screen.findByTestId('personal-field-LITELLM_MODEL');
+
+    fireEvent.click(screen.getByRole('button', { name: /^推送渠道/ }));
+    expect(await screen.findByText('你是主用户，推送渠道来自系统设置')).toBeInTheDocument();
+    expect(screen.getByTestId('channel-env-feishu')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '添加渠道' })).toBeNull();
+    expect(screen.queryByRole('switch')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^推送与定时/ }));
+    expect(await screen.findByTestId('schedule-summary-plan')).toBeInTheDocument();
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('button', { name: '保存推送与定时' })).toBeNull();
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('renders for local mode (no current user) without writing anything', async () => {
+    render(
+      <MemoryRouter>
+        <UiLanguageProvider>
+          <CurrentUserProvider user={null}>
+            <PersonalSettingsPanel />
+          </CurrentUserProvider>
+        </UiLanguageProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('personal-field-LITELLM_MODEL')).toBeInTheDocument();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(resetSetting).not.toHaveBeenCalled();
   });
 
   it('offers a retry when loading the settings fails', async () => {

@@ -27,6 +27,9 @@ Multi-user P1 schema migration (docs/design/multi-user.md section 4).
   an Agent-mode report without ``report_trade_date`` (written before that marker existed) is therefore private to its
   requester (the primary user for legacy rows) and so are its decision signals; the derived data of private reports
   is purged again. Holdings must never be shared, so undeterminable means private;
+* P3a follow-up (``MULTI_USER_P3A_SCHEMA_VERSION``): adds the ``user_notification_channel`` (personal push
+  channels, config encrypted with the owner's data key) and ``user_notice_marker`` (once-only reminders) tables;
+  no existing table or row is touched;
 * is idempotent and recorded in ``schema_migrations``; everything runs in one
   transaction, a failure rolls back and is re-raised so startup is refused;
 * the database file is backed up with the SQLite backup API (WAL-safe) before the
@@ -82,6 +85,12 @@ MULTI_USER_P2B4_AGENT_PRIVACY_DESCRIPTION = (
     "Mark legacy Agent-mode reports (no report_trade_date, so no recorded tool calls) private to their requester, "
     "with their decision signals; purge derived backtest / skill-opinion data again"
 )
+MULTI_USER_P3A_SCHEMA_VERSION = "2026-11-10-multi-user-p3a-notification-channels"
+MULTI_USER_P3A_SCHEMA_DESCRIPTION = (
+    "Add user_notification_channel (personal push channels, encrypted config) and user_notice_marker "
+    "(once-only reminders)"
+)
+_P3A_TABLES = ("user_notification_channel", "user_notice_marker")
 _PURGE_TABLES = ("backtest_results", "backtest_summaries", "skill_opinion_samples", "skill_opinion_outcomes")
 _P2B2_COLUMNS = (
     ("analysis_history", "is_private", "BOOLEAN"),
@@ -218,7 +227,9 @@ def backup_before_multi_user_migration(engine: Engine) -> Optional[Path]:
             _is_recorded(conn, MULTI_USER_P2B4_SCHEMA_VERSION)
             and _is_recorded(conn, MULTI_USER_P2B4_AGENT_PRIVACY_VERSION)
         )
-        if not (p1_pending or p2a_pending or p2b2_pending or purge_pending or p2b4_pending):
+        # P3a only adds tables (create_all makes them); the restore point is still taken once for an existing database.
+        p3a_pending = bool(existing) and not _is_recorded(conn, MULTI_USER_P3A_SCHEMA_VERSION)
+        if not (p1_pending or p2a_pending or p2b2_pending or purge_pending or p2b4_pending or p3a_pending):
             return None
 
     backup_path = db_path.with_name(f"{db_path.name}.pre-multi-user-{datetime.now():%Y%m%d-%H%M%S}.bak")
@@ -462,6 +473,16 @@ def _purge_private_derived_data(conn: Connection) -> None:
             logger.info("Multi-user: deleted %s skill opinion samples derived from private reports", removed)
 
 
+def _ensure_p3a_tables(conn: Connection) -> None:
+    """Create the P3a tables when ``create_all`` did not (it normally runs first); idempotent, never touches rows."""
+    from src import storage
+
+    for model in (storage.UserNotificationChannel, storage.UserNoticeMarker):
+        model.__table__.create(conn, checkfirst=True)
+        for index in model.__table__.indexes:
+            index.create(conn, checkfirst=True)
+
+
 def _backfill_targets() -> List[tuple]:
     user_id_models, _ = _models()
     targets = [(model.__table__.name, "user_id") for model in user_id_models]
@@ -556,6 +577,10 @@ def run_multi_user_migration(engine: Engine, primary_user_id: str) -> bool:
                 _record_version(
                     conn, MULTI_USER_P2B4_AGENT_PRIVACY_VERSION, MULTI_USER_P2B4_AGENT_PRIVACY_DESCRIPTION
                 )
+            if not _is_recorded(conn, MULTI_USER_P3A_SCHEMA_VERSION):
+                applied = True
+                _ensure_p3a_tables(conn)
+                _record_version(conn, MULTI_USER_P3A_SCHEMA_VERSION, MULTI_USER_P3A_SCHEMA_DESCRIPTION)
             conn.exec_driver_sql("COMMIT")
         except BaseException:
             try:
@@ -574,6 +599,7 @@ __all__ = [
     "MULTI_USER_P2B2_SCHEMA_VERSION",
     "MULTI_USER_P2B4_AGENT_PRIVACY_VERSION",
     "MULTI_USER_P2B4_SCHEMA_VERSION",
+    "MULTI_USER_P3A_SCHEMA_VERSION",
     "MULTI_USER_SCHEMA_VERSION",
     "backup_before_multi_user_migration",
     "run_multi_user_migration",

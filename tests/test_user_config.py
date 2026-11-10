@@ -256,7 +256,7 @@ def test_user_settings_overlay_the_view(env):
         "REPORT_LANGUAGE": "ko",
         "POSITION_MAX_HOLDINGS": "2",
         "TUSHARE_TOKEN": "ts-alice",
-        "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/hook/alice",
+        "NOTIFICATION_MIN_SEVERITY": "error",  # (a per-channel key such as FEISHU_WEBHOOK_URL is no longer a personal setting)
     })
 
     config = get_user_config("alice")
@@ -270,7 +270,7 @@ def test_user_settings_overlay_the_view(env):
     assert config.report_language == "ko"
     assert config.position_max_holdings == 2
     assert config.tushare_token == "ts-alice"
-    assert config.feishu_webhook_url == "https://open.feishu.cn/hook/alice"
+    assert config.notification_min_severity == "error"
     # Another user is unaffected.
     other = get_user_config("bob")
     assert other.openai_api_keys == [] and other.stock_list == [] and other.tushare_token == "ts-system"

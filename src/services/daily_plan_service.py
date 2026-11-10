@@ -158,6 +158,7 @@ class DailyPlanService:
         workers: Optional[int] = None,
         on_demand_sync: Optional[bool] = None,
         user_id: Optional[str] = None,
+        shared_board_cache: Optional[Dict[Any, Any]] = None,
     ) -> None:
         # The user whose account / runs / plans this instance reads and writes; None = the primary user.
         self.user_id = user_id or get_primary_user_id()
@@ -165,7 +166,13 @@ class DailyPlanService:
         self._config = config
         self._llm_call = llm_call
         self._spawn = spawn or self._spawn_thread
-        self._pusher = pusher or send_feishu
+        # Primary user: the system Feishu route (``.env``). Everyone else: their own personal channels only - an
+        # injected ``pusher`` / ``push_configured`` is the primary user's and can never serve another user.
+        self._pusher = (pusher or send_feishu) if self.user_id == get_primary_user_id() else self._push_personal
+        self._push_outcomes: List[Dict[str, Any]] = []
+        # The scheduled multi-user batch hands every user's service the same dict, so the board listing of one trading
+        # day is computed once and reused (shared, read-only market context). None = no sharing (API, primary user).
+        self._shared_board_cache = shared_board_cache
         self._push_configured = push_configured
         self._anomaly = anomaly_service
         self._calendar_fn = calendar_fn
@@ -424,9 +431,7 @@ class DailyPlanService:
                 result["gaps"].append(
                     f"板块判定是 {run['trade_date'].isoformat()} 的结果，不是 {trade_date.isoformat()} 的"
                 )
-            listing = self.anomaly().list_anomalies(run["trade_date"], None, None)
-            rows = {row["id"]: row for row in listing.get("boards") or []
-                    if row.get("state") not in ("none", "insufficient_history")}
+            rows = self._board_rows(run)
             result["top"] = list(rows.values())[:10]
             refs_by_stock = self.repo.boards_of_stocks(list(codes), run["trade_date"])
             for code, refs in refs_by_stock.items():
@@ -438,6 +443,19 @@ class DailyPlanService:
             logger.warning("[DailyPlan] 读取板块信号失败: %s", exc, exc_info=True)
             result["gaps"].append(f"板块信号读取失败（{type(exc).__name__}），计划里没有板块信号")
         return result
+
+    def _board_rows(self, run: Dict[str, Any]) -> Dict[Any, Dict[str, Any]]:
+        """Boards with a signal of the board run's trading day; shared between the users of one scheduled batch."""
+        cache = self._shared_board_cache
+        key = ("boards", run.get("trade_date"), run.get("run_id") or run.get("id"))
+        if cache is not None and key in cache:
+            return cache[key]
+        listing = self.anomaly().list_anomalies(run["trade_date"], None, None)
+        rows = {row["id"]: row for row in listing.get("boards") or []
+                if row.get("state") not in ("none", "insufficient_history")}
+        if cache is not None:
+            cache[key] = rows
+        return rows
 
     def _latest_picks(self) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         """(task, picks) of the newest completed screening task; picks are ``{code, name, rank}``."""
@@ -762,16 +780,15 @@ class DailyPlanService:
             trade_date = self._resolve_trade_date(None)
             run_id = f"plan-{trade_date:%Y%m%d}-{uuid.uuid4().hex[:8]}"
             configured = self._is_push_configured()
-            steps = [{"key": k, "label": label, "status": "pending", "finished_at": None, "detail": None}
-                     for k, label in STEP_DEFS]
+            steps = self._fresh_steps()
             self.repo.create_run(user_id, run_id, trade_date, trigger, steps,
-                                 {"channel": "feishu", "status": "pending", "sent_at": None, "error": None,
-                                  "configured": configured})
+                                 {"channel": self._push_channel_name(), "status": "pending", "sent_at": None,
+                                  "error": None, "configured": configured})
             _ACTIVE[user_id] = run_id
 
         def work() -> None:
             try:
-                self._execute_run(run_id, trade_date)
+                self._execute_run(run_id, trade_date, trigger=trigger)
             except Exception as exc:  # noqa: BLE001 - recorded on the run, never raised into the thread
                 logger.error("[DailyPlan] 运行 %s 异常: %s", run_id, exc, exc_info=True)
                 try:
@@ -800,20 +817,51 @@ class DailyPlanService:
     def _is_primary_user(self) -> bool:
         return self.user_id == get_primary_user_id()
 
+    def _fresh_steps(self) -> List[Dict[str, Any]]:
+        personal = not self._is_primary_user()
+        return [{"key": k, "label": "个人渠道推送" if personal and k == "push" else label, "status": "pending",
+                 "finished_at": None, "detail": None} for k, label in STEP_DEFS]
+
+    def _push_channel_name(self) -> str:
+        return "feishu" if self._is_primary_user() else "personal"
+
     def _is_push_configured(self) -> bool:
         # The Feishu channel is the server's (primary user's) own; a non-primary user's plan (their holdings) must
-        # never go through it. Personal channels arrive in P3, until then push is "not configured" for them.
+        # never go through it. Their plan goes to their own personal channels, and only when they have one.
         if not self._is_primary_user():
-            return False
+            from src.services.user_notification_service import user_has_channels
+
+            return user_has_channels(self.user_id)
         if self._push_configured is not None:
             return bool(self._push_configured())
         return feishu_configured(self.config)
 
-    def _execute_run(self, run_id: str, trade_date: date) -> None:
+    def _push_personal(self, markdown: str) -> None:
+        """Push the plan summary to this user's own channels (all enabled ones); raises when none delivered."""
+        from src.services.user_notification_service import build_user_notifier, push_to_user
+
+        notifier = build_user_notifier(self.user_id)
+        result = push_to_user(self.user_id, markdown, route_type="report", severity="info", notifier=notifier)
+        self._push_outcomes = [
+            {"channel": item.channel, "success": bool(item.success)} for item in (result.channel_results or [])
+        ]
+        if not result.success:
+            raise RuntimeError("个人推送渠道发送失败，请检查渠道配置")
+
+    def _notice_no_model_once(self) -> str:
+        """Scheduled run of a user without a usable model: remind them once (``push_once_notice``), never daily."""
+        from src.services.user_notification_service import NO_MODEL_NOTICE_KEY, push_once_notice
+
+        return push_once_notice(
+            self.user_id,
+            NO_MODEL_NOTICE_KEY,
+            "【NexStock】未配置分析模型：你的次日计划 / 盘前推送已暂停。请在个人设置里配置自己的模型 Key，配置后会自动恢复推送。",
+        )
+
+    def _execute_run(self, run_id: str, trade_date: date, trigger: str = "manual") -> None:
         user_id = self.user_id
         started = time.monotonic()
-        steps = [{"key": k, "label": label, "status": "pending", "finished_at": None, "detail": None}
-                 for k, label in STEP_DEFS]
+        steps = self._fresh_steps()
         by_key = {s["key"]: s for s in steps}
 
         def mark(key: str, status: str, detail: Optional[str] = None) -> None:
@@ -945,23 +993,41 @@ class DailyPlanService:
             watchlist=watch_payloads, failures=failures, boards=board["top"], data_gaps=run_gaps,
             duration_sec=duration, stock_total=len(codes), stock_failed=len(failures),
         )
-        push: Dict[str, Any] = {"channel": "feishu", "status": "skipped", "sent_at": None, "error": None,
+        channel_name = self._push_channel_name()
+        label_name = "飞书" if channel_name == "feishu" else "个人渠道"
+        push: Dict[str, Any] = {"channel": channel_name, "status": "skipped", "sent_at": None, "error": None,
                                 "configured": configured}
+        no_model_scheduled = llm is None and not self._is_primary_user() and trigger == "schedule"
         if not codes:
             mark("push", "skipped", "没有内容可推送")
+        elif no_model_scheduled:
+            # A user without a model of their own gets rule-only plans on the web, but no daily push: one reminder only.
+            reminder = self._notice_no_model_once() if configured else "no_channel"
+            push["reason"] = "no_model"
+            run_gaps.append("未配置模型：这份计划按规则生成，不推送；配置自己的模型后恢复推送")
+            mark("push", "skipped", "未配置模型，不推送" + ("（已提醒一次）" if reminder == "sent" else ""))
         elif not configured:
             mark("push", "skipped",
                  "没有配置飞书推送，计划只在网页里查看" if self._is_primary_user()
-                 else "个人推送渠道尚未开放，计划只在网页里查看")
+                 else "没有可用的个人推送渠道，计划只在网页里查看")
         else:
             try:
+                self._push_outcomes = []
                 self._pusher(markdown)
                 push.update(status="sent", sent_at=_iso_utc(datetime.now(timezone.utc).replace(tzinfo=None)))
-                mark("push", "succeeded", "已发送飞书摘要")
+                if self._push_outcomes:
+                    push["channels"] = list(self._push_outcomes)
+                mark("push", "succeeded", f"已发送{label_name}摘要")
             except Exception as exc:  # noqa: BLE001 - a push failure never fails the run
-                logger.warning("[DailyPlan] 飞书推送失败: %s", exc)
+                logger.warning("[DailyPlan] %s推送失败: %s", label_name, exc)
                 push.update(status="failed", error=str(exc)[:200] or type(exc).__name__)
+                if self._push_outcomes:
+                    push["channels"] = list(self._push_outcomes)
                 mark("push", "failed", push["error"])
+        if llm is not None and not self._is_primary_user() and trigger == "schedule":
+            from src.services.user_notification_service import NO_MODEL_NOTICE_KEY, clear_notice
+
+            clear_notice(self.user_id, NO_MODEL_NOTICE_KEY)  # a model is back: a later loss reminds once again
 
         # --- finish -------------------------------------------------------------------------------
         if not codes:

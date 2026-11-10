@@ -183,6 +183,35 @@ class UserDataKey(Base):
     created_at = Column(DateTime, default=utc_naive_now, nullable=False)
 
 
+class UserNotificationChannel(Base):
+    """A personal push channel of a non-primary user (docs/design/multi-user.md section 5).
+
+    ``config_encrypted`` is the JSON channel configuration (webhook URL, tokens, SMTP account ...) encrypted with
+    the owner's own data key (src/user_secrets.py). The primary user has no rows: their channels are ``.env``.
+    """
+
+    __tablename__ = 'user_notification_channel'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), nullable=False, index=True)
+    channel_type = Column(String(32), nullable=False)
+    name = Column(String(64), nullable=False, default="")
+    config_encrypted = Column(Text, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, nullable=False)
+
+
+class UserNoticeMarker(Base):
+    """"Already told this user once" markers (e.g. the no-model reminder), so a notice is not pushed every day."""
+
+    __tablename__ = 'user_notice_marker'
+
+    user_id = Column(String(64), primary_key=True)
+    notice_key = Column(String(64), primary_key=True)
+    sent_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
 class UserWatchlist(Base):
     """Watchlist of a non-primary user; the primary user's watchlist stays in ``.env`` ``STOCK_LIST``."""
 

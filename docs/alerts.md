@@ -443,7 +443,7 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 - 告警规则按用户隔离：`alert_rules.user_id` 标记归属，`/api/v1/alerts/*` 的规则、触发历史、通知记录和冷却状态只返回当前登录用户的数据；访问别人的规则 id 返回 404（与规则不存在时的响应体一致），客户端不传 `user_id`。
 - 触发、通知、冷却记录没有自己的 `user_id` 列，只能通过所属规则访问；删除规则会同时删除这些记录，避免 SQLite 复用 id 后挂到别人的新规则上。
 - `watchlist` / `portfolio_holdings` / `portfolio_account` 规则展开的是规则所有者的自选股和持仓账户（创建 `portfolio_*` 规则时校验账户属于当前用户）。
-- Worker 仍评估所有用户的启用规则，但 P2 阶段通知渠道只有 `.env` 里的那一份：只有主用户（`PRIMARY_USER_ID`）的规则会走现有渠道和冷却；其他用户的规则只写触发记录，并追加一条 `__no_channel__` 通知记录（该用户暂无个人渠道），不会推到主用户的渠道。按用户推送在 P3。
+- Worker 评估所有用户的启用规则。主用户（`PRIMARY_USER_ID`）的规则走现有 `.env` 渠道和冷却，不变；其他用户的规则按规则所属用户推送到他自己的个人渠道（`/api/v1/me/notification-channels`，多用户 P3a）：同样的冷却规则，每个渠道类型的结果写入 `alert_notifications`，发送失败不启动冷却、下一轮重试；该用户没有可用的个人渠道时只写触发记录并追加一条 `__no_channel__` 通知记录。其他用户的告警（可能含持仓展开）绝不会推到主用户的渠道，也不会推到 Bot 应用。 个人告警推送在整轮评估之后交给有界后台线程池（`USER_PUSH_MAX_WORKERS`，默认 4；每个用户同一时间最多一个推送在途），每次渠道发送有硬性总时限（`USER_PUSH_SEND_DEADLINE_SECONDS` / `USER_PUSH_TOTAL_DEADLINE_SECONDS`），所以某个用户卡住的目标不会拖慢其他用户和主用户的告警评估；每个用户每小时最多 `USER_ALERT_PUSH_MAX_PER_HOUR`（默认 60）条个人告警推送，超过的只写触发记录并追加一条 `__rate_limited__` 通知记录；个人渠道的通知记录不保存耗时（`latency_ms` 为空）。
 - `AGENT_EVENT_ALERT_RULES_JSON`（legacy `.env` 规则）、没有 `rule_id` 的触发记录属于主用户；`rule_sources` 只对主用户返回非零值。
 - 不同用户的同名、同参数规则互不去重、互不触发冷却（非主用户的去重 key 带用户前缀）。
 - 每个用户可同时启用的规则数有上限 `ALERT_MAX_ENABLED_RULES_PER_USER`（默认 200，范围 1-1000，写在 `.env`，管理员级设置，不进设置页）：创建启用的规则、启用已停用的规则（`POST /rules/{id}/enable` 或 `PATCH` 带 `enabled: true`）超限时返回 400，`error` 为 `rule_limit_exceeded`；停用的规则不计数，编辑已启用的规则不受影响。Worker 每轮对每个用户各取最近更新的这么多条启用规则，规则展开后的运行时条数上限（代码常量 `ALERT_WORKER_RULE_LIMIT`，1000）也是按用户计算，所以一个用户的大量规则不会把别人的规则挤出评估。把上限调低后，已经超出的存量规则不会被删除或停用，但 Worker 只评估最近更新的前 N 条。

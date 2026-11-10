@@ -113,6 +113,120 @@ describe('meApi', () => {
     expect(result).toMatchObject({ success: false, errorCategory: 'auth_failed', httpStatus: 401, latencyMs: 12 });
   });
 
+  describe('push channels and schedule', () => {
+    const channelPayload = {
+      id: 7,
+      channel_type: 'telegram',
+      name: 'Telegram',
+      enabled: true,
+      source: 'user',
+      editable: true,
+      readable: true,
+      config: { bot_token: '******', chat_id: '-100123', message_thread_id: '' },
+      created_at: '2026-11-10T08:00:00',
+      updated_at: null,
+    };
+
+    it('camel-cases a channel list but keeps the snake_case field names of the config', async () => {
+      get.mockResolvedValueOnce({
+        data: {
+          user_id: 'u-1',
+          is_primary: false,
+          managed_in_system_settings: false,
+          note: '',
+          max_channels: 10,
+          channels: [channelPayload],
+          channel_types: [
+            { channel_type: 'telegram', label: 'Telegram', fields: [{ name: 'bot_token', label: 'Bot Token', kind: 'telegram_token', required: true, secret: true }] },
+          ],
+        },
+      });
+
+      const result = await meApi.listNotificationChannels();
+
+      expect(get).toHaveBeenCalledWith('/api/v1/me/notification-channels');
+      expect(result).toMatchObject({ userId: 'u-1', managedInSystemSettings: false, maxChannels: 10 });
+      expect(result.channels[0]).toMatchObject({ id: 7, channelType: 'telegram', createdAt: '2026-11-10T08:00:00' });
+      expect(result.channels[0].config).toEqual({ bot_token: '******', chat_id: '-100123', message_thread_id: '' });
+      expect(result.channelTypes[0]).toMatchObject({ channelType: 'telegram' });
+      expect(result.channelTypes[0].fields[0]).toMatchObject({ name: 'bot_token', secret: true });
+    });
+
+    it('reads the primary user\'s read-only .env channels (no id, empty config)', async () => {
+      get.mockResolvedValueOnce({
+        data: {
+          user_id: 'u-admin',
+          is_primary: true,
+          managed_in_system_settings: true,
+          note: 'env',
+          max_channels: 0,
+          channels: [{ id: null, channel_type: 'feishu', name: '飞书', enabled: true, source: 'env', editable: false, readable: true, config: {} }],
+          channel_types: [],
+        },
+      });
+
+      const result = await meApi.listNotificationChannels();
+
+      expect(result.isPrimary).toBe(true);
+      expect(result.channels[0]).toMatchObject({ id: null, source: 'env', editable: false, config: {} });
+    });
+
+    it('creates with snake_case body keys and the config passed through verbatim', async () => {
+      post.mockResolvedValueOnce({ data: channelPayload });
+
+      const created = await meApi.createNotificationChannel({
+        channelType: 'telegram',
+        name: 'Telegram',
+        config: { bot_token: '123456:abcdefghijklmnopqrstuvwxyz', chat_id: '-100123' },
+      });
+
+      expect(post).toHaveBeenCalledWith('/api/v1/me/notification-channels', {
+        channel_type: 'telegram',
+        name: 'Telegram',
+        enabled: true,
+        config: { bot_token: '123456:abcdefghijklmnopqrstuvwxyz', chat_id: '-100123' },
+      });
+      expect(created.config.bot_token).toBe('******');
+    });
+
+    it('updates partially, deletes and tests by id', async () => {
+      put.mockResolvedValueOnce({ data: { ...channelPayload, enabled: false } });
+      del.mockResolvedValueOnce({
+        data: { user_id: 'u-1', is_primary: false, managed_in_system_settings: false, note: '', max_channels: 10, channels: [], channel_types: [] },
+      });
+      post.mockResolvedValueOnce({ data: { success: false, status: 'blocked', error_category: 'target_not_allowed', latency_ms: null } });
+
+      const updated = await meApi.updateNotificationChannel(7, { enabled: false });
+      const remaining = await meApi.deleteNotificationChannel(7);
+      const test = await meApi.testNotificationChannel(7);
+
+      expect(put).toHaveBeenCalledWith('/api/v1/me/notification-channels/7', { name: undefined, enabled: false, config: undefined });
+      expect(updated.enabled).toBe(false);
+      expect(del).toHaveBeenCalledWith('/api/v1/me/notification-channels/7');
+      expect(remaining.channels).toEqual([]);
+      expect(post).toHaveBeenCalledWith('/api/v1/me/notification-channels/7/test');
+      expect(test).toEqual({ success: false, status: 'blocked', errorCategory: 'target_not_allowed', latencyMs: null });
+    });
+
+    it('reads the effective schedule with the allowed range', async () => {
+      get.mockResolvedValueOnce({
+        data: {
+          user_id: 'u-1',
+          is_primary: false,
+          managed_in_system_settings: false,
+          daily_plan: { enabled: true, times: ['17:30'], default_time: '18:00', earliest_time: '17:30' },
+          preopen_push: { enabled: false, time: '08:15', default_time: '08:15', latest_time: '09:00' },
+        },
+      });
+
+      const schedule = await meApi.getSchedule();
+
+      expect(get).toHaveBeenCalledWith('/api/v1/me/schedule');
+      expect(schedule.dailyPlan).toEqual({ enabled: true, times: ['17:30'], defaultTime: '18:00', earliestTime: '17:30' });
+      expect(schedule.preopenPush.latestTime).toBe('09:00');
+    });
+  });
+
   it('reads the own usage dashboard with the default period and limit', async () => {
     get.mockResolvedValueOnce({
       data: {

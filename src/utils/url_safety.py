@@ -13,9 +13,11 @@ instances, the Hindsight URL and (P3) notification webhooks. A URL is accepted o
 
 The check is meant to run twice: when a value is saved (fail early with a clear message) and
 again right before the server connects (``assert_public_https_url``), because a hostname can
-start resolving to a private address after it was saved (DNS rebinding). The pre-connect check
-narrows that window to the gap between the check and the client's own resolution; pinning the
-resolved address would need control of the HTTP client, which LiteLLM does not expose.
+start resolving to a private address after it was saved (DNS rebinding). For ``requests`` callers
+that is closed completely: ``src/utils/safe_requests.py`` connects to the very addresses this check
+validated (``resolve_public_https_url``), and ``src/utils/safe_smtp.py`` does the same for SMTP. Only
+for clients we do not own (LiteLLM) the pre-connect check narrows the window to the gap between the
+check and the client's own resolution; pinning there would need control of that HTTP client.
 
 Redirect policy: the checks above only see the first URL, and a public host may answer with a 3xx to
 ``http://169.254.169.254/`` or ``https://127.0.0.1/``. Every request the server makes to a user-supplied
@@ -38,7 +40,7 @@ import ipaddress
 import socket
 import threading
 import unicodedata
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 Resolver = Callable[[str, int], Iterable[str]]
@@ -54,8 +56,14 @@ _BLOCKED_NETWORKS = tuple(
         "169.254.0.0/16",  # link-local incl. cloud metadata
         "100.100.100.200/32",  # Alibaba Cloud metadata
         "fd00:ec2::/32",   # AWS IPv6 metadata
+        "fec0::/10",       # deprecated IPv6 site-local (``is_global`` still says True; routed inside some sites)
     )
 )
+
+#: ``UnsafeUrlError.reason`` values that depend on DNS / address data (not on the text the caller typed). A consumer that
+#: reports a rejection to the user must not tell them apart (private address vs. unresolvable name): that is an oracle
+#: for what the server's resolver sees. They are reported as one generic ``unsafe_target``.
+RESOLUTION_DEPENDENT_REASONS = frozenset({"private_address", "dns_failure"})
 
 
 class UnsafeUrlError(ValueError):
@@ -154,28 +162,20 @@ def _check_syntax(url: str, *, schemes: Sequence[str]):
     return parsed, host, port
 
 
-def check_public_https_url(
-    url: str,
-    *,
-    resolver: Optional[Resolver] = None,
-    resolve: bool = True,
-    schemes: Sequence[str] = ("https",),
-) -> str:
-    """Return ``url`` (stripped) when it is a public https endpoint, else raise :class:`UnsafeUrlError`.
-
-    ``resolve=False`` skips DNS (syntax and IP-literal checks only); production callers keep the
-    default so a hostname that points at a private address is refused. ``resolver`` maps
-    ``(host, port)`` to address strings and exists so tests never touch the network.
-    """
+def _validate_public_https_url(
+    url: str, *, resolver: Optional[Resolver], resolve: bool, schemes: Sequence[str],
+) -> "Tuple[str, str, int, List[str]]":
+    """``(url, host, port, addresses)``; ``addresses`` are the checked public answers (empty when ``resolve`` is False)."""
     url = url.strip() if isinstance(url, str) else url
     _parsed, raw_host, port = _check_syntax(url, schemes=schemes)
     host = _normalize_host(raw_host)
+    effective_port = port or 443
 
     literal = _parse_ip(host)
     if literal is not None:
         if not is_public_ip(literal):
             raise UnsafeUrlError("private_address", "URL must not target a private, loopback or link-local address")
-        return url
+        return url, host, effective_port, [str(literal)]
 
     canonical = _canonical_ipv4(host)
     if canonical is not None:
@@ -190,10 +190,10 @@ def check_public_https_url(
         raise UnsafeUrlError("private_host", "URL host must be a fully qualified public hostname")
 
     if not resolve:
-        return url
+        return url, host, effective_port, []
     lookup = resolver or _default_resolver
     try:
-        answers = list(lookup(host, port or 443))
+        answers = list(lookup(host, effective_port))
     except OSError as exc:
         raise UnsafeUrlError("dns_failure", f"URL host {host} cannot be resolved") from exc
     if not answers:
@@ -202,12 +202,70 @@ def check_public_https_url(
         address = _parse_ip(str(answer))
         if address is None or not is_public_ip(address):
             raise UnsafeUrlError("private_address", "URL host resolves to a private, loopback or link-local address")
-    return url
+    return url, host, effective_port, [str(answer) for answer in answers]
+
+
+def check_public_https_url(
+    url: str,
+    *,
+    resolver: Optional[Resolver] = None,
+    resolve: bool = True,
+    schemes: Sequence[str] = ("https",),
+) -> str:
+    """Return ``url`` (stripped) when it is a public https endpoint, else raise :class:`UnsafeUrlError`.
+
+    ``resolve=False`` skips DNS (syntax and IP-literal checks only); production callers keep the
+    default so a hostname that points at a private address is refused. ``resolver`` maps
+    ``(host, port)`` to address strings and exists so tests never touch the network.
+    """
+    return _validate_public_https_url(url, resolver=resolver, resolve=resolve, schemes=schemes)[0]
+
+
+def resolve_public_https_url(url: str, *, resolver: Optional[Resolver] = None) -> "Tuple[str, int, List[str]]":
+    """``(host, port, addresses)`` of a public https URL: every DNS answer was checked, so a caller that connects to
+    one of ``addresses`` (instead of resolving ``host`` again) talks to exactly what was validated (DNS-rebinding pin)."""
+    _url, host, port, addresses = _validate_public_https_url(url, resolver=resolver, resolve=True, schemes=("https",))
+    return host, port, addresses
 
 
 def assert_public_https_url(url: str, *, resolver: Optional[Resolver] = None) -> str:
     """Call-time form of :func:`check_public_https_url` (re-resolves DNS right before connecting)."""
     return check_public_https_url(url, resolver=resolver, resolve=True)
+
+
+def resolve_public_host(host: str, port: int, *, resolver: Optional[Resolver] = None) -> List[str]:
+    """Public addresses of a bare ``host`` (not a URL), for connections that are not HTTP (a personal SMTP server).
+
+    Same rules as :func:`check_public_https_url` for the host part: a real multi-label hostname or a canonical public
+    IP literal, never a local / internal name or a numeric alias, and *every* DNS answer must be public. Returns the
+    addresses so the caller can connect to one of them (pinning the checked address, no second resolution).
+    """
+    if not isinstance(host, str) or not host.strip() or any(ch.isspace() or ord(ch) < 32 or ch in "/\\@" for ch in host):
+        raise UnsafeUrlError("invalid_host", "Host is not valid")
+    normalized = _normalize_host(host)
+    literal = _parse_ip(normalized)
+    if literal is not None:
+        if not is_public_ip(literal):
+            raise UnsafeUrlError("private_address", "Host must not be a private, loopback or link-local address")
+        return [str(literal)]
+    if _canonical_ipv4(normalized) is not None or normalized.replace(".", "").isdigit() or normalized.startswith("0x"):
+        raise UnsafeUrlError("numeric_host", "Host must be a hostname or a canonical IP address")
+    if normalized == "localhost" or normalized in _METADATA_HOSTS or normalized.endswith(_BLOCKED_SUFFIXES):
+        raise UnsafeUrlError("private_host", "Host is a local or internal name")
+    if "." not in normalized:
+        raise UnsafeUrlError("private_host", "Host must be a fully qualified public hostname")
+    lookup = resolver or _default_resolver
+    try:
+        answers = [str(item) for item in lookup(normalized, port)]
+    except OSError as exc:
+        raise UnsafeUrlError("dns_failure", f"Host {normalized} cannot be resolved") from exc
+    if not answers:
+        raise UnsafeUrlError("dns_failure", f"Host {normalized} cannot be resolved")
+    for answer in answers:
+        address = _parse_ip(answer)
+        if address is None or not is_public_ip(address):
+            raise UnsafeUrlError("private_address", "Host resolves to a private, loopback or link-local address")
+    return answers
 
 
 def split_url_list(value: str) -> List[str]:

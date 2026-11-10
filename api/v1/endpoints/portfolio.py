@@ -502,8 +502,8 @@ def analyze_position(
     except Exception as exc:
         raise _internal_error("Resolve portfolio position failed", exc)
 
-    # Only the primary user may use the server's notification channels; a non-primary user's analysis
-    # (position-aware) must neither be pushed through them nor leave their holding in shared decision signals.
+    # A non-primary user's analysis (position-aware) is pushed to that user's own channels only, never through the
+    # server's ``.env`` channels, and it never leaves their holding in shared decision signals.
     is_primary = user.user_id == get_primary_user_id()
     context[PORTFOLIO_CONTEXT_OWNER_KEY] = user.user_id
     if not is_primary:
@@ -524,7 +524,7 @@ def analyze_position(
         # A position-aware analysis is never a direct reuse (its report is private) but it still skips fetching the
         # market inputs that an earlier analysis of the same stock / trading date collected.
         reuse_metadata=not request.force,
-        notify=is_primary,
+        notify=True,
         **({} if is_primary else {"user_id": user.user_id}),
     )
     if duplicates:

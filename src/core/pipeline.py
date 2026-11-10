@@ -40,6 +40,7 @@ from src.analyzer import (
     stabilize_decision_with_structure,
 )
 from src.notification import NotificationService, NotificationChannel
+from src.services.user_notification_service import build_user_notifier
 from src.schemas.decision_action import normalize_decision_action
 from src.report_language import (
     get_placeholder_text,
@@ -310,7 +311,12 @@ class StockAnalysisPipeline:
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
         self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
-        self.notifier = NotificationService(source_message=source_message)
+        if is_user_view(self.config):
+            # A non-primary user's pushes go to that user's own channels only (none = nothing is sent); never to the
+            # system's ``.env`` channels or bot apps (docs/design/multi-user.md section 5).
+            self.notifier = build_user_notifier(self.user_id)
+        else:
+            self.notifier = NotificationService(source_message=source_message)
         self.market_structure_service = MarketStructureService(fetcher_manager=self.fetcher_manager)
         self.market_hotspot_service: Optional[MarketHotspotService] = None
         try:
@@ -3550,10 +3556,6 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None
         """
         logger.info(f"========== 开始处理 {code} ==========")
-        if is_user_view(getattr(self, "config", None)):
-            # Personal accounts have no push channel yet; never fall through to the server's own channels.
-            single_stock_notify = False
-
         from src.services.history_loader import set_frozen_target_date, reset_frozen_target_date
         frozen_td = self._resolve_resume_target_date(
             code, current_time=current_time, analysis_target=analysis_target
@@ -3879,7 +3881,7 @@ class StockAnalysisPipeline:
                     report_content = self.notifier.generate_single_stock_report(result)
                     logger.info(f"[{stock_code}] 使用精简报告格式")
 
-                save_report = getattr(self.notifier, "save_report_to_file", None)
+                save_report = None if is_user_view(getattr(self, "config", None)) else getattr(self.notifier, "save_report_to_file", None)
                 if callable(save_report):
                     try:
                         date_str = datetime.now().strftime('%Y%m%d')
@@ -3966,6 +3968,10 @@ class StockAnalysisPipeline:
         """保存分析报告到本地文件（与通知推送解耦）"""
         self._last_local_report_path = None
         self._last_local_report_error = None
+        if is_user_view(getattr(self, "config", None)):
+            # reports/ is one shared directory with fixed, date-based names (and the primary user's FEISHU_SEND_AS_FILE
+            # upload reads from it): a non-primary user's run neither overwrites nor exposes those files.
+            return None
         report: Optional[str] = None
         try:
             report = self._generate_aggregate_report(results, report_type)
@@ -4070,6 +4076,20 @@ class StockAnalysisPipeline:
                 )
                 return
             
+            # 个人推送渠道（非主用户）：交给个人通知服务整体发送，不走下面逐渠道的系统渠道分支
+            if is_user_view(self.config) and hasattr(self.notifier, "has_enabled_channels"):
+                available = self.notifier.is_available()
+                sent = bool(available and self.notifier.send(
+                    report, route_type="report", severity="info", email_send_to_all=True,
+                ))
+                status = "success" if sent else ("failed" if available else "not_configured")
+                notification_run = self._build_notification_run_snapshot(
+                    channel="report", status=status, success=sent, attempts=1 if available else 0,
+                )
+                record_notification_run(channel="report", status=status, success=sent, attempts=1 if available else 0)
+                self._refresh_saved_diagnostic_snapshot(results=results, notification_run=notification_run)
+                return
+
             # 推送通知
             if self.notifier.is_available():
                 channels = self.notifier.get_available_channels()
@@ -4262,7 +4282,7 @@ class StockAnalysisPipeline:
                         continue
                     if channel == NotificationChannel.FEISHU:
                         def _send_feishu_report() -> bool:
-                            if getattr(self.notifier, "_feishu_send_as_file", False):
+                            if getattr(self.notifier, "_feishu_send_as_file", False) and not is_user_view(getattr(self, "config", None)):
                                 date_str = datetime.now().strftime('%Y%m%d')
                                 filepath = self.notifier.save_report_to_file(
                                     strip_hidden_markdown_metadata(report).strip(),

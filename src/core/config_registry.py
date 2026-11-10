@@ -80,6 +80,19 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "ALERT_MAX_ENABLED_RULES_PER_USER",
     # Per-user cap on concurrently running async analysis tasks (fair queue): a deployment-level fairness limit.
     "ANALYSIS_MAX_CONCURRENT_PER_USER",
+    # Personal push channels / per-user scheduled runs / shared news pool coverage (multi-user P3a): deployment-level
+    # limits edited in .env, not part of the settings form.
+    "NOTIFICATION_CHANNELS_MAX_PER_USER",
+    "USER_SCHEDULE_MAX_WORKERS",
+    "USER_SCHEDULE_RUN_TIMEOUT_SECONDS",
+    "DAILY_PLAN_DATA_READY_BUFFER_MINUTES",
+    "NEWS_POOL_MAX_CODES_PER_USER",
+    "NEWS_POOL_MAX_CODES_TOTAL",
+    "USER_PUSH_SEND_DEADLINE_SECONDS",
+    "USER_PUSH_TOTAL_DEADLINE_SECONDS",
+    "USER_PUSH_MAX_WORKERS",
+    "USER_CHAT_SEND_MAX_PER_HOUR",
+    "USER_ALERT_PUSH_MAX_PER_HOUR",
     # Optional FXMacroData authorization is read from the process environment
     # when a tool runs; it is not a Web settings or model-input field.
     "FXMACRODATA_API_KEY",
@@ -118,6 +131,7 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     # Next-day plan (daily plan): position rules and the auto-run switch are edited on the new
     # Preferences page (/preferences), not the generic settings form. The run time is SCHEDULE_TIME.
     "DAILY_PLAN_ENABLED",
+    "DAILY_PLAN_TIME",
     "POSITION_STOP_LOSS_PCT",
     "POSITION_MAX_TOTAL_PCT",
     "POSITION_MAX_HOLDINGS",
@@ -5155,7 +5169,7 @@ _USER_SCOPE_KEYS = frozenset({
     "PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN", "NTFY_URL", "NTFY_TOKEN", "GOTIFY_URL", "GOTIFY_TOKEN",
     "SERVERCHAN3_SENDKEY", "ASTRBOT_URL", "ASTRBOT_TOKEN",
     # Push switches / times, routing preferences
-    "SINGLE_STOCK_NOTIFY", "MERGE_EMAIL_NOTIFICATION", "DAILY_PLAN_ENABLED",
+    "SINGLE_STOCK_NOTIFY", "MERGE_EMAIL_NOTIFICATION", "DAILY_PLAN_ENABLED", "DAILY_PLAN_TIME",
     "PREOPEN_PUSH_ENABLED", "PREOPEN_PUSH_TIME", "NOTIFICATION_REPORT_CHANNELS",
     "NOTIFICATION_ALERT_CHANNELS", "NOTIFICATION_DEDUP_TTL_SECONDS", "NOTIFICATION_COOLDOWN_SECONDS",
     "NOTIFICATION_QUIET_HOURS", "NOTIFICATION_TIMEZONE", "NOTIFICATION_MIN_SEVERITY",

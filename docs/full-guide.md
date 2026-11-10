@@ -514,6 +514,7 @@ daily_stock_analysis/
 | `PRIMARY_USER_ID` | 主用户 ID（多用户地基）：既有历史数据，以及 CLI、定时任务、机器人、MCP 等无用户上下文的入口都归属主用户，主用户的个人设置就是 `.env`。`AUTH_MODE=local` 下所有请求都以主用户（管理员）身份运行；`user_center` 下设成管理员在用户中心的 `userId`。升级首次启动时数据库迁移会把历史数据回填给当时配置的值（迁移前自动备份数据库），请在首次启动前设好，之后再改不会移动已回填的数据。仅能在 `.env`/部署环境修改，改后重启 | `local` |
 | `USER_SECRET_KEY` | 用户个人密钥（模型 Key 等）加密用的根密钥，可选。留空时仅在非主用户首次保存密钥时自动生成 `user_secret.key`（与数据库同目录，权限 600），单人 `local` 部署不会生成；需要与数据库分开存放时用本项覆盖（高熵随机串）。备份数据库时一并备份，根密钥丢失后所有用户已保存的密钥无法解密 | 空 |
 | `MAX_WORKERS` | 并发线程数 | `3` |
+| `NOTIFICATION_CHANNELS_MAX_PER_USER` | 每个用户最多可添加的个人推送渠道数（范围 1-100，管理员级设置，写在 `.env`，不进设置页）；个人渠道见「个人推送渠道与按用户定时」 | `10` |
 | `ANALYSIS_MAX_CONCURRENT_PER_USER` | 有其他用户排队时每个用户保底占用的异步分析线程数（范围 1-20，管理员级设置，写在 `.env`，不进设置页）。异步分析队列按用户轮流取任务；没有别人排队时一个用户可以用满 `MAX_WORKERS`，有人提交后空出来的线程优先给低于这个数的用户。`MAX_WORKERS` 仍是全站总线程数；系统任务（大盘复盘、选股）和机器人 / CLI 按主用户计 | `1` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
@@ -1566,6 +1567,15 @@ python main.py --debug
 | `PREOPEN_PUSH_ENABLED` | `false` | 定时模式下是否在每个交易日运行并推送「盘前版」：先用 yfinance 取隔夜美股日线写入 `stock_daily`，再对 `STOCK_LIST` 运行现有个股分析（附隔夜美股、映射板块、资讯摘要作为额外上下文），通过现有通知渠道推送，不改动 `SCHEDULE_TIME` 的每日分析 |
 | `PREOPEN_PUSH_TIME` | `08:15` | 盘前版开始运行时间（`HH:MM`，本机时区）；分析需要时间，8:15 开始约 8:45 送达。资讯摘要依赖资讯入库模块，不可用时显示「资讯暂不可用」，其余照常 |
 | `DAILY_PLAN_ENABLED` | `false` | 定时模式下是否在每个 A 股交易日按 `SCHEDULE_TIME`（设置了 `SCHEDULE_TIMES` 时按每个时间点）自动生成自选股和持仓的次日计划并推送飞书摘要；独立线程运行，不影响同一时刻的每日分析。计划基于本地已入库的最新交易日，想用当天数据请把时间设在 17:00 板块流程之后。详见 [次日计划 API 与 Web 入口](daily-plan-api.md) |
+| `DAILY_PLAN_TIME` | 空 | 次日计划的运行时间（`HH:MM`）；留空沿用 `SCHEDULE_TIME` / `SCHEDULE_TIMES`（与以前一致）。设置后主用户的计划只在这个时间运行。多用户下每个用户在个人设置里设自己的值，必须晚于系统的板块数据就绪时间（`BOARD_PIPELINE_SCHEDULE_TIME` + `DAILY_PLAN_DATA_READY_BUFFER_MINUTES`），早于该时间的设置被拒绝（400 `plan_time_too_early`） |
+| `DAILY_PLAN_DATA_READY_BUFFER_MINUTES` | `30` | 个人次日计划时间的下限 = `BOARD_PIPELINE_SCHEDULE_TIME`（板块流程关闭时按收盘 15:00）加这个缓冲（分钟，范围 0-240，管理员级设置，写在 `.env`，不进设置页） |
+| `USER_SCHEDULE_MAX_WORKERS` | `4` | 多用户定时：同一时间点同时运行的用户数上限（次日计划 / 盘前推送，范围 1-32，管理员级设置，写在 `.env`） |
+| `USER_PUSH_SEND_DEADLINE_SECONDS` | `30` | 个人推送渠道：单个渠道一次发送的硬性总时限（秒，含 DNS、连接、TLS、读响应与 SMTP，范围 5-300，管理员级设置，写在 `.env`） |
+| `USER_PUSH_TOTAL_DEADLINE_SECONDS` | `60` | 个人推送渠道：一次推送（该用户所有渠道合计）的总预算（秒，范围 10-900）；用完后不再尝试后面的渠道 |
+| `USER_PUSH_MAX_WORKERS` | `4` | 个人告警推送的后台线程数（范围 1-32）；每个用户同一时间最多一次推送在途 |
+| `USER_CHAT_SEND_MAX_PER_HOUR` | `30` | 每个非主用户每小时最多通过 `/agent/chat/send` 转发的次数（范围 1-10000），超过返回 `rate_limited` |
+| `USER_ALERT_PUSH_MAX_PER_HOUR` | `60` | 每个非主用户每小时最多收到的个人告警推送条数（范围 1-10000），超过只记录触发 |
+| `USER_SCHEDULE_RUN_TIMEOUT_SECONDS` | `1800` | 多用户定时：单个用户一次运行的独立超时（秒，范围 30-21600，管理员级设置）；超时只放弃这个用户的这次运行，不影响其他用户 |
 | `POSITION_STOP_LOSS_PCT` | `10` | 次日计划的止损幅度（%），从买入价或持仓成本起算 |
 | `POSITION_MAX_TOTAL_PCT` | `100` | 总仓位上限（%，持仓市值占总资金） |
 | `POSITION_MAX_HOLDINGS` | `1` | 最多持股数；达到后新股票不再给「买入」，改为评估换股 |
@@ -1582,6 +1592,8 @@ python main.py --debug
 | `NEWS_FETCH_TIMEOUT_SEC` | `30` | 单次 AKShare 调用超时（秒）；超时或上一次调用未结束的来源本轮跳过 |
 | `NEWS_ANNOUNCEMENT_MODE` | `auto` | 公告取数方式：`auto` 在自选股 + 持仓不超过 `NEWS_ANNOUNCEMENT_BY_CODE_MAX` 只时逐只取（每只约 2 次请求，一次覆盖整个日期区间），否则取全市场当日公告再过滤（每天约 20–60 次请求）；也可固定为 `by_code` / `market` |
 | `NEWS_ANNOUNCEMENT_BY_CODE_MAX` | `12` | `auto` 模式下逐只取公告的代码数上限 |
+| `NEWS_POOL_MAX_CODES_PER_USER` | `50` | 多用户：公告抓取除主用户的自选股 + 持仓外，每个其他用户最多贡献的代码数（持仓优先，范围 0-500，0 关闭这部分覆盖；管理员级设置，写在 `.env`）。资讯池共享，只增加代码集合，不记录代码属于谁 |
+| `NEWS_POOL_MAX_CODES_TOTAL` | `300` | 多用户：所有其他用户合计最多新增的公告代码数（按用户轮流取，范围 0-5000）；主用户的代码不受限制 |
 | `NEWS_CLASSIFY_ENABLED` | `true` | 是否用轻量模型（`LITELLM_LIGHT_MODEL`，留空用主模型）给新资讯分类：范围、重要程度 1–5、关联板块（映射到板块目录）、美股龙头、是否突发 |
 | `NEWS_CLASSIFY_BATCH_SIZE` | `20` | 每次模型调用分类的条数 |
 | `NEWS_CLASSIFY_MAX_ITEMS_PER_RUN` | `60` | 每轮最多分类的条数 |
@@ -1771,13 +1783,29 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - **选股**：选股运行（`POST /screening/screen*`）使用系统模型和搜索 Key，仅管理员可触发；所有用户都能查看共享的选股历史、策略和热点。
 - 这组接口不新增配置项，`.env.example` 无变化。
 
+### 个人推送渠道与按用户定时（多用户，后端）
+
+> 仅 `AUTH_MODE=user_center` 下有非主用户。主用户的推送渠道就是上面的 `.env` 渠道，行为不变。设计见 [docs/design/multi-user.md](design/multi-user.md) 第 5、6、21、22 节；Web 页面见下面「个人设置页与管理员门控」，下面是接口。
+
+- **个人渠道**：`GET/POST /api/v1/me/notification-channels`、`PUT/DELETE /api/v1/me/notification-channels/{id}`、`POST /api/v1/me/notification-channels/{id}/test`。类型与字段：`feishu`（`webhook_url`，可选 `secret`、`keyword`）、`dingtalk`（`webhook_url`，可选 `secret`）、`wecom`（`webhook_url`）、`telegram`（`bot_token`、`chat_id`，可选 `message_thread_id`）、`pushplus`（`token`，可选 `topic`）、`serverchan3`（`sendkey`）、`email`（自己的 SMTP：`smtp_host`、`smtp_port` 465 / 587 / 25、`password`、`sender`，可选 `username`、`receivers`≤5）、`custom`（`webhook_url`，可选 `bearer_token`、`body_template`）。每人最多 `NOTIFICATION_CHANNELS_MAX_PER_USER`（默认 10）条，同一类型可以有多条。
+- **安全**：配置用该用户自己的数据密钥加密；读取时密钥字段（Webhook 地址、Token、密码、签名密钥）一律 `******`，更新时留空或 `******` 保持原值；别人的渠道 id 与不存在的 id 响应一致（404 `channel_not_found`）。Webhook 只接受 `https` 公网地址，SMTP 主机必须是公网主机、端口只允许 465 / 587 / 25（587 / 25 必须 STARTTLS）；保存时检查一次（400 `unsafe_target`），每次发送前再检查一次，不跟随重定向，SMTP 连接固定到检查过的地址。「测试发送」发固定文案，只返回 `{success, status, error_category}`（`send_failed` / `target_not_allowed` / `unreadable`），不返回上游内容，同一渠道 10 秒内只能测一次（429 `rate_limited`）。
+- **只发本人**：非主用户的次日计划、盘前推送、提醒通知、个股分析 / 持仓手动分析的 `notify`、`POST /agent/chat/send` 只发到他自己启用的渠道，不会走 `.env` 渠道和 Bot 应用（`FEISHU_APP_*`、`FEISHU_CHAT_ID`、钉钉 / Discord / Slack 机器人）；没有渠道就不推送（次日计划推送步骤 `skipped`、提醒记 `__no_channel__`、`/chat/send` 返回 `no_channels`）。单个渠道失败只记在本人的运行 / 提醒记录里，不影响其它渠道和运行本身。
+- **主用户**：`GET` 只读列出 `.env` 渠道类型（不含地址和密钥）并提示去系统设置；写入返回 403 `primary_user_uses_env`。
+- **按用户定时**：个人设置里的 `DAILY_PLAN_ENABLED`、`DAILY_PLAN_TIME`、`PREOPEN_PUSH_ENABLED`、`PREOPEN_PUSH_TIME`（`PUT /me/settings`，`GET /me/schedule` 返回生效值和允许范围）。计划时间必须晚于系统的板块数据就绪时间（`BOARD_PIPELINE_SCHEDULE_TIME` + `DAILY_PLAN_DATA_READY_BUFFER_MINUTES`，默认 17:30，否则 400 `plan_time_too_early`，响应带 `earliest_time`），盘前推送开始时间必须在隔夜美股收盘数据就绪之后（美东 16:00 收盘折合北京时间 04:00 / 05:00，取较晚者加 30 分钟缓冲，即不得早于 05:30，否则 400 `preopen_time_too_early`，响应带 `earliest_time`）且不得晚于 09:00（400 `preopen_time_too_late`）。同一时间点的用户按每天不同的随机顺序启动，一个用户同一时间只有一次定时运行；盘前批次 09:20 还没完成就算迟到（未启动的跳过为 `late`，运行中的放弃）。调度器为所有用户设置过的时间点去重后各注册一个任务（约每分钟重读，改设置无需重启），到点按用户并行运行（最多 `USER_SCHEDULE_MAX_WORKERS` 个，默认 4），每个用户一次运行有独立超时 `USER_SCHEDULE_RUN_TIMEOUT_SECONDS`（默认 1800 秒），某个用户卡住或失败只影响他自己；同一交易日的板块 / 隔夜美股上下文只算一次。只运行有自选或持仓的用户。主用户仍走 `.env` 的定时任务。和主用户的任务一样，需要开启定时模式（`SCHEDULE_ENABLED=true` 或 `--schedule`）才会运行。
+- **没有模型的用户**：定时的次日计划按规则生成并标注「未配置模型」、不推送，盘前推送跳过；有个人渠道时只推送一条提醒（不会每天推送，配置模型后恢复）。
+- **资讯池**：公告抓取除主用户外还覆盖其他用户的自选股 + 持仓（共享抓取，只增加代码集合，不记录代码属于谁）；每个用户最多贡献 `NEWS_POOL_MAX_CODES_PER_USER`（默认 50）只，其他用户合计最多新增 `NEWS_POOL_MAX_CODES_TOTAL`（默认 300）只，设为 0 关闭。
+- **配置**：`DAILY_PLAN_TIME`（用户级，留空沿用 `SCHEDULE_TIME(S)`）、`DAILY_PLAN_DATA_READY_BUFFER_MINUTES`、`NOTIFICATION_CHANNELS_MAX_PER_USER`、`USER_SCHEDULE_MAX_WORKERS`、`USER_SCHEDULE_RUN_TIMEOUT_SECONDS`、`NEWS_POOL_MAX_CODES_PER_USER`、`NEWS_POOL_MAX_CODES_TOTAL`、`USER_PUSH_SEND_DEADLINE_SECONDS`、`USER_PUSH_TOTAL_DEADLINE_SECONDS`、`USER_PUSH_MAX_WORKERS`、`USER_CHAT_SEND_MAX_PER_HOUR`、`USER_ALERT_PUSH_MAX_PER_HOUR`（均写在 `.env`，见 `.env.example`）。
+
 ### 个人设置页与管理员门控（Web，多用户）
 
 > 前端设计见 [docs/design/multi-user.md](design/multi-user.md) 第 3.6、10、20 节。单人部署和桌面端（`AUTH_MODE=local`）不请求 `/api/v1/me`，按单人管理员处理，页面与导航和以前完全一致。
 
 - **当前用户**：`AUTH_MODE=user_center` 登录后只请求一次 `GET /api/v1/me`，得到 `is_admin`、`model_key_configured` 和显示名；侧边栏（老版页面）和左侧悬浮导航（次日计划页）显示当前用户及角色。
 - **设置页拆分**：
-  - 「个人设置」（`/settings/personal`，所有登录用户）：模型、搜索、数据源凭据、Agent、推送偏好、仓位规则、报告偏好。每项右下角标明来源——「我的设置」/「系统默认」/「未配置」；密钥只显示 `******`，**留空表示保持当前值**；「恢复默认」删除自己的值（模型 / 搜索 Key 等不回退的项恢复后即为「未配置」）；「测试模型连接」使用**已保存**的配置发一次最小请求，失败只显示通用类别（认证失败 / 无法连接 / 超时 / 响应不可用），不显示上游错误文本。推送渠道的 webhook / Token 暂不在此页提供（个人推送渠道在 P3），这里只有推送开关和时间等偏好。
+  - 「个人设置」（`/settings/personal`，所有登录用户）：模型、搜索、数据源凭据、Agent、推送偏好、仓位规则、报告偏好。每项右下角标明来源——「我的设置」/「系统默认」/「未配置」；密钥只显示 `******`，**留空表示保持当前值**；「恢复默认」删除自己的值（模型 / 搜索 Key 等不回退的项恢复后即为「未配置」）；「测试模型连接」使用**已保存**的配置发一次最小请求，失败只显示通用类别（认证失败 / 无法连接 / 超时 / 响应不可用），不显示上游错误文本。推送相关分三个标签：「推送渠道」管理自己的渠道（见下），「推送与定时」设次日计划 / 盘前推送的开关与时间，「推送偏好」只有报告类型、静默时段等其余偏好；旧的 `FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` 等渠道凭据键不再显示（个人推送只读「推送渠道」）。
+  - 「推送渠道」：每个渠道一行（类型图标、名称、启用开关、打码后的配置），「添加渠道」/「编辑」弹出按类型显示字段的对话框（地址和密钥保存后只显示 `******`，**留空或保持 `******` 表示保持原值**，编辑只提交改动的字段），「删除」需确认，「发送测试消息」只显示通用结果（已发送 / 渠道拒绝 / 地址不被允许 / 配置无法读取 / 测试太频繁，同一渠道约 10 秒内只能测一次，不显示上游文本）。Webhook 只允许公网 https 地址，邮件的 SMTP 服务器必须是公网主机（端口 465 / 587 / 25），否则保存失败并在字段下方说明；每人最多 `NOTIFICATION_CHANNELS_MAX_PER_USER` 个渠道。主用户的渠道就是 `.env` 渠道：只读列出渠道类型（不含地址 / 密钥），链接到系统设置。
+  - 「推送与定时」：次日计划开关 + 生成时间、盘前推送开关 + 时间；时间留空沿用系统默认，输入框下方提示最早可选 / 最晚可选，超出范围保存时被拒绝（`plan_time_too_early` / `preopen_time_too_late`，整批不保存）；页面上方是 `GET /me/schedule` 的生效定时摘要；没有启用的渠道时提示「未配置推送渠道，定时结果只在网页查看」。主用户的定时在系统设置中管理，这里只读。
+  - 次日计划「运行和推送」页的最近一次运行：非主用户的推送显示为「个人渠道推送」，列出每个渠道类型的送达 / 失败，没有可用渠道或「未配置模型」时说明原因；主用户和 `local` 模式仍是「飞书推送」。
   - 「系统设置」（`/settings`）仅管理员；普通用户访问 `/settings`、`/preferences` 会被带到个人设置。`AUTH_MODE=user_center` 下的管理员页首有「系统设置 / 个人设置」切换。主用户（`PRIMARY_USER_ID`）的个人设置就是 `.env`，个人设置页只读并提示去系统设置。
 - **管理员门控**：普通用户看不到选股（运行）和系统设置入口，直接访问选股页显示「需要管理员权限」；回测「运行回测 / 强制重跑」、大盘复盘、决策信号的重评估 / 反馈 / 状态变更、板块推荐「重新生成」、问股的「上下文压缩」开关（读写系统配置，普通用户改在个人设置的 Agent 分组）和首页的系统初始化检查对他们隐藏。门控依据 `/me.is_admin`；`local` 模式视为管理员。后端仍是权威：越权调用返回 403 `ADMIN_REQUIRED`，页面显示「需要管理员权限」。
 - **没有模型 Key**：`model_key_configured=false` 的用户在首页、问股、我的股票、助手页顶部看到横幅并链接到个人设置；任何入口收到 `model_key_required`（还有 `model_route_not_allowed`、`unsafe_url`）都显示对应说明和「前往个人设置」链接。保存个人设置后会重新读取 `/me`，横幅随之消失。
@@ -1854,7 +1882,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 > 说明：`GET /api/v1/usage/dashboard` 复用 `llm_usage` 审计表，不新增配置项或数据库迁移。接口仅返回已落库的调用次数、Prompt/Completion/Total Token 聚合、模型维度用量和最近调用记录，不推导模型上下文窗口或 provider 元数据。
 > 说明（Issue #1520）：列表中的模型名展示字段仅来源于历史快照中的 `model_used`，仅用于历史回溯展示，不影响运行时模型模型路由（`litellm_model`、`llm_model_list`）、Provider、Base URL 与配置迁移/清理语义。回退方式为回退本次提交，现网历史查询/抽屉/接口链路兼容性保持不变。
 > 说明：历史详情、同步分析响应和 completed 任务状态会在 `report.details.analysis_context_pack_overview` 返回低敏输入数据块 overview；其中同步分析响应依赖本次已持久化的 `analysis_history.context_snapshot`，`SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回 overview。`details.context_snapshot` 会剥离该顶层字段，不返回完整 `AnalysisContextPack` 或 Prompt summary。
-> 问股会话归属（多用户）：会话归创建者所有。`GET /api/v1/agent/chat/sessions` 只列出当前用户的会话（`user_id` 查询参数仍是会话 id 前缀过滤，只在本人会话内生效）；读取、续聊（`/chat`、`/chat/stream`）、删除、`/context`、`/compact` 对别人的会话 id 一律返回 404（SSE 为 `session_not_found` 错误事件），响应体与接口原有的“会话不存在”一致；消息、摘要只能经本人会话访问。没有状态记录、只有消息的历史会话归主用户。`POST /chat/send` 推送到主用户的通知渠道，非主用户调用返回 `no_channels`（个人推送渠道后续提供）；`/chat/stream/{request_id}/cancel` 只能取消本人的请求。
+> 问股会话归属（多用户）：会话归创建者所有。`GET /api/v1/agent/chat/sessions` 只列出当前用户的会话（`user_id` 查询参数仍是会话 id 前缀过滤，只在本人会话内生效）；读取、续聊（`/chat`、`/chat/stream`）、删除、`/context`、`/compact` 对别人的会话 id 一律返回 404（SSE 为 `session_not_found` 错误事件），响应体与接口原有的“会话不存在”一致；消息、摘要只能经本人会话访问。没有状态记录、只有消息的历史会话归主用户。`POST /chat/send` 主用户推送到 `.env` 通知渠道，非主用户推送到自己启用的个人渠道（没有渠道返回 `no_channels`，渠道全部失败返回 `send_failed`）；`/chat/stream/{request_id}/cancel` 只能取消本人的请求。
 > 问股状态：`POST /api/v1/agent/chat`、`/chat/stream` 由服务端会话快照确定主对象，不把 `context.stock_code` 当作事实；报告 hint 只有完整 canonical／股票或指数类型一致才复用。detail、accepted 和 non-stream 响应提供 `active_stock_context`（code/name/canonical/type）、`session_state_version`、`session_generation`；消息、显式 Skill 与股票在同一接受事务提交，执行消费该快照而不回写股票。明确切股清除旧对象的附带数据；比较只扩大本轮明确 scope。金融缩写／交易所片段误作股票参数仍被真实 scope guard 拒绝，工具名称仍精确匹配。缺少对象的普通策略问题使用空股票 scope，歧义或无法确认的切股返回普通澄清。`context.report_language` 仍优先于全局 `REPORT_LANGUAGE`。已知 generation 可随请求发送，冲突在 SSE 返回 `session_state_conflict`、non-stream 返回 409；请刷新后手动重试，不自动重发。旧 API 新字段全缺时 Web 显示未确认，不从文本推测；部分字段缺失是协议错误。旧历史和非破坏升级／回滚见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#问股会话状态与升级)。
 
 > Skill 会话状态：顶层 `skills` 是请求选择的唯一来源。省略／`null` 沿用已保存选择，未选择时使用运行时配置默认；显式 `[]` 保存清空并使用内置默认，不启用配置中的非空 Skill。非空列表按现有 catalog 清理去重，混合条目保留有效项，全无效则继承且不写空状态。`context.skills/strategies` 被移除。接受事务同时写消息、显式 Skill 与股票，成功才发 accepted；detail 的 `session_state.selected_skill_ids` 仍分别返回未选择 `null`、清空 `[]` 或已保存列表。Web 区分保存值与待提交草稿；未操作的追问省略选择，冲突不把草稿冒充已保存。删除会话同时删除状态。

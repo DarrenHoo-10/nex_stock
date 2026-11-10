@@ -264,13 +264,28 @@ export interface RunFailure {
   reason: string;
 }
 
+/** Result of one personal channel type in a run's push (`push.channels`). */
+export interface RunPushChannelOutcome {
+  /** Channel type as the server names it: `feishu`, `dingtalk`, `wechat`, `telegram`, `email`, `custom` ... */
+  channel: string;
+  success: boolean;
+}
+
 export interface RunPush {
-  channel: 'feishu';
+  /**
+   * `feishu`: the primary user's system (.env) Feishu route (also what runs without the field mean);
+   * `personal`: the signed-in user's own push channels.
+   */
+  channel: 'feishu' | 'personal';
   status: PushStatus;
   sentAt: string | null;
   error: string | null;
-  /** Whether the webhook is configured (the URL itself is never returned). */
+  /** Whether a route exists: the Feishu webhook, or at least one usable personal channel (nothing secret is returned). */
   configured: boolean;
+  /** Personal runs only: why nothing was pushed (`no_model`: the user has no model of their own). */
+  reason?: string | null;
+  /** Personal runs only: what each channel type returned. */
+  channels?: RunPushChannelOutcome[];
 }
 
 export interface RunModelCall {

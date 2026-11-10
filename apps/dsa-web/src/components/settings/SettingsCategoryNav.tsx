@@ -15,6 +15,8 @@ interface SettingsCategoryNavProps {
   /** Heading / hint above the list; default to the system settings wording. */
   title?: string;
   description?: string;
+  /** Badge number per category when it is not simply the number of items (for example a list loaded on its own). */
+  counts?: Record<string, number>;
 }
 
 const categoryIconMap: Partial<Record<SystemConfigCategory, LucideIcon>> = {
@@ -34,6 +36,7 @@ export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({
   onSelect,
   title,
   description,
+  counts,
 }) => {
   const { language, t } = useUiLanguage();
   const navTitle = title ?? t('settings.categoryNavTitle');
@@ -52,7 +55,7 @@ export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({
       <div className="flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-1.5 lg:overflow-visible lg:pb-0">
         {categories.map((category) => {
           const isActive = category.category === activeCategory;
-          const count = (itemsByCategory[category.category] || []).length;
+          const count = counts?.[category.category] ?? (itemsByCategory[category.category] || []).length;
           const title = getCategoryTitle(category.category, category.title, language);
           const description = getCategoryDescription(category.category, category.description, language);
           const Icon = categoryIconMap[category.category] ?? Layers3;

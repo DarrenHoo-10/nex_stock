@@ -21,6 +21,7 @@ from src.config import get_agent_reasoning_effort, get_config, get_effective_age
 from src.agent.conversation import is_bot_session_id
 from src.services.agent_chat_session_service import AgentChatSessionService
 from src.services.user_config_service import get_user_config, require_usable_model
+from src.services.user_notification_service import allow_chat_send, push_to_user
 from src.llm.generation_params import REASONING_EFFORT_VALUES
 from src.services.agent_model_service import (
     AgentChatOverrideError,
@@ -653,15 +654,20 @@ async def send_chat_to_notification(request: SendChatRequest, user: CurrentUser 
     """
     from src.notification import NotificationService
 
-    if user.user_id != get_primary_user_id():
-        # Notification channels are the primary user's (.env) until per-user channels exist (P3):
-        # another user's chat must never be pushed to them.
-        return {
-            "success": False,
-            "error": "no_channels",
-            "message": "未配置通知渠道，请先在设置中配置",
-        }
     loop = asyncio.get_running_loop()
+    if user.user_id != get_primary_user_id():
+        # Another user's chat goes to that user's own channels only, never to the primary user's (.env) ones.
+        # It relays text of the caller's choosing, so it is rate limited per user (USER_CHAT_SEND_MAX_PER_HOUR).
+        if not allow_chat_send(user.user_id):
+            return {"success": False, "error": "rate_limited", "message": "发送过于频繁，请稍后再试"}
+        dispatch = await loop.run_in_executor(
+            None, lambda: push_to_user(user.user_id, request.content, route_type="report")
+        )
+        if dispatch.success:
+            return {"success": True}
+        if dispatch.status == "no_channel":
+            return {"success": False, "error": "no_channels", "message": "未配置通知渠道，请先在设置中配置"}
+        return {"success": False, "error": "send_failed", "message": "推送失败，请检查个人推送渠道"}
     success = await loop.run_in_executor(
         None,
         lambda: NotificationService().send(request.content),

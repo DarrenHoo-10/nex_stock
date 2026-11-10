@@ -42,7 +42,7 @@ class PushplusSender:
         推送消息到 PushPlus
 
         PushPlus API 格式：
-        POST http://www.pushplus.plus/send
+        POST https://www.pushplus.plus/send
         {
             "token": "用户令牌",
             "title": "消息标题",
@@ -66,7 +66,7 @@ class PushplusSender:
             logger.warning("PushPlus Token 未配置，跳过推送")
             return False
 
-        api_url = "http://www.pushplus.plus/send"
+        api_url = "https://www.pushplus.plus/send"
 
         if title is None:
             date_str = datetime.now().strftime('%Y-%m-%d')

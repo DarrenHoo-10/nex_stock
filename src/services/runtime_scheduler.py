@@ -694,7 +694,7 @@ class RuntimeSchedulerService:
         }]
 
     def _current_daily_jobs(self, config: Config) -> List[Dict[str, Any]]:
-        """Independent daily jobs (own time): the 17:00 board pipeline, the weekly industry membership refresh, the next-day plan run (at SCHEDULE_TIME, own thread), the 08:15 pre-open push and the news daily fetch."""
+        """Independent daily jobs (own time): the 17:00 board pipeline, the weekly industry membership refresh, the next-day plan run (at SCHEDULE_TIME, own thread), the 08:15 pre-open push, the news daily fetch and (multi-user mode) the dynamic per-user plan / pre-open job groups."""
         jobs: List[Dict[str, Any]] = []
         try:
             from src.services.board_pipeline_schedule import build_board_pipeline_jobs
@@ -720,6 +720,12 @@ class RuntimeSchedulerService:
             jobs.extend(build_preopen_push_jobs(config, config_provider=self._config_provider))
         except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
             logger.warning("Failed to build pre-open push daily job: %s", exc)
+        try:
+            from src.services.user_scheduled_runs import build_user_schedule_jobs
+
+            jobs.extend(build_user_schedule_jobs(config, config_provider=self._config_provider))
+        except Exception as exc:  # noqa: BLE001 - never block the analysis schedule
+            logger.warning("Failed to build the per-user plan / pre-open job groups: %s", exc)
         try:
             from src.services.news_schedule import build_news_daily_jobs
 
@@ -783,7 +789,7 @@ class RuntimeSchedulerService:
                     name=entry.get("name"),
                 )
             for job in self._current_daily_jobs(config):
-                scheduler.add_daily_job(**job)
+                scheduler.register_job_definition(job)
             if run_immediately and self._run_immediately_in_background:
                 self._run_in_background_thread(scheduled_analysis)
             thread = threading.Thread(

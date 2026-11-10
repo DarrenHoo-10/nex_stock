@@ -1305,6 +1305,17 @@ class Config:
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
     alert_max_enabled_rules_per_user: int = 200  # Per-user cap on enabled alert rules (create / enable); the worker evaluates at most this many per user
+    notification_channels_max_per_user: int = 10  # Per-user cap on personal push channels (user_notification_channel)
+    user_schedule_max_workers: int = 4  # Per-user scheduled runs (next-day plan / pre-open push) executing at once
+    user_schedule_run_timeout_seconds: int = 1800  # Independent timeout of one user's scheduled run (a hung user never delays the others)
+    daily_plan_data_ready_buffer_minutes: int = 30  # Minutes after the board pipeline time before a personal plan time is allowed
+    news_pool_max_codes_per_user: int = 50  # Announcement-fetch codes one non-primary user can add to the shared news pool
+    news_pool_max_codes_total: int = 300  # Total extra codes (all non-primary users together) in the shared announcement fetch
+    user_push_send_deadline_seconds: int = 30  # Hard wall-clock limit of one personal-channel send (DNS, connect, TLS, response, SMTP)
+    user_push_total_deadline_seconds: int = 60  # Hard wall-clock limit of one personal push over all of the user's channels
+    user_push_max_workers: int = 4  # Personal alert pushes sent at once (bounded pool; one push per user in flight)
+    user_chat_send_max_per_hour: int = 30  # /agent/chat/send relays per non-primary user and hour
+    user_alert_push_max_per_hour: int = 60  # Personal alert pushes per non-primary user and hour
 
     # === 通知配置（可同时配置多个，全部推送）===
     
@@ -1462,6 +1473,7 @@ class Config:
     preopen_push_time: str = "08:15"  # 盘前版开始运行时间（HH:MM，本机时区；约 8:45 送达）
     # === 次日计划（docs/daily-plan-api.md）：仓位规则与自动运行开关 ===
     daily_plan_enabled: bool = False  # 定时模式下是否在交易日按 SCHEDULE_TIME 自动生成次日计划并推送飞书
+    daily_plan_time: str = ""  # 次日计划自动运行时间（HH:MM）；留空沿用 SCHEDULE_TIME(S)。个人设置可覆盖，须晚于板块数据就绪时间
     position_stop_loss_pct: float = 10.0  # 止损幅度（%），从买入价或持仓成本起算
     position_max_total_pct: float = 100.0  # 总仓位上限（%，占总资金）
     position_max_holdings: int = 1  # 最多持股数
@@ -2509,6 +2521,83 @@ class Config:
                 minimum=1,
                 maximum=1000,
             ),
+            notification_channels_max_per_user=parse_env_int(
+                env.get('NOTIFICATION_CHANNELS_MAX_PER_USER'),
+                10,
+                field_name='NOTIFICATION_CHANNELS_MAX_PER_USER',
+                minimum=1,
+                maximum=100,
+            ),
+            user_schedule_max_workers=parse_env_int(
+                env.get('USER_SCHEDULE_MAX_WORKERS'),
+                4,
+                field_name='USER_SCHEDULE_MAX_WORKERS',
+                minimum=1,
+                maximum=32,
+            ),
+            user_schedule_run_timeout_seconds=parse_env_int(
+                env.get('USER_SCHEDULE_RUN_TIMEOUT_SECONDS'),
+                1800,
+                field_name='USER_SCHEDULE_RUN_TIMEOUT_SECONDS',
+                minimum=30,
+                maximum=21600,
+            ),
+            daily_plan_data_ready_buffer_minutes=parse_env_int(
+                env.get('DAILY_PLAN_DATA_READY_BUFFER_MINUTES'),
+                30,
+                field_name='DAILY_PLAN_DATA_READY_BUFFER_MINUTES',
+                minimum=0,
+                maximum=240,
+            ),
+            news_pool_max_codes_per_user=parse_env_int(
+                env.get('NEWS_POOL_MAX_CODES_PER_USER'),
+                50,
+                field_name='NEWS_POOL_MAX_CODES_PER_USER',
+                minimum=0,
+                maximum=500,
+            ),
+            news_pool_max_codes_total=parse_env_int(
+                env.get('NEWS_POOL_MAX_CODES_TOTAL'),
+                300,
+                field_name='NEWS_POOL_MAX_CODES_TOTAL',
+                minimum=0,
+                maximum=5000,
+            ),
+            user_push_send_deadline_seconds=parse_env_int(
+                env.get('USER_PUSH_SEND_DEADLINE_SECONDS'),
+                30,
+                field_name='USER_PUSH_SEND_DEADLINE_SECONDS',
+                minimum=5,
+                maximum=300,
+            ),
+            user_push_total_deadline_seconds=parse_env_int(
+                env.get('USER_PUSH_TOTAL_DEADLINE_SECONDS'),
+                60,
+                field_name='USER_PUSH_TOTAL_DEADLINE_SECONDS',
+                minimum=10,
+                maximum=900,
+            ),
+            user_push_max_workers=parse_env_int(
+                env.get('USER_PUSH_MAX_WORKERS'),
+                4,
+                field_name='USER_PUSH_MAX_WORKERS',
+                minimum=1,
+                maximum=32,
+            ),
+            user_chat_send_max_per_hour=parse_env_int(
+                env.get('USER_CHAT_SEND_MAX_PER_HOUR'),
+                30,
+                field_name='USER_CHAT_SEND_MAX_PER_HOUR',
+                minimum=1,
+                maximum=10000,
+            ),
+            user_alert_push_max_per_hour=parse_env_int(
+                env.get('USER_ALERT_PUSH_MAX_PER_HOUR'),
+                60,
+                field_name='USER_ALERT_PUSH_MAX_PER_HOUR',
+                minimum=1,
+                maximum=10000,
+            ),
             wechat_webhook_url=env.get('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=env.get('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=env.get('FEISHU_WEBHOOK_SECRET'),
@@ -2706,6 +2795,7 @@ class Config:
                 field_name='PREOPEN_PUSH_TIME',
             ),
             daily_plan_enabled=parse_env_bool(env.get('DAILY_PLAN_ENABLED'), default=False),
+            daily_plan_time=_parse_hhmm(env.get('DAILY_PLAN_TIME'), default='', field_name='DAILY_PLAN_TIME'),
             position_stop_loss_pct=parse_env_float(
                 env.get('POSITION_STOP_LOSS_PCT'), 10.0, field_name='POSITION_STOP_LOSS_PCT',
                 minimum=0.1, maximum=99.9,

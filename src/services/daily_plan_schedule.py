@@ -5,11 +5,12 @@ Same shape as ``board_pipeline_schedule``: ``build_daily_plan_jobs`` turns ``DAI
 schedule time(s) into daily-job entries for ``Scheduler.add_daily_job``; both scheduler owners use it (the Web/API
 ``RuntimeSchedulerService`` and the CLI ``--schedule`` loop in ``main.py``).
 
-In multi-user mode the scheduled run is the primary user's (their ``.env`` watchlist and plan account); other
-users trigger their own runs through the API until per-user scheduling lands.
+In multi-user mode the jobs built here are the primary user's (their ``.env`` watchlist and plan account); the
+other users' own plan times are dynamic job groups (``user_scheduled_runs.build_user_schedule_jobs``) that are
+registered next to these.
 
-The plan run reuses ``SCHEDULE_TIME`` / ``SCHEDULE_TIMES`` (the Web settings page edits them as the plan's run
-time) but is a **separate job**: it runs in its own thread and never touches the legacy per-stock daily analysis
+The plan run uses ``DAILY_PLAN_TIME`` when it is set, else ``SCHEDULE_TIME`` / ``SCHEDULE_TIMES`` (the Web settings
+page edits them as the plan's run time) but is a **separate job**: it runs in its own thread and never touches the legacy per-stock daily analysis
 that the same setting drives, so the two never block or replace each other. It runs once per A-share trading day
 per configured time and never raises: a failed run is logged and recorded on the run itself.
 """
@@ -30,7 +31,11 @@ DEFAULT_DAILY_PLAN_TIME = "18:00"
 
 
 def configured_times(config: Any) -> List[str]:
-    """The plan run times: ``SCHEDULE_TIMES`` when set, else ``SCHEDULE_TIME`` (same rule as the daily analysis)."""
+    """The plan run times: ``DAILY_PLAN_TIME`` when set, else ``SCHEDULE_TIMES`` / ``SCHEDULE_TIME`` (same rule as the
+    daily analysis). ``DAILY_PLAN_TIME`` is the dedicated plan time (a personal setting in multi-user mode)."""
+    own = getattr(config, "daily_plan_time", "")
+    if isinstance(own, str) and own.strip():
+        return [own.strip()]
     return normalize_schedule_times(
         getattr(config, "schedule_times", None),
         fallback_time=getattr(config, "schedule_time", DEFAULT_DAILY_PLAN_TIME) or DEFAULT_DAILY_PLAN_TIME,

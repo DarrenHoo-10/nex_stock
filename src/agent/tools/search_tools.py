@@ -304,19 +304,28 @@ def _market_news_terms(keyword: str) -> list:
     return [term for term in str(keyword or "").replace("，", " ").replace(",", " ").split() if term]
 
 
-def _pool_news_hits(terms: list, days: int) -> list:
-    """Stored flash / announcement rows (news pool) whose title, summary or boards mention any term."""
+def _pool_news_hits(terms: list, days: int, user_id: Optional[str] = None) -> list:
+    """Stored flash / announcement rows (news pool) whose title, summary or boards mention any term.
+
+    The pool is shared and its announcements are fetched for every user's watchlist / holdings; for a non-primary
+    ``user_id`` announcements of codes outside that user's own watchlist / holdings are left out (they would reveal
+    what other users follow). Flashes and other general news are returned as before; the primary user is unrestricted.
+    """
     from datetime import timedelta
 
     from src.repositories.intelligence_repo import IntelligenceRepository
+    from src.services.news_digest_service import announcement_visible, viewer_announcement_codes
     from src.services.news_pool_service import china_now
 
     repo = IntelligenceRepository()
     now = china_now()
     rows = repo.list_news_rows(since=now - timedelta(days=days), until=now)
     folded = [term.casefold() for term in terms]
+    own_codes = viewer_announcement_codes(user_id)
     hits = []
     for row in rows:
+        if not announcement_visible(row.item_kind, repo.loads_list(row.stock_codes), own_codes):
+            continue
         boards = repo.loads_list(row.board_names)
         haystack = " ".join([row.title or "", row.summary or "", *[str(b) for b in boards]]).casefold()
         if not any(term in haystack for term in folded):
@@ -351,7 +360,7 @@ def _handle_search_market_news(keyword: str, days: int = 3, user_id: Optional[st
     result = {"keyword": " ".join(terms), "days": days}
     pool_hits = []
     try:
-        pool_hits = _pool_news_hits(terms, days)
+        pool_hits = _pool_news_hits(terms, days, user_id)
     except Exception as exc:  # noqa: BLE001 - the pool is optional; fall through to web search
         logger.warning("[search_market_news] news pool read failed: %s", exc)
         result["pool_error"] = "资讯库读取失败"

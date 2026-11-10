@@ -515,3 +515,99 @@ LiteLLM 保留任意服务商前缀，`ollama/llama3`、`sagemaker/`、`bedrock/
 - **个人设置不复制系统设置的渠道编辑器**：模型分组按 `GET /me/settings` 返回的字段逐项渲染（`LITELLM_MODEL`、`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` 等排在最前），`LLM_<NAME>_*` 动态渠道键只有保存过才会出现，Web 里不提供「新建渠道」向导。推送分组只显示开关 / 时间 / 静默时段等偏好，不显示 webhook / Token 等渠道凭据（个人推送渠道在 P3）。
 - **「只看我的」的范围**：`mine_only` 只有 `GET /history` 支持，所以筛选放在个股历史趋势抽屉和首页「今日」标签；`GET /history/stocks`（历史标签的个股栏）没有该参数，不带筛选。发起人、私有徽标同样只在返回了这些字段的记录上显示。
 - **复用标记的来源**：`reused` / `metadata_reused_from` 在 `GET /analysis/status/{task_id}` 的结果里；任务完成时前端补取一次状态，按报告的 `query_id` 记录（尽力而为，失败不影响报告），所以刷新页面后标记不会保留。
+
+## 21. P3a 实现说明（个人推送渠道、按用户定时，补充与差异）
+
+P3a 只做后端（Web 页面是下一期）：个人推送渠道、各条推送路径只发给本人、按用户的次日计划 / 盘前推送定时、资讯池覆盖所有用户。机器人和 MCP 仍是主用户。本节取代第 15 节“非主用户没有推送渠道”、第 18.3 节第 4 条（资讯池只覆盖主用户）和第 20 节“推送分组不含渠道凭据”中关于后端行为的描述。与上文的差异：
+
+### 21.1 个人推送渠道
+
+- **表与迁移**：`user_notification_channel(id, user_id, channel_type, name, config_encrypted, enabled, created_at, updated_at)` 和 `user_notice_marker(user_id, notice_key, sent_at)`（“只提醒过一次”的标记）。迁移 `2026-11-10-multi-user-p3a-notification-channels` 只建表，迁移前同样先备份、幂等、记录在 `schema_migrations`。`config_encrypted` 是整份配置的 JSON，用该用户自己的数据密钥加密（`src/user_secrets.py`）；一个用户的数据密钥损坏只会让他自己的渠道读不出来（列表里 `readable=false`，推送时跳过，重新填写即可）。
+- **类型与字段**（`src/services/user_notification_service.py` 的 `CHANNEL_TYPES` 是唯一真源，`GET /me/notification-channels` 的 `channel_types` 把它给表单用）：`feishu`（`webhook_url`、可选 `secret`、`keyword`）、`dingtalk`（`webhook_url`、可选 `secret`）、`wecom`（`webhook_url`）、`telegram`（`bot_token`、`chat_id`、可选 `message_thread_id`）、`pushplus`（`token`、可选 `topic`）、`serverchan3`（`sendkey`）、`email`（`smtp_host`、`smtp_port`、可选 `username`、`password`、`sender`、`receivers` 最多 5 个）、`custom`（`webhook_url`、可选 `bearer_token`、`body_template`）。Webhook 地址、Token、密码和签名密钥是密钥字段（Webhook 地址里带 Token）。
+- **一个类型可以有多条渠道**（例如两个飞书群）。实现上每条渠道是一个只含这一条配置的 `NotificationService`（`UserNotificationService` 的叶子），用户的通知服务是它们的组合：可用渠道类型是各叶子类型的并集，发送时向同类型的每条渠道各发一次。报告渲染、分片、重试、`send_with_results` 和每渠道结果沿用原实现，不是新的发送器。同类型多条的结果在 `ChannelAttemptResult` 里合并为该类型一项，逐条结果在组合服务的 `row_outcomes`。
+- **不继承系统渠道**：叶子和组合服务的配置对象（`UserNotificationConfig`）以 `Config` 数据类里所有渠道相关字段的**默认值**为起点（webhook、Token、Bot 应用 `FEISHU_APP_*` / `FEISHU_CHAT_ID`、钉钉 / Discord / Slack 机器人、路由、图片渠道），再覆盖这一条渠道的字段；报告类型、语言、静默时段等偏好取自用户自己的配置视图。系统的 `NOTIFICATION_*_CHANNELS` 路由写的是系统渠道名，不继承，只取用户自己保存过的值。TLS 校验固定开启，个人通知的历史对比固定关闭（历史对比按主用户视角读取报告，会带出主用户的私有报告）。用户没有渠道时 `is_available()` 为假，什么都不发——绝不回退到 `.env`。
+- **降噪状态按用户隔离**：`NOTIFICATION_DEDUP_TTL_SECONDS` / `NOTIFICATION_COOLDOWN_SECONDS` 的进程内状态以去重键 / 冷却键为准，默认键只有内容摘要或 `default`，不同用户（含主用户）会互相抑制，所以个人服务给两个键都加了 `user:<id>|` 前缀。
+- **发送前的目标检查**（SSRF，复用 `src/utils/url_safety.py`）：保存（`POST` / `PUT`）时检查一次——Webhook 只允许 `https` 公网地址，`smtp_host` 必须是公网主机名 / 地址，端口只允许 465（隐式 TLS）、587 / 25（必须 STARTTLS，不降级明文）；保存失败返回 400 `unsafe_target`（或字段错误 `invalid_config`），响应不回显被拒绝的值。每次发送前再检查一次：个人渠道的所有 `requests` 调用都在 `user_outbound_requests()` 里发出（`src/utils/safe_requests.py`，包住 `requests.Session.send` 一次，只对当前线程的个人渠道生效，主用户 `.env` 渠道的行为不变），发送前重新解析并要求公网 https，并且**不跟随重定向**（3xx 就是发送失败）；被拒绝的请求抛 `BlockedRequestError`（`RequestException` 子类，发送器按普通网络错误处理，不会重试）。SMTP 用 `connect_pinned_smtp`（`src/utils/safe_smtp.py`）：解析一次、要求每个应答都是公网地址、连接固定到检查过的地址、证书仍按原主机名校验。`EmailSender` 只多了“显式 SMTP 主机 / 端口 / 登录用户名”三个可选配置属性（系统配置里没有，仍走按发件人域名自动识别）。
+- **接口**：`GET/POST /me/notification-channels`、`PUT/DELETE /me/notification-channels/{id}`、`POST /me/notification-channels/{id}/test`。错误码：`primary_user_uses_env`（403，主用户写入；主用户 `GET` 只读列出 `.env` 渠道类型和一条说明，没有任何地址 / 密钥）、`channel_not_found`（404，别人的 id 与不存在的 id 响应完全一致）、`invalid_channel_type` / `invalid_config` / `unsafe_target` / `channel_limit_reached`（400）、`rate_limited`（429，测试发送同一渠道 10 秒内只能一次）、`secret_store_unavailable`（503）。更新时密钥字段留空或 `******` 保持原值，可选的非密钥字段传 `""` 清空。测试发送固定文案，只返回 `{success, status: sent|failed|blocked, error_category: send_failed|target_not_allowed|unreadable|null}`（审计后移除了 `latency_ms`，见 21.9），上游的状态码、错误文本和响应体都不返回。每人最多 `NOTIFICATION_CHANNELS_MAX_PER_USER`（默认 10）条，计数和插入在同一个写事务里。
+- **遗留项（已收回，见 21.9 第 12 条）**：P2b 的个人设置接口曾接受 `FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` 这类旧的渠道凭据键，它们不被任何推送路径读取。现在 `PUT /me/settings` 对这些键返回 `managed_elsewhere`，`GET /me/settings` 不再列出。
+
+### 21.2 各推送路径
+
+| 路径 | 主用户 | 非主用户 |
+| --- | --- | --- |
+| 次日计划手动运行 / 定时运行的推送 | `.env` 飞书（`pusher=send_feishu`），不变 | 本人所有启用的渠道（`DailyPlanService._push_personal`）；推送步骤标注「个人渠道推送」，`push.channel=personal`，`push.channels` 是每个渠道类型的结果；注入的系统 `pusher` / `push_configured` 对非主用户无效；没有渠道时推送步骤 `skipped`（计划仍可在网页查看）；渠道失败只记在推送步骤上，不影响运行状态 |
+| 次日计划定时运行，用户没有可用模型 | 不适用（系统模型） | 仍按规则生成并保存计划，运行记录标注「未配置模型」（`push.reason=no_model`），不推送计划；有渠道时推送一条提醒，只一次 |
+| 盘前推送 | `.env` 渠道，`run_preopen_push(config)` 不变 | `run_preopen_push(user_config, user_id=…, shared=…)`：本人自选股、本人模型、流水线的通知服务是本人的个人服务 |
+| 提醒规则通知 | `AlertWorker.notifier` / `.env` 渠道，不变 | 有个人渠道：按原冷却规则推送并记录每个渠道类型的结果（`channel` 为 `custom`、`feishu` 等）；没有渠道：仍记 `__no_channel__`；个人渠道发送失败不启动冷却，下一轮重试 |
+| 个股分析 `notify`（同步 / 异步）、持仓手动分析 | `.env` 渠道，不变 | 不再强制关闭；`StockAnalysisPipeline` 对用户视图构造个人通知服务，推送只到本人渠道；没有渠道则不推送。直接复用已有共享报告时没有新报告可推，不推送 |
+| `POST /agent/chat/send` | `NotificationService().send`，不变 | 本人渠道；没有渠道 `no_channels`，全部失败 `send_failed` |
+| 分析批量 `pipeline.run(send_notification=True)` | `.env` 渠道，不变 | 用户视图走个人服务整体发送（原来逐渠道的系统分支不会执行） |
+
+### 21.3 按用户定时
+
+- **时间键**：次日计划新增用户级 `DAILY_PLAN_TIME`（一个 `HH:MM`；`_USER_SCOPE_KEYS` 里，隐藏于系统设置表单，和 `DAILY_PLAN_ENABLED` 一样在偏好页 / 个人设置里改）。`SCHEDULE_TIME(S)` 仍是系统级，因为它同时驱动只给主用户的旧每日分析。一个用户的计划时间 = 他的 `DAILY_PLAN_TIME`，没有就是系统默认，即 `SCHEDULE_TIMES` / `SCHEDULE_TIME`（`DAILY_PLAN_TIME` 在 `.env` 里设置时是系统默认；非主用户沿用它）。主用户的静态任务经 `daily_plan_schedule.configured_times` 取时间，`.env` 不设 `DAILY_PLAN_TIME` 时与以前完全一样。盘前推送沿用 `PREOPEN_PUSH_ENABLED` / `PREOPEN_PUSH_TIME`。
+- **时间约束**（`src/services/user_schedule_service.py`）：计划时间不得早于“系统数据就绪时间”= `BOARD_PIPELINE_SCHEDULE_TIME`（板块流程关闭时用收盘 15:00）+ `DAILY_PLAN_DATA_READY_BUFFER_MINUTES`（默认 30，所以默认最早 17:30）；盘前推送开始时间不得晚于 09:00（运行约需 30 分钟，A 股 09:30 开盘）。保存个人设置时拒绝：400 `plan_time_too_early`（`detail.issues[0].earliest_time`）/ `preopen_time_too_late`（`latest_time`）/ `invalid_value`，整批保存要么全成要么全不成。`GET /me/schedule` 返回生效的开关、时间和允许范围。运行时再钳制一次：管理员后来把板块流程时间调晚，已保存但现在太早的计划时间按当前最早时间运行；继承到的系统盘前时间晚于 09:00 按 09:00 运行。非主用户没有自己的计划时间、系统时间又都早于数据就绪时间时，用最早允许时间。
+- **注册表**：调度器的 `add_dynamic_daily_jobs`（`Scheduler.register_job_definition` 接受固定任务或动态任务组）为所有非主用户已启用的时间点去重后各注册一个任务，每分钟重读时间集合，新增 / 取消对应任务（读取失败保持现状）。运行时调度器（`RuntimeSchedulerService._current_daily_jobs`）和 `main.py --schedule` 都通过 `user_scheduled_runs.build_user_schedule_jobs` 取任务组；只在 `AUTH_MODE=user_center` 时注册（本地单人模式没有非主用户）；和主用户的任务一样，需要开启定时模式（`SCHEDULE_ENABLED` 或 `--schedule`）。**主用户不并入动态任务组**，仍是原来的静态任务（`build_daily_plan_jobs` / `build_preopen_push_jobs`），所以单人部署和主用户的行为不变；同一时间点主用户任务和用户任务是两个独立任务。
+- **到点执行**（`src/services/user_scheduled_runs.py`）：先看是否交易日；取出时间匹配且已启用的用户，只运行 `app_user` 里的、有东西可计划的用户（次日计划：计划账户里有持仓或有自选；盘前：有自选）。用户之间并行，同时最多 `USER_SCHEDULE_MAX_WORKERS`（默认 4），每个用户一次运行有独立超时 `USER_SCHEDULE_RUN_TIMEOUT_SECONDS`（默认 1800 秒）：每个用户一个守护线程，超时的用户被放弃（结果 `timeout`，次日计划的运行记录标记失败），**槽位立即释放**，排在后面的用户不会等一个卡住的用户；线程不能被强制结束，它自己结束时才释放它占用的资源（该用户当天再触发会得到 `already_running`）。用户的运行抛异常只是他自己的 `failed`（结果里只带异常类名，不带消息，因为消息里可能有 Key）。
+- **共享上下文**：次日计划的板块列表（`DailyPlanService._board_rows`）经 `shared_board_cache` 在同一批用户之间只计算一次（显式传入的字典，不是全局状态；API 和主用户不传，行为不变）；盘前推送的隔夜美股取数 + 板块映射 + 入选板块成分经 `SharedPreopen`（`build_shared_preopen`）只做一次，并且只在第一个真正需要它的用户到点时才构建（没有用户可服务时不会发起取数）。资讯摘要和自选股名称仍是每个用户各读一次库（只读数据库，不访问外部）。
+- **未配置模型**：定时的次日计划，用户没有可用模型 → 计划仍按规则生成并保存，运行记录标注「未配置模型」，不推送；有渠道时通过 `push_once_notice` 推一条提醒，成功才在 `user_notice_marker` 记一笔，之后不再推送；推送失败下次再试。盘前推送在没有模型时整体跳过，同一个标记。用户配置了模型后下一次定时运行会清除标记，之后再次失去模型会重新提醒一次。手动运行次日计划不受影响（用户主动要求，规则计划照常推送到渠道）。
+
+### 21.4 资讯池
+
+`NewsPoolService.wanted_codes()`：主用户的自选 + 持仓照旧（不设上限）；再加其他用户（`app_user`）的持仓（优先）和自选。每个用户最多 `NEWS_POOL_MAX_CODES_PER_USER`（默认 50）只，所有其他用户合计最多新增 `NEWS_POOL_MAX_CODES_TOTAL`（默认 300）只，按用户轮流取，保证没有一个用户能把别人挤出去；任一值为 0 则关闭这部分覆盖。结果仍是一份去重排序后的代码列表：不记录、不返回、不打日志代码属于谁（读取某个用户失败只记录异常类名）。持仓口径与主用户一致，只用持仓账户的缓存持仓（不含次日计划账户）。这是对 18.3 第 4 条的回应：资讯池的覆盖集合现在是所有用户的并集，任何人都无法据此判断某只股票来自谁。
+
+### 21.5 配置项（均在 `.env.example` 和 `docs/full-guide.md`）
+
+`NOTIFICATION_CHANNELS_MAX_PER_USER`（10）、`USER_SCHEDULE_MAX_WORKERS`（4）、`USER_SCHEDULE_RUN_TIMEOUT_SECONDS`（1800）、`DAILY_PLAN_DATA_READY_BUFFER_MINUTES`（30）、`NEWS_POOL_MAX_CODES_PER_USER`（50）、`NEWS_POOL_MAX_CODES_TOTAL`（300）都是系统级，隐藏于设置表单；`DAILY_PLAN_TIME` 是用户级。
+
+### 21.6 兼容性与回滚
+
+- 新增表 / 字段 / 接口，旧字段不变。次日计划运行的 `push` 对象新增 `reason`、`channels`，`push.channel` 增加取值 `personal`（只会出现在非主用户的运行里，此前他们不能推送）；当前 Web 的类型定义写的是 `'feishu'`，下一期 Web 放宽即可，运行时不受影响。
+- 行为变化：PushPlus 改用 `https://www.pushplus.plus/send`（原来是 http）；非主用户的 `notify` 不再被强制关闭；非主用户的次日计划推送步骤的文案由「个人推送渠道尚未开放」改为「没有可用的个人推送渠道」。
+- 回滚：代码回滚即可；两张新表旧代码不会读取。要关闭个人推送而不回滚：不给用户配置渠道（用户没有渠道就什么都不推），或 `AUTH_MODE` 改回 `local`。迁移前的数据库备份位于数据库旁（`.pre-multi-user-<时间>.bak`）。
+
+### 21.7 测试
+
+`tests/test_multi_user_p3a_channels.py`（渠道增删改查、打码、留空保持、越权、数量上限、SSRF、测试发送、固定 SMTP 地址、降噪隔离）、`tests/test_multi_user_p3a_pushes.py`（每条推送路径：非主用户只到本人渠道且不碰系统渠道 / 系统 SMTP，主用户不变，渠道失败不影响运行，未配置模型提醒一次）、`tests/test_multi_user_p3a_schedule.py`（时间约束、有效时间、调度注册表与再同步、并行与超时、共享上下文、资讯池并集与上限、迁移）。HTTP 只在 `requests` 的适配器层替换（`tests/p3a_helpers.py` 的 `FakeHTTP`），所以真实的发送器、SSRF 钩子、加密和服务都参与验证；不访问外网。
+
+### 21.8 未做
+
+- ~~Web 页面（个人渠道管理、推送开关和时间、`push.channel=personal` 的展示）~~：已在 P3b 完成，见第 22 节。
+- 机器人 / MCP 的多用户映射（仍是主用户）。
+- 个人渠道的路由（`NOTIFICATION_*_CHANNELS`）和静默时段没有单独的界面，只能经 `PUT /me/settings` 设置。
+- ~~本地 `reports/` 目录里的日报文件仍是共享目录~~：非主用户的运行不再写入该目录，见 21.9 第 6 条（主用户的行为不变）。
+
+### 21.9 安全加固（审计后补充）
+
+审计复现了几条“一个用户的目标 / 时间会影响服务器或别人”的路径。原则不变：一个人只影响自己。下面的编号对应审计条目，主用户的 `.env` 渠道、静态定时任务和提醒行为都不变。
+
+1. **响应体上限**（`src/utils/safe_requests.py`）：个人渠道的请求固定 `stream=True`、`Accept-Encoding: identity`，在 `Session.send` 的钩子里集中读取最多 64 KB（解压后；服务器仍压缩时按 4 KB 一块增量解压到上限即止，压缩炸弹只产生 64 KB，其余未知编码直接丢弃响应体），然后关闭连接。返回的 `Response` 的 `.json()` / `.text` / `.content` 读的是截断后的内容，发送器无需修改。
+2. **硬性总时限**：`user_outbound_requests(deadline_seconds=…)` 给范围内的所有请求一个墙钟预算，DNS（在线程里解析，`DNS_TIMEOUT_SECONDS`=5）、连接、TLS 握手、请求、读响应一并计算；到点由看门狗关闭范围内打开的所有 socket（包括握手前登记的 `SSLSocket`，所以滴灌的服务器也会被切断；Linux 靠 `shutdown`，Windows 靠 `close`），范围内后续请求直接 `BlockedRequestError('deadline')`。SMTP 复用同一范围（`connect_pinned_smtp` 登记 socket、超时不超过剩余时间）。每个渠道一次发送 `USER_PUSH_SEND_DEADLINE_SECONDS`（30），一次推送（组合通知服务对该用户所有渠道）总预算 `USER_PUSH_TOTAL_DEADLINE_SECONDS`（60），用完不再尝试后面的渠道；次日计划、盘前推送、流水线、`/agent/chat/send` 的个人推送都经同一个组合服务，所以同一时限适用。测试发送：同一用户同一时间只允许一个（`rate_limited`），冷却时间在开始和结束时各记录一次，并在后台线程里运行、调用方最多等推送时限；线程自己结束时才释放用户的名额。提醒：个人告警推送在整轮评估之后交给有界线程池（`USER_PUSH_MAX_WORKERS`，每个用户一个任务、同一时间最多一个在途，`submit_user_push`），评估完整轮之后才收集结果、最多等推送时限，所以用户 A 卡住的目标不会拖慢 B、主用户或下一条规则；主用户的提醒仍在循环里同步发送。
+3. **DNS 重绑定**：守卫解析一次、每个应答都必须是公网地址；`urllib3.util.connection.create_connection` 在范围内只连接刚检查过的地址（按解析顺序最多试 4 个），名字不再被解析第二次，没有登记过的目标一律拒绝；TLS 的 SNI 和证书主机名校验仍用原主机名。环境代理（`HTTPS_PROXY` / `HTTP_PROXY`）在个人渠道范围内不使用（代理会自己解析并连接，等于绕过固定）。SMTP 原本就是固定的，保持。测试发送响应移除 `latency_ms`，个人告警渠道的尝试记录也不保存耗时；错误类别只有 `send_failed` / `target_not_allowed` / `unreadable`，被拒绝 / 超时 / 过滤的网络错误对外文字相同。
+4. **盘前共享缓存**：盘前推送时间新增下限 = 美东 16:00 收盘折合北京时间（夏令时 04:00、冬令时 05:00，取较晚者）+ 30 分钟缓冲 = `05:30`（`earliest_preopen_time()`，保存时 400 `preopen_time_too_early` 带 `earliest_time`，`GET /me/schedule` 的 `preopen_push.earliest_time`；运行时 `effective_preopen_time` 钳制到 `[05:30, 09:00]`）。到点运行时若当前时间早于下限，整个批次什么都不做（`too_early`），不取数、不写 `stock_daily`。只有“完整”的共享对象（`SharedPreopen.degraded` 为空）才缓存到当天结束；取数失败 / 部分成功 / 板块映射失败的对象只服务本批次，下一次到点重新计算。用户批次写入 `stock_daily` 的行与系统任务相同（同样的来源与优先级保护，且只含已收盘的会话）。
+5. **定时隔离**（`run_for_users`）：到点的用户按随机顺序启动（种子是日期 + 时间点，每天 / 每个时间点不同，同一次触发内可复现），不是固定的先来后到；同一用户同一时间只有一次定时运行（上一次被放弃但线程还在时，新的一次是 `skipped/already_running`）；推送一步有比整次运行短得多的独立时限（上面的 60 秒预算，运行本身仍是 1800 秒）；盘前批次 `PREOPEN_BATCH_CUTOFF_TIME`（09:20，A 股 09:30 开盘）还没完成就算迟到：未启动的用户 `skipped/late`，运行中的放弃为 `timeout/late`。限制：Python 线程不能被强制结束，被放弃的运行会一直跑到自己结束（个人渠道的网络 I/O 在时限处被切断，模型调用到它自己的超时为止），在此之前该用户的新运行被跳过。
+6. **共享 `reports/`**：非主用户的流水线运行不保存本地日报（`_save_local_report`、单股推送的保存、飞书文件上传路径都跳过）；`UserNotificationService.save_report_to_file` 是空操作且 `_feishu_send_as_file` 固定为假，所以个人通知不会写入也不会上传主用户的 `reports/` 文件。主用户行为不变。
+7. **资讯池成员关系**：`search_market_news` 的资讯库命中、盘前推送的资讯摘要（`build_news_digest(viewer_user_id=…)`）对非主用户去掉“公告”类行里不属于该用户自选 / 持仓的代码（这些公告只是因为别的用户关注才被抓取），快讯等普通资讯不受影响；主用户不变。
+8. **日志里的密钥**：异常在安全层重新抛出时不带 URL / 主机 / 端口 / 请求对象 / 原因链（`RequestException` 的通用子类，超时与连接失败文字相同），个人渠道范围内关闭 `urllib3` 的请求日志（它们带路径，如 `/bot<token>/sendMessage`），所以发送器记录 `{e}` 不会泄露 Token 或路径密钥。
+9. **DNS 预言**：保存 / 测试时，取决于 DNS 的拒绝（解析到私网、解析失败，含 SMTP 主机）统一报 `unsafe_target`，只有写法本身的问题（协议、凭据、端口、数字别名、内网域名后缀）保留具体原因（`url_safety.RESOLUTION_DEPENDENT_REASONS`）。
+10. **转发滥用**：`/agent/chat/send` 每个非主用户每小时 `USER_CHAT_SEND_MAX_PER_HOUR`（30），个人告警推送每小时 `USER_ALERT_PUSH_MAX_PER_HOUR`（60），均为进程内滑动窗口（重启清零，目的是防滥用不是计费）；超过时聊天转发返回 `{success: false, error: "rate_limited"}`，告警只记录触发并留一条 `__rate_limited__` 的通知尝试。
+11. **小项**：`fec0::/10`（已废弃的站点本地 IPv6）不再算公网；个人渠道不走环境代理；SMTP 的 EHLO 名固定为 `localhost`（`socket.getfqdn()` 会把服务器自己的主机名发给用户指定的服务器）。
+12. **遗留渠道键**：`PUT /me/settings` 对 `FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN`、`CUSTOM_WEBHOOK_URLS`、`EMAIL_*`、`PUSHPLUS_*` 等（`LEGACY_CHANNEL_KEYS`）返回 400 `managed_elsewhere`（指向 `/me/notification-channels`），`GET /me/settings` 的分组不再列出；已存的旧值不被读取，可用 `DELETE /me/settings/{key}` 清除。
+
+新增配置（系统级，`.env.example` 与 `docs/full-guide.md` 有说明）：`USER_PUSH_SEND_DEADLINE_SECONDS`（30）、`USER_PUSH_TOTAL_DEADLINE_SECONDS`（60）、`USER_PUSH_MAX_WORKERS`（4）、`USER_CHAT_SEND_MAX_PER_HOUR`（30）、`USER_ALERT_PUSH_MAX_PER_HOUR`（60）。新增错误码：`preopen_time_too_early`（400）、`rate_limited` 也用于“同一用户已有测试在跑”和聊天转发。回滚：代码回滚即可，无迁移。测试：`tests/test_multi_user_p3a_hardening.py`（本地 TLS 服务器上的压缩炸弹 / 滴灌 / 重绑定 / 证书名校验、DNS 超时、并发测试发送、提醒线程池、限流、盘前下限与缓存、公平顺序与批次截止、`reports/`、资讯池、遗留键）。
+
+## 22. P3b Web 实现说明（个人推送渠道、推送与定时，补充与差异）
+
+P3b 只做前端（`apps/dsa-web/`）和文档，后端契约就是第 21 节。与第 5、6、20 节的差异和取舍：
+
+- **个人设置的标签**：`PersonalSettingsPanel` 的左侧分组在后端分组之外多两个标签——「推送渠道」（`PersonalChannelsSection`）和「推送与定时」（`PersonalScheduleSection`），插在剩余推送偏好之前；原来的 `push` 分组改名「推送偏好」，只保留 `NOTIFICATION_*`、`SINGLE_STOCK_NOTIFY`、`MERGE_EMAIL_NOTIFICATION`（白名单）。渠道标签的角标是渠道数，由 `SettingsCategoryNav` 新增的可选 `counts` 提供。两个区域有各自的保存 / 操作按钮，不使用页首的「保存」。
+- **旧渠道凭据键只在前端隐藏**：个人设置接口仍返回 `FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` 等键（第 21.1 节遗留项，P3b 不改后端、不改系统设置页）；页面只展示白名单里的推送偏好，因此这些键以及 `DAILY_PLAN_ENABLED` / `DAILY_PLAN_TIME` / `PREOPEN_PUSH_ENABLED` / `PREOPEN_PUSH_TIME`（改在「推送与定时」）都不会出现在通用表单里。后端收回这些键后前端无需改动。
+- **渠道的字段来自后端目录**：添加 / 编辑对话框按 `GET /me/notification-channels` 返回的 `channel_types`（字段名、`kind`、是否必填 / 密钥）渲染；类型名和字段名按 `personalChannels.type.*` / `personalChannels.field.*` 翻译，目录比前端新（出现没有翻译的类型或字段）时回退到服务端的中文标签。`config` 的键是 snake_case 字段名，所以 `meApi` 对渠道响应只把外层键转 camelCase，`config` 原样保留。必填项在前端先检查一次（避免明显的往返），其余校验以服务端为准：`invalid_config` / `unsafe_target` 的 `detail.issues[].code` 映射成本地化文案显示在对应字段下，服务端的英文占位文本不显示。
+- **更新只发送改动**：编辑时，保持 `******`（或清空）的密钥字段不发送；可选的非密钥字段清空时发送 `""`；没有任何改动时保存按钮不可用。读不出来的渠道（`readable=false`）没有可保持的值，必填的密钥必须重新填写。
+- **测试结果类别**：服务端只返回 `status`（`sent` / `failed` / `blocked`）和 `error_category`（`send_failed` / `target_not_allowed` / `unreadable`）；前端另外给 `auth_failed` / `unreachable` / `timeout` / `bad_response` 准备了文案（与「测试模型连接」同一套类别），目前服务端不会返回，未知类别显示「未能送达」。`rate_limited` 来自 429（`POST .../test` 同一渠道约 10 秒一次），显示为「操作太频繁」。
+- **新错误码不进全局映射**：`rate_limited`（登录接口也会返回）、`invalid_config`、`unsafe_target` 等不加入 `MULTI_USER_ERROR_CODES`（`parseApiError` 会对所有调用方改写文案），而是由两个个人区域读取响应体里的 `error` 后用 `CHANNEL_ERROR_TEXT` 翻译；其余错误回退到共享的 `ApiErrorAlert`（`primary_user_uses_env` 等仍走原映射）。`plan_time_too_early` / `preopen_time_too_late` 显示在对应时间输入下，范围取 `detail.issues[0].earliest_time` / `latest_time`，缺失时用 `GET /me/schedule` 的范围。
+- **定时区的取值**：开关和生效时间取 `GET /me/schedule`（继承的系统默认在 `/me/settings` 里 `value` 为空）；时间输入框只显示自己的值，留空沿用系统默认并在下方显示「当前生效」；有自己的值时可「恢复默认」（`DELETE /me/settings/{key}`）。「没有启用渠道」的判断是没有 `enabled && readable` 的渠道；渠道列表读取失败时不做这个提示，以免误导。
+- **主用户 / `local`**：主用户的渠道和定时都只读（`managed_in_system_settings`），链接到系统设置；`local` 模式不请求 `/me`，个人设置页本来就没有入口（导航项仅 `user_center`），这页的新请求只在打开个人设置时发出，系统设置页、设置页和桌面端的请求不变。
+- **次日计划的推送状态**：`RunPush.channel` 放宽为 `'feishu' | 'personal'`，新增 `reason`、`channels`。`RunPushStatus`（设置 → 运行和推送）对 `personal` 显示「个人渠道推送」、每个渠道类型的送达 / 失败，`reason=no_model` 显示「未配置模型」，没有可用渠道显示「计划只在网页里查看」；`feishu`（以及没有该字段的旧记录）的文案与之前完全一致。计划页面沿用既有的中文文案约定，没有接入 i18n；个人设置的新文案都有 zh / en。
+- **没做**：机器人 / MCP 的多用户映射；个人渠道的路由（`NOTIFICATION_*_CHANNELS`）和静默时段没有专门界面（仍在「推送偏好」里按通用字段编辑，路由键写的是系统渠道名，不继承）；计划页「飞书消息预览」标题对个人渠道仍写「飞书」。
+- **测试**：`PersonalChannelsSection.test.tsx`、`PersonalScheduleSection.test.tsx`、`PersonalSettingsPanel.test.tsx`（标签、旧键隐藏、主用户只读、`local`）、`RunPushStatus.test.tsx`、`api/__tests__/me.test.ts`、`api/__tests__/multiUserErrors.test.ts`；浏览器离线场景在 `apps/dsa-web/e2e/fixtures/multi-user.spec.ts`，截图输出到 `apps/dsa-web/test-results/pr-screenshots/`（不入库）。均在 `meApi` 边界或网络层 mock，不访问外网。

@@ -36,6 +36,7 @@ from src.services.user_config_service import (
     require_user_model,
 )
 from src.services.user_settings_service import (
+    LEGACY_CHANNEL_KEYS,
     MASK_TOKEN,
     UserSettingError,
     UserSettingsService,
@@ -58,7 +59,7 @@ SETTING_GROUPS = (
 MANAGED_ELSEWHERE_KEYS = frozenset({"STOCK_LIST"})
 _AGENT_PREFIXES = ("AGENT_", "ASSISTANT_", "HINDSIGHT_")
 _DYNAMIC_LLM_KEY_RE = re.compile(r"^LLM_[A-Z0-9]+(?:_[A-Z0-9]+)*$")
-_PUSH_KEYS = frozenset({"DAILY_PLAN_ENABLED", "SINGLE_STOCK_NOTIFY", "MERGE_EMAIL_NOTIFICATION"})
+_PUSH_KEYS = frozenset({"DAILY_PLAN_ENABLED", "DAILY_PLAN_TIME", "SINGLE_STOCK_NOTIFY", "MERGE_EMAIL_NOTIFICATION"})
 
 
 def setting_group(key: str) -> str:
@@ -88,7 +89,8 @@ def editable_setting_keys() -> List[str]:
     """Registered user-scope keys the settings page shows (registry ``scope`` is the single source)."""
     keys = {key for key in get_registered_field_keys() if get_config_scope(key) == SCOPE_USER}
     keys |= get_user_scope_keys()  # user-scoped keys that have no registry field of their own (e.g. PREOPEN_PUSH_TIME)
-    return sorted(keys - MANAGED_ELSEWHERE_KEYS)
+    # The per-channel .env keys are not personal settings any more: channels live in /me/notification-channels.
+    return sorted(keys - MANAGED_ELSEWHERE_KEYS - LEGACY_CHANNEL_KEYS)
 
 
 def _system_values() -> Dict[str, str]:
@@ -186,6 +188,10 @@ class MeSettingsService:
             value = item.get("value")
             if key in MANAGED_ELSEWHERE_KEYS:
                 raise UserSettingError("managed_elsewhere", f"{key} is edited through the watchlist endpoints")
+            if key in LEGACY_CHANNEL_KEYS:
+                raise UserSettingError(
+                    "managed_elsewhere", f"{key} is not a personal setting; add push channels through /api/v1/me/notification-channels",
+                )
             if value is None:
                 raise UserSettingError("invalid_value", f"{key} needs a value")
             if isinstance(value, str) and value == "" and is_secret_setting_key(key):

@@ -6,6 +6,7 @@ import { meApi } from '../../api/me';
 import { getParsedApiError, type ParsedApiError } from '../../api/error';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { useCurrentUser } from '../../hooks/useCurrentUser';
+import { usePersonalChannels } from '../../hooks/usePersonalChannels';
 import type { UiTextKey } from '../../i18n/uiText';
 import type {
   PersonalSettingField,
@@ -27,12 +28,21 @@ import { SettingsCategoryNav } from './SettingsCategoryNav';
 import { SettingsField } from './SettingsField';
 import { SettingsLoading } from './SettingsLoading';
 import { SettingsSectionCard } from './SettingsSectionCard';
+import { PersonalChannelsSection } from './personal/PersonalChannelsSection';
+import { PersonalScheduleSection } from './personal/PersonalScheduleSection';
+import { SCHEDULE_SETTING_KEYS } from './personal/scheduleKeys';
 
 /** Backend masks a configured secret with this token; sending it (or an empty string) keeps the stored value. */
 const SECRET_MASK = '******';
 const GROUP_ID_PREFIX = 'personal:';
 
+/** Tabs that are not a backend settings group: the channel list and the schedule are their own sections. */
+const CHANNELS_TAB = 'channels';
+const SCHEDULE_TAB = 'schedule';
+
 const GROUP_TITLE_KEYS: Record<string, UiTextKey> = {
+  [CHANNELS_TAB]: 'personalSettings.group.channels',
+  [SCHEDULE_TAB]: 'personalSettings.group.schedule',
   model: 'personalSettings.group.model',
   search: 'personalSettings.group.search',
   data_source: 'personalSettings.group.data_source',
@@ -42,6 +52,8 @@ const GROUP_TITLE_KEYS: Record<string, UiTextKey> = {
   report: 'personalSettings.group.report',
 };
 const GROUP_DESCRIPTION_KEYS: Record<string, UiTextKey> = {
+  [CHANNELS_TAB]: 'personalSettings.groupDescription.channels',
+  [SCHEDULE_TAB]: 'personalSettings.groupDescription.schedule',
   model: 'personalSettings.groupDescription.model',
   search: 'personalSettings.groupDescription.search',
   data_source: 'personalSettings.groupDescription.data_source',
@@ -74,10 +86,12 @@ const MODEL_PRIORITY_KEYS = [
   'LITELLM_FALLBACK_MODELS',
 ];
 /**
- * Push preferences only. Channel credentials (webhooks, bot tokens, SMTP ...) are accepted by the backend but
- * personal push channels are not live yet (Phase 3, docs/design/multi-user.md section 5), so they are not offered.
+ * Push preferences only. The switches and times of the next-day plan / pre-open push live in the 推送与定时 section and
+ * the channels in 推送渠道 (docs/design/multi-user.md section 21). The legacy per-channel credential keys the personal
+ * settings API still returns (`FEISHU_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, SMTP ...) are not read by any push path any
+ * more, so none of them is offered: everything outside this allow-list stays hidden.
  */
-const PUSH_PREFERENCE_KEY = /^(DAILY_PLAN_ENABLED|PREOPEN_PUSH_|NOTIFICATION_|SINGLE_STOCK_NOTIFY$|MERGE_EMAIL_NOTIFICATION$)/;
+const PUSH_PREFERENCE_KEY = /^(NOTIFICATION_|SINGLE_STOCK_NOTIFY$|MERGE_EMAIL_NOTIFICATION$)/;
 
 function visibleFields(group: PersonalSettingGroup): PersonalSettingField[] {
   if (group.id === 'push') {
@@ -140,6 +154,13 @@ function groupIssues(error: unknown): Record<string, ConfigValidationIssue[]> {
   return byKey;
 }
 
+/** One tab of the group nav: a backend settings group, or the channels / schedule section (`group: null`). */
+interface PanelEntry {
+  id: string;
+  group: PersonalSettingGroup | null;
+  fields: PersonalSettingField[];
+}
+
 type TestState =
   | { status: 'idle' }
   | { status: 'testing' }
@@ -170,6 +191,7 @@ export const PersonalSettingsPanel: React.FC = () => {
   const [notice, setNotice] = useState<string | null>(null);
   const [resettingKey, setResettingKey] = useState<string | null>(null);
   const [testState, setTestState] = useState<TestState>({ status: 'idle' });
+  const channels = usePersonalChannels();
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -270,25 +292,41 @@ export const PersonalSettingsPanel: React.FC = () => {
     }
   };
 
-  const groups = useMemo(
-    () =>
-      (data?.groups ?? [])
-        .map((group) => ({ group, fields: visibleFields(group) }))
-        .filter(({ fields }) => fields.length > 0),
-    [data],
-  );
-  const currentGroup = groups.find(({ group }) => group.id === activeGroup) ?? groups[0];
+  const entries = useMemo<PanelEntry[]>(() => {
+    const list: PanelEntry[] = (data?.groups ?? [])
+      .map((group) => ({ id: group.id, group, fields: visibleFields(group) }))
+      .filter(({ fields }) => fields.length > 0);
+    if (!data) return list;
+    // The channel list and the schedule sit right before the remaining push preferences.
+    const at = list.findIndex(({ id }) => id === 'push' || id === 'position' || id === 'report');
+    const virtual: PanelEntry[] = [
+      { id: CHANNELS_TAB, group: null, fields: [] },
+      { id: SCHEDULE_TAB, group: null, fields: [] },
+    ];
+    list.splice(at < 0 ? list.length : at, 0, ...virtual);
+    return list;
+  }, [data]);
+  const currentEntry = entries.find(({ id }) => id === activeGroup) ?? entries[0];
+  const entryTitle = (entry: PanelEntry): string =>
+    GROUP_TITLE_KEYS[entry.id] ? t(GROUP_TITLE_KEYS[entry.id]) : entry.group?.title ?? entry.id;
+  const entryDescription = (entry: PanelEntry): string =>
+    GROUP_DESCRIPTION_KEYS[entry.id] ? t(GROUP_DESCRIPTION_KEYS[entry.id]) : '';
 
-  const navCategories: SystemConfigCategorySchema[] = groups.map(({ group }) => ({
-    category: `${GROUP_ID_PREFIX}${group.id}` as SystemConfigCategory,
-    title: GROUP_TITLE_KEYS[group.id] ? t(GROUP_TITLE_KEYS[group.id]) : group.title,
-    description: GROUP_DESCRIPTION_KEYS[group.id] ? t(GROUP_DESCRIPTION_KEYS[group.id]) : '',
+  const navCategories: SystemConfigCategorySchema[] = entries.map((entry) => ({
+    category: `${GROUP_ID_PREFIX}${entry.id}` as SystemConfigCategory,
+    title: entryTitle(entry),
+    description: entryDescription(entry),
     displayOrder: 0,
     fields: [],
   }));
   const navItems: Record<string, SystemConfigItem[]> = Object.fromEntries(
-    groups.map(({ group, fields }) => [`${GROUP_ID_PREFIX}${group.id}`, fields.map(toConfigItem)]),
+    entries.map((entry) => [`${GROUP_ID_PREFIX}${entry.id}`, entry.fields.map(toConfigItem)]),
   );
+  const navCounts: Record<string, number> = {
+    [`${GROUP_ID_PREFIX}${CHANNELS_TAB}`]: channels.data?.channels.length ?? 0,
+    [`${GROUP_ID_PREFIX}${SCHEDULE_TAB}`]: SCHEDULE_SETTING_KEYS.filter((key) => fieldsByKey.has(key)).length,
+  };
+  const scheduleFields = Object.fromEntries(SCHEDULE_SETTING_KEYS.map((key) => [key, fieldsByKey.get(key)]));
 
   const isReadOnly = data?.managedInSystemSettings ?? false;
 
@@ -444,13 +482,14 @@ export const PersonalSettingsPanel: React.FC = () => {
         </div>
       ) : null}
 
-      {data && currentGroup ? (
+      {data && currentEntry ? (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="lg:sticky lg:top-4 lg:self-start">
             <SettingsCategoryNav
               categories={navCategories}
               itemsByCategory={navItems}
-              activeCategory={`${GROUP_ID_PREFIX}${currentGroup.group.id}`}
+              activeCategory={`${GROUP_ID_PREFIX}${currentEntry.id}`}
+              counts={navCounts}
               onSelect={(category) => setActiveGroup(category.slice(GROUP_ID_PREFIX.length))}
               title={t('personalSettings.groupNav')}
               description=""
@@ -458,11 +497,28 @@ export const PersonalSettingsPanel: React.FC = () => {
           </aside>
 
           <section className="space-y-4">
+            {currentEntry.id === CHANNELS_TAB ? (
+              <PersonalChannelsSection
+                channels={channels}
+                title={entryTitle(currentEntry)}
+                description={entryDescription(currentEntry)}
+              />
+            ) : currentEntry.id === SCHEDULE_TAB ? (
+              <PersonalScheduleSection
+                title={entryTitle(currentEntry)}
+                description={entryDescription(currentEntry)}
+                fields={scheduleFields}
+                channels={channels}
+                readOnly={isReadOnly}
+                onSettingsChanged={applyResponse}
+                onAddChannel={isReadOnly ? () => navigate('/settings') : () => setActiveGroup(CHANNELS_TAB)}
+              />
+            ) : (
             <SettingsSectionCard
-              title={GROUP_TITLE_KEYS[currentGroup.group.id] ? t(GROUP_TITLE_KEYS[currentGroup.group.id]) : currentGroup.group.title}
-              description={GROUP_DESCRIPTION_KEYS[currentGroup.group.id] ? t(GROUP_DESCRIPTION_KEYS[currentGroup.group.id]) : undefined}
+              title={entryTitle(currentEntry)}
+              description={entryDescription(currentEntry) || undefined}
               actions={
-                currentGroup.group.id === 'model' && !isReadOnly ? (
+                currentEntry.id === 'model' && !isReadOnly ? (
                   <Button
                     type="button"
                     variant="settings-secondary"
@@ -478,7 +534,7 @@ export const PersonalSettingsPanel: React.FC = () => {
                 ) : undefined
               }
             >
-              {currentGroup.group.id === 'model' && !isReadOnly ? (
+              {currentEntry.id === 'model' && !isReadOnly ? (
                 <div className="space-y-2" data-testid="personal-model-test">
                   {dirtyKeys.length > 0 ? (
                     <p className="text-xs text-muted-text">{t('personalSettings.testModel.unsavedHint')}</p>
@@ -490,14 +546,15 @@ export const PersonalSettingsPanel: React.FC = () => {
                 className="overflow-hidden rounded-2xl border settings-border bg-[var(--settings-surface)]"
                 lang={language}
               >
-                {currentGroup.fields.map(renderField)}
+                {currentEntry.fields.map(renderField)}
               </div>
             </SettingsSectionCard>
+            )}
           </section>
         </div>
       ) : null}
 
-      {data && !currentGroup ? (
+      {data && !currentEntry ? (
         <p className="text-sm text-muted-text">{t('personalSettings.groupEmpty')}</p>
       ) : null}
     </div>

@@ -633,8 +633,7 @@ def _handle_async_analysis_batch(
     if reuse_metadata:
         submit_kwargs["reuse_metadata"] = True
     if user_id:
-        submit_kwargs["user_id"] = user_id
-        submit_kwargs["notify"] = False  # personal accounts have no push channel; never use the system's
+        submit_kwargs["user_id"] = user_id  # notify then goes to this user's own channels only (never the system's)
     if skills is not None:
         submit_kwargs["skills"] = skills
     # 仅当存在非 None 的结构化 target（如指数）时才传递，保持纯股票请求

@@ -110,7 +110,7 @@ class AnalysisService:
             analysis_target: 可选的结构化分析目标（指数目标贯穿到 pipeline，
                 否则指数会退化为股票语义）
             user_id: 发起分析的用户（``None`` = 主用户）。非主用户使用自己的配置视图（模型 / 搜索 Key、
-                Agent 持仓读取），没有可用模型时抛出 ``ModelKeyRequiredError``；不发送系统推送渠道
+                Agent 持仓读取），没有可用模型时抛出 ``ModelKeyRequiredError``；通知只发往该用户自己的个人推送渠道，不发送系统推送渠道
             allow_reuse: 允许直接复用已有的共享报告（同股票 / 交易日 / 模型渠道 / 策略集 / 语言 / 报告类型，见
                 ``report_reuse_service``）；命中时不调用模型，也不需要模型 Key。``force_refresh``、
                 ``portfolio_context``（持仓）和非 ``auto`` 的 ``analysis_phase`` 会关闭直接复用
@@ -149,7 +149,7 @@ class AnalysisService:
             if user_id and user_id != get_primary_user_id():
                 config = resolve_user_config(user_id)
                 pipeline_user_kwargs["user_id"] = user_id
-                send_notification = False  # 个人推送渠道尚未开放，绝不落到系统渠道
+                # send_notification is kept: the pipeline pushes to this user's own channels only (never the system's)
             normalized_report_language = normalize_report_language(report_language, default="")
             if normalized_report_language:
                 config = copy.copy(config)

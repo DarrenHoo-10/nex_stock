@@ -55,6 +55,7 @@ def _put(client, **values):
 def test_groups_follow_the_design_and_cover_every_user_scope_key(app):
     from src.core.config_registry import SCOPE_USER, get_config_scope, get_registered_field_keys
     from src.services.me_settings_service import MANAGED_ELSEWHERE_KEYS
+    from src.services.user_settings_service import LEGACY_CHANNEL_KEYS
 
     payload = app.as_user(USER_A).get(SETTINGS).json()
 
@@ -64,16 +65,17 @@ def test_groups_follow_the_design_and_cover_every_user_scope_key(app):
     shown = set(_fields(payload))
     expected = {
         key for key in get_registered_field_keys()
-        if get_config_scope(key) == SCOPE_USER and key not in MANAGED_ELSEWHERE_KEYS
+        if get_config_scope(key) == SCOPE_USER and key not in MANAGED_ELSEWHERE_KEYS | LEGACY_CHANNEL_KEYS
     }
     assert expected <= shown
+    assert not shown & LEGACY_CHANNEL_KEYS  # P3a: per-channel .env keys are no longer personal settings
     assert not any(get_config_scope(key) != SCOPE_USER for key in shown)  # no system-scope key leaks into the page
     by_group = {group["id"]: {f["key"] for f in group["fields"]} for group in payload["groups"]}
     assert {"LITELLM_MODEL", "OPENAI_API_KEY", "LLM_CHANNELS"} <= by_group["model"]
     assert {"TAVILY_API_KEYS", "SEARXNG_BASE_URLS"} <= by_group["search"]
     assert "TUSHARE_TOKEN" in by_group["data_source"]
     assert {"AGENT_MAX_STEPS", "HINDSIGHT_BASE_URL"} <= by_group["agent"]
-    assert {"FEISHU_WEBHOOK_URL", "PREOPEN_PUSH_TIME"} <= by_group["push"]
+    assert {"NOTIFICATION_QUIET_HOURS", "PREOPEN_PUSH_TIME"} <= by_group["push"]
     assert "POSITION_STOP_LOSS_PCT" in by_group["position"]
     assert "REPORT_LANGUAGE" in by_group["report"]
 
@@ -234,8 +236,9 @@ def test_users_cannot_see_or_change_each_others_settings(app):
     "https://user:pw@api.example.com/v1",
 ])
 @pytest.mark.parametrize("key", [
+    # (the per-channel webhook keys are no longer personal settings: see test_multi_user_p3a_hardening legacy-key test)
     "OPENAI_BASE_URL", "LLM_MINE_BASE_URL", "OLLAMA_API_BASE", "SEARXNG_BASE_URLS", "HINDSIGHT_BASE_URL",
-    "FEISHU_WEBHOOK_URL", "CUSTOM_WEBHOOK_URLS", "NTFY_URL", "ANSPIRE_LLM_BASE_URL",
+    "ANSPIRE_LLM_BASE_URL",
 ])
 def test_unsafe_urls_are_rejected_for_every_endpoint_setting(app, key, url):
     response = _put(app.as_user(USER_A), **{key: url})
@@ -262,7 +265,7 @@ def test_every_url_in_a_list_setting_is_checked(app):
     client = app.as_user(USER_A)
 
     assert _put(client, SEARXNG_BASE_URLS="https://s1.example.com, https://10.0.0.9").json()["error"] == "unsafe_url"
-    assert _put(client, CUSTOM_WEBHOOK_URLS="https://hooks.example.com/a,http://hooks.example.com/b").json()["error"] == "unsafe_url"
+    assert _put(client, SEARXNG_BASE_URLS="https://s1.example.com,http://s2.example.com").json()["error"] == "unsafe_url"
     assert _put(client, SEARXNG_BASE_URLS="https://s1.example.com, https://s2.example.com").status_code == 200
 
 
@@ -330,8 +333,10 @@ def test_every_user_scope_key_that_holds_an_address_goes_through_the_ssrf_guard(
         key for key in editable_setting_keys()
         if "URL" in key or key.endswith(("_BASE", "_API_BASE")) or "WEBHOOK" in key and not key.endswith(("_SECRET", "_KEYWORD", "_TEMPLATE", "_TOKEN"))
     ]
-    assert {"OPENAI_BASE_URL", "OLLAMA_API_BASE", "SEARXNG_BASE_URLS", "HINDSIGHT_BASE_URL", "FEISHU_WEBHOOK_URL",
-            "CUSTOM_WEBHOOK_URLS", "NTFY_URL", "GOTIFY_URL", "ASTRBOT_URL"} <= set(address_like)
+    assert {"OPENAI_BASE_URL", "OLLAMA_API_BASE", "SEARXNG_BASE_URLS", "HINDSIGHT_BASE_URL"} <= set(address_like)
+    # the per-channel webhook keys are not personal settings any more (P3a), but would still be name-matched by the guard
+    assert not set(address_like) & {"FEISHU_WEBHOOK_URL", "CUSTOM_WEBHOOK_URLS", "NTFY_URL", "GOTIFY_URL", "ASTRBOT_URL"}
+    assert all(is_url_setting_key(key) for key in ("FEISHU_WEBHOOK_URL", "CUSTOM_WEBHOOK_URLS", "NTFY_URL"))
     assert [key for key in address_like if not is_url_setting_key(key)] == []
     # dynamic per-channel keys are covered too
     assert is_url_setting_key("LLM_ANYTHING_BASE_URL")

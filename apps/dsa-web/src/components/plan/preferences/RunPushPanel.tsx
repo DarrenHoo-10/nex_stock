@@ -7,10 +7,11 @@ import { systemConfigApi } from '../../../api/systemConfig';
 import { useLatestPlanRun } from '../../../hooks/useLatestPlanRun';
 import { showPlanToast } from '../../../stores/planToastStore';
 import { usePlanUiStore } from '../../../stores/planUiStore';
-import type { PlanRun, PushStatus, RunStatus } from '../../../types/dailyPlan';
+import type { PlanRun, RunStatus } from '../../../types/dailyPlan';
 import type { SchedulerStatusResponse } from '../../../types/systemConfig';
 import { FeishuSettings } from './FeishuSettings';
 import { formatClock, formatDateClock, formatDuration } from './format';
+import { RunPushStatus } from './RunPushStatus';
 import { PanelHead, SaveProblem } from './shared';
 import type { ConfigView, SaveOutcome } from './usePreferencesConfig';
 
@@ -24,13 +25,6 @@ const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   running: '运行中',
   pending: '等待运行',
   skipped: '已跳过',
-};
-
-const PUSH_STATUS_LABEL: Record<PushStatus, string> = {
-  sent: '已发送',
-  failed: '发送失败',
-  skipped: '已跳过',
-  pending: '等待发送',
 };
 
 const STEP_MARK: Record<RunStatus, { mark: string; className: string }> = {
@@ -88,11 +82,7 @@ const RunSummary: React.FC<{ run: PlanRun }> = ({ run }) => (
       })}
     </ol>
 
-    <p className="pref-push-line" data-testid="push-status">
-      飞书推送：{run.push.configured ? PUSH_STATUS_LABEL[run.push.status] : '未配置，没有发送'}
-      {run.push.status === 'sent' && run.push.sentAt ? `（${formatClock(run.push.sentAt)}）` : ''}
-      {run.push.status === 'failed' && run.push.error ? `：${run.push.error}` : ''}
-    </p>
+    <RunPushStatus push={run.push} />
 
     {run.failures.length > 0 ? (
       <div className="notice pref-notice">

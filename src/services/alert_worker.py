@@ -89,13 +89,16 @@ class AlertWorker:
         service: Optional[AlertService] = None,
         decision_signal_service: Optional[DecisionSignalService] = None,
         notifier: Optional[Any] = None,
+        user_notifier_factory: Optional[Callable[[str], Any]] = None,
         now_provider: Optional[Callable[[], float]] = None,
         fingerprint_ttl_seconds: int = ALERT_WORKER_FINGERPRINT_TTL_SECONDS,
     ) -> None:
         self.config_provider = config_provider or self._default_config_provider
         self.service = service or AlertService()
         self.decision_signal_service = decision_signal_service or DecisionSignalService()
-        self.notifier = notifier
+        self.notifier = notifier  # the primary user's (.env) notifier; other users never use it
+        self._user_notifier_factory = user_notifier_factory
+        self._user_notifiers: Dict[str, Any] = {}
         self.now_provider = now_provider or time.time
         self.fingerprint_ttl_seconds = max(1, int(fingerprint_ttl_seconds))
         self._trigger_fingerprints: Dict[str, float] = {}
@@ -147,6 +150,8 @@ class AlertWorker:
         monitor = EventMonitor()
         daily_cache: Dict[Any, Any] = {}
         self._analysis_visibility_cache = {}
+        self._user_notifiers = {}
+        personal_pushes: Dict[str, List[Tuple[Any, ...]]] = {}
         for runtime_rule in runtime_rules:
             stats["evaluated"] += 1
             try:
@@ -179,8 +184,8 @@ class AlertWorker:
 
             if record_status == "triggered":
                 stats["triggered"] += 1
-                if not self._owner_is_primary(runtime_rule):
-                    # No per-user notification channel yet (P3): keep the trigger record only and never
+                if not self._owner_is_primary(runtime_rule) and not self._owner_has_channels(runtime_rule):
+                    # The rule's owner has no personal push channel: keep the trigger record only and never
                     # push another user's alert through the primary user's channels.
                     if trigger_write.created:
                         stats["notification_attempts"] += self._record_notification_skipped(runtime_rule, trigger_id)
@@ -191,16 +196,21 @@ class AlertWorker:
                         stats["cooldown_suppressed"] += 1
                         stats["notification_attempts"] += 1
                         continue
-                    dispatch = self._send_notification_safely(runtime_rule, result)
-                    stats["notification_attempts"] += self._record_notification_attempts_safely(self._owner_of(runtime_rule), trigger_id, dispatch)
-                    if self._dispatch_has_real_channel_success(dispatch):
-                        self._upsert_db_cooldown_safely(runtime_rule, result)
-                        if cooldown_decision.fallback_key:
-                            self._mark_notified(
-                                cooldown_decision.fallback_key,
-                                ttl_seconds=cooldown_decision.fallback_ttl_seconds,
+                    if not self._owner_is_primary(runtime_rule):
+                        # A personal push talks to a target the user chose: it is handed to the bounded push pool
+                        # after the whole cycle has been evaluated, so a slow target never delays other rules / users.
+                        if not self._allow_personal_alert_push(runtime_rule):
+                            stats["notification_attempts"] += self._record_notification_skipped(
+                                runtime_rule, trigger_id, status="rate_limited",
+                                message="personal alert pushes are rate limited",
                             )
-                        stats["notified"] += 1
+                            continue
+                        personal_pushes.setdefault(self._owner_of(runtime_rule), []).append(
+                            (runtime_rule, result, trigger_id, cooldown_decision)
+                        )
+                        continue
+                    dispatch = self._send_notification_safely(runtime_rule, result)
+                    self._finish_db_dispatch(runtime_rule, result, trigger_id, cooldown_decision, dispatch, stats)
                 elif self._should_notify(runtime_rule.key):
                     dispatch = self._send_notification_safely(runtime_rule, result)
                     stats["notification_attempts"] += self._record_notification_attempts_safely(self._owner_of(runtime_rule), trigger_id, dispatch)
@@ -208,7 +218,82 @@ class AlertWorker:
                         self._mark_notified(runtime_rule.key)
                         stats["notified"] += 1
 
+        self._flush_personal_pushes(personal_pushes, stats)
         return stats
+
+    def _finish_db_dispatch(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        result: Dict[str, Any],
+        trigger_id: Optional[int],
+        cooldown_decision: "DBCooldownDecision",
+        dispatch: "NotificationDispatchResult",
+        stats: Dict[str, int],
+    ) -> None:
+        stats["notification_attempts"] += self._record_notification_attempts_safely(self._owner_of(runtime_rule), trigger_id, dispatch)
+        if self._dispatch_has_real_channel_success(dispatch):
+            self._upsert_db_cooldown_safely(runtime_rule, result)
+            if cooldown_decision.fallback_key:
+                self._mark_notified(
+                    cooldown_decision.fallback_key,
+                    ttl_seconds=cooldown_decision.fallback_ttl_seconds,
+                )
+            stats["notified"] += 1
+
+    @staticmethod
+    def _allow_personal_alert_push(runtime_rule: RuntimeAlertRule) -> bool:
+        from src.services.user_notification_service import allow_alert_push
+
+        return allow_alert_push(str(runtime_rule.user_id))
+
+    def _flush_personal_pushes(self, personal_pushes: Dict[str, List[Tuple[Any, ...]]], stats: Dict[str, int]) -> None:
+        """Send the cycle's personal alert pushes through the bounded push pool and record their outcomes.
+
+        One task per user (that user's pushes in order; at most one task per user in flight, ``submit_user_push``), every
+        channel send inside has its hard deadline. This waits for the tasks only after all rules were evaluated and the
+        primary user's pushes sent, and never longer than the deadlines allow; a push that is not done by then is
+        recorded as failed (its thread ends by itself at its own deadline).
+        """
+        if not personal_pushes:
+            return
+        import concurrent.futures
+
+        from src.notification import ChannelAttemptResult, NotificationDispatchResult
+        from src.services.user_notification_service import push_wait_seconds, submit_user_push
+
+        def failed(status: str, message: str) -> NotificationDispatchResult:
+            return NotificationDispatchResult(
+                dispatched=False, success=False, status=status,
+                channel_results=[ChannelAttemptResult(channel="__dispatch__", success=False, error_code=status, retryable=True)],
+                message=message,
+            )
+
+        submitted: List[Tuple[List[Tuple[Any, ...]], Optional["concurrent.futures.Future"]]] = []
+        for owner, items in personal_pushes.items():
+            def task(items=items) -> List[Any]:
+                return [self._send_notification_safely(item[0], item[1]) for item in items]
+
+            try:
+                future = submit_user_push(owner, task)
+            except Exception as exc:  # noqa: BLE001 - never fails the cycle
+                logger.warning("[AlertWorker] Cannot start the personal push of user %s: %s", owner, type(exc).__name__)
+                future = None
+            submitted.append((items, future))
+
+        futures = [future for _items, future in submitted if future is not None]
+        longest = max((len(items) for items, _future in submitted), default=1)
+        if futures:
+            concurrent.futures.wait(futures, timeout=push_wait_seconds(longest) * max(1, len(futures)))
+        for items, future in submitted:
+            if future is None:
+                dispatches = [failed("busy", "a previous personal push of this user is still running")] * len(items)
+            elif future.done() and future.exception() is None:
+                dispatches = future.result()
+            else:
+                future.cancel()
+                dispatches = [failed("timeout", "personal push did not finish in time")] * len(items)
+            for (runtime_rule, result, trigger_id, cooldown_decision), dispatch in zip(items, dispatches):
+                self._finish_db_dispatch(runtime_rule, result, trigger_id, cooldown_decision, dispatch, stats)
 
     def get_rule_sources(self, config: Any) -> Dict[str, int]:
         """Reuse polling dedup with request-local expansion caching and read-only holdings."""
@@ -340,16 +425,46 @@ class AlertWorker:
     def _owner_is_primary(self, runtime_rule: RuntimeAlertRule) -> bool:
         return self._owner_of(runtime_rule) == get_primary_user_id()
 
-    def _record_notification_skipped(self, runtime_rule: RuntimeAlertRule, trigger_id: Optional[int]) -> int:
-        """Record that a non-primary user's trigger was not pushed (no personal channel until P3)."""
+    def _user_notifier(self, owner: str) -> Any:
+        """The personal notifier of a non-primary rule owner (built once per cycle; never the system's)."""
+        if owner not in self._user_notifiers:
+            if self._user_notifier_factory is not None:
+                self._user_notifiers[owner] = self._user_notifier_factory(owner)
+            else:
+                from src.services.user_notification_service import build_user_notifier
+
+                self._user_notifiers[owner] = build_user_notifier(owner)
+        return self._user_notifiers[owner]
+
+    def _owner_has_channels(self, runtime_rule: RuntimeAlertRule) -> bool:
+        try:
+            return bool(self._user_notifier(self._owner_of(runtime_rule)).is_available())
+        except Exception as exc:  # noqa: BLE001 - unreadable channels mean "no channel", never a failed cycle
+            logger.warning(
+                "[AlertWorker] Cannot read the push channels of user %s: %s",
+                self._owner_of(runtime_rule),
+                self.service._sanitize_text(str(exc) or type(exc).__name__),
+            )
+            return False
+
+    def _record_notification_skipped(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        trigger_id: Optional[int],
+        *,
+        status: str = "no_channel",
+        message: str = "user has no personal notification channel",
+    ) -> int:
+        """Record that a non-primary user's trigger was not pushed (no personal channel, or the push rate limit)."""
         if trigger_id is None:
             return 0
         from src.notification import NotificationDispatchResult
 
         logger.info(
-            "[AlertWorker] Alert for user %s on %s recorded without notification (no personal channel)",
+            "[AlertWorker] Alert for user %s on %s recorded without notification (%s)",
             self._owner_of(runtime_rule),
             self._display_target(runtime_rule),
+            status,
         )
         return self._record_notification_attempts_safely(
             self._owner_of(runtime_rule),
@@ -357,8 +472,8 @@ class AlertWorker:
             NotificationDispatchResult(
                 dispatched=False,
                 success=False,
-                status="no_channel",
-                message="user has no personal notification channel yet",
+                status=status,
+                message=message,
             ),
         )
 
@@ -729,7 +844,11 @@ class AlertWorker:
     def _send_notification(self, runtime_rule: RuntimeAlertRule, result: Dict[str, Any]) -> "NotificationDispatchResult":
         from src.notification import NotificationBuilder, NotificationService
 
-        notification_service = self.notifier or NotificationService()
+        if self._owner_is_primary(runtime_rule):
+            notification_service = self.notifier or NotificationService()
+        else:
+            # Another user's alert (it can carry their holdings) goes to that user's own channels, nothing else.
+            notification_service = self._user_notifier(self._owner_of(runtime_rule))
         title = f"Event Alert | {self._display_target(runtime_rule)}"
         content = result.get("reason") or result.get("message") or runtime_rule.rule.description or "Alert triggered"
         diagnostics = self._diagnostics_payload(result.get("diagnostics"))
@@ -809,7 +928,8 @@ class AlertWorker:
                 "success": bool(item.success),
                 "error_code": item.error_code,
                 "retryable": bool(item.retryable),
-                "latency_ms": self._optional_int(item.latency_ms),
+                # a personal channel's timing is not recorded: its target is a host the user chose
+                "latency_ms": self._optional_int(item.latency_ms) if user_id == get_primary_user_id() else None,
                 "diagnostics": self.service._sanitize_text(item.diagnostics or dispatch.message),
             }
             self.service.repo.record_notification_attempt(user_id, fields)
@@ -824,6 +944,7 @@ class AlertWorker:
         channel_by_status = {
             "noise_suppressed": "__noise_suppressed__",
             "no_channel": "__no_channel__",
+            "rate_limited": "__rate_limited__",
             "exception": "__dispatch__",
         }
         success = bool(dispatch.success)
@@ -831,7 +952,7 @@ class AlertWorker:
             channel=channel_by_status.get(status, "__dispatch__"),
             success=success,
             error_code=None if success else status,
-            retryable=status not in {"noise_suppressed", "no_channel"},
+            retryable=status not in {"noise_suppressed", "no_channel", "rate_limited"},
             diagnostics=dispatch.message,
         )
 

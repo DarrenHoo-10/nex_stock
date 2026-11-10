@@ -286,8 +286,10 @@ def _hold(client, quantity=10):
     return account_id
 
 
-@pytest.mark.parametrize(("user_id", "notify"), [(USER_B, False), (PRIMARY_ID, True)])
-def test_position_analysis_only_notifies_through_global_channels_for_the_primary_user(app, user_id, notify):
+@pytest.mark.parametrize(("user_id", "notify"), [(USER_B, True), (PRIMARY_ID, True)])
+def test_position_analysis_notifies_the_requester_only(app, user_id, notify):
+    # P3a: the request asks for a push for everyone; a non-primary requester's goes to their own channels (the
+    # pipeline's notifier), the primary user's to the .env channels - tests/test_multi_user_p3a_pushes.py
     from types import SimpleNamespace
     from unittest.mock import patch
 
