@@ -259,9 +259,10 @@ daily_stock_analysis/
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
 | `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
 | `LITELLM_LIGHT_MODEL` | 轻量模型（可选）：资讯分类、打标签、短摘要等轻量杂活共用，格式与 `LITELLM_MODEL` 相同（可填 `LLM_CHANNELS` 渠道里的模型名）；留空使用主模型，轻量模型调用失败时退回主模型再试一次；不改变任何现有功能使用的模型 | - | 否 |
-| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 自动压缩开关；Codex 使用最近 20 条可见对话且保留该配置。关闭时仍可在 Web「助手」页手动压缩，会话有摘要后按「摘要 + 最近 20 条」带历史 | `false` | 否 |
+| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 自动压缩开关；Codex 使用最近 20 条可见对话且保留该配置。关闭时仍可在 Web「助手」页手动压缩，会话有摘要后按「摘要 + 最近 20 条」带历史 | `true` | 否 |
+| `AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO` | 历史达到 Agent 模型上下文窗口的该比例时自动压缩；`0` 或窗口未知时用固定 token 阈值 | `0.8` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_PROFILE` | 问股上下文压缩策略：`cost` / `balanced` / `long_context_raw_first` | `balanced` | 否 |
-| `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 历史 token 估算超过该值时触发压缩；留空则跟随 profile preset | - | 否 |
+| `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 固定阈值：触发比例为 0 或模型窗口未知时，历史 token 估算超过该值触发压缩；留空则跟随 profile preset | - | 否 |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
 | `LITELLM_FALLBACK_MODELS` | 备选模型，逗号分隔 | - | 否 |
 | `LLM_REASONING_EFFORT` | 主分析模型及其备选模型（单股分析、大盘复盘等）的标准 `reasoning_effort` 请求参数：留空 = 不发送（模型默认），可选 `low` / `medium` / `high` / `xhigh` / `max`，非法值记录警告并按留空处理。强度越高越慢、token 越多；项目不发送 `max_tokens`，思考不会被输出预算截断。这是推荐的设置方式，模型名带 `:high` 等后缀的写法仍保留（由网关解释，项目不改写模型名）。服务端明确拒绝该参数时，当次请求去掉它重试一次并记录日志 | 空 | 否 |
@@ -411,7 +412,7 @@ daily_stock_analysis/
 
 排序策略为：先按类别优先级（direct > sector > macro）排序，再按语言偏好（中文优先）再按分数排序，因此当同一时窗内存在明确标的命中的新闻时会优先展示。
 
-排序后还会执行一层域名无关的准入过滤：明显的下载/安装包/应用评分页、成人/招嫖服务垃圾页会被剔除；当同一批次已经存在直接标的或有分数的行业/市场候选时，`score=0` 的背景填充项不会进入 `news_context`、Agent 工具输出或历史情报缓存。该规则不内置具体网站黑名单，避免靠穷举域名维护。
+排序后还会执行一层域名无关的准入过滤：明显的下载/安装包/应用评分页、成人/招嫖服务垃圾页，以及标题和摘要出现乱码（网页编码被错误解读，例如 GBK 页面读成其他编码后混出多种罕见文字，或 UTF-8 被当成 Latin-1）的结果会被剔除；当同一批次已经存在直接标的或有分数的行业/市场候选时，`score=0` 的背景填充项不会进入 `news_context`、Agent 工具输出或历史情报缓存。该规则不内置具体网站黑名单，避免靠穷举域名维护。
 
 调试入口：
 
@@ -435,9 +436,12 @@ daily_stock_analysis/
 
 | 变量名 | 说明 | 默认值 | 必填 |
 |--------|------|--------|:----:|
+| `ASHARE_API_KEY` | ashareapi.com 的开盘竞价分时报价密钥，需专业版及以上权限。必盈无可用竞价点时使用；Tushare 可补充最终撮合结果。 | - | 可选 |
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
-| `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。个股行情窗口双击日 K 查看历史交易日分时（`GET /api/v1/stocks/{code}/intraday`）也走必盈历史 5 分钟线，未配置时该功能提示读取失败。 | - | 可选 |
+| `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。个股行情窗口双击日 K 查看历史交易日分时（`GET /api/v1/stocks/{code}/intraday`）也走必盈历史 5 分钟线，未配置时该功能提示需要配置必盈 licence（接口返回 503，`reason=biying_not_configured`）。 | - | 可选 |
 | `BIYING_TIMEOUT_SECONDS` | 必盈单次请求超时（秒） | `8` | 可选 |
+| `EASTMONEY_MIN_INTERVAL_SEC` | 东方财富统一限速：同一子域名两次请求的最小间隔（秒），另加 0.1–0.5 秒随机抖动；作用于本进程内所有东方财富请求，见 [数据源说明](data-sources.md) 5.5 | `1.0` | 可选 |
+| `EASTMONEY_BAN_COOLDOWN_MINUTES` | 东方财富某子域名返回 403 后暂停对它请求的分钟数，期间改用其他来源 | `30` | 可选 |
 | `INTRADAY_SNAPSHOT_TTL_SECONDS` | 助手盘中数据（全市场快照、个股报价、5 分钟 K 线）的内存缓存时效（秒）；仅提问时取，不做定时刷新，不写入 `stock_daily`。 | `60` | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填 `http://` 或 `https://` 开头的完整地址 | `http://api.tushare.pro` | 可选 |
 | `TICKFLOW_API_KEY` | TickFlow API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | - | 可选 |
@@ -482,6 +486,7 @@ daily_stock_analysis/
 > - TickFlow 可通过申万一级行业标的池与全 A 股行情生成行业涨跌排行，并优先参与市场结构行业主线 fallback；概念题材排行仍由现有 AkShare / Tushare / Efinance 链路提供。
 > - TickFlow 官方 quickstart 提供了 `quotes.get(universes=["CN_Equity_A"])` 用法，但不同 API Key 不一定拥有对应权限；批量日 K、深度和财务等能力也按权限 fail-open。
 > - TickFlow 实际返回的 `change_pct` / `amplitude` 为比例值；系统已在接入层统一转换为百分比值，确保与现有数据源字段语义一致。
+> - 在主界面打开「当日复盘」，默认显示最新一期。日期选择器合并收盘计划的交易日与当前实例归档日报的文件日期。同一交易日多次运行时展示最近生成的计划正文，同时列出当日已有的大盘复盘和个股汇总。
 > - A 股大盘复盘报告采用盘后工作台式结构：固定包含盘面信号、指数明细、板块 Top 表、近三日市场线索、明日交易计划和风险提示；盘面信号以 `66/100（偏暖，可进攻）` 这类纯文本分数表达，避免色块进度条在不同终端显示不一致；近三日市场线索只列标题、来源和链接，不再展示搜索摘要片段；若部分数据源缺失，则保留可用区块并在对应位置降级展示。
 > - 字段契约：
 >   - `fundamental_context.belong_boards` = 个股关联板块列表；A 股从 AkShare 板块名单写入，美股/港股从 yfinance `info.sector` / `info.industry` 写入，无数据时为 `[]`；
@@ -1582,7 +1587,7 @@ python main.py --debug
 | `POSITION_MAX_SINGLE_PCT` | 空 | 单只仓位上限（%）；留空 = 总仓位上限 ÷ 最多持股数 |
 | `POSITION_STOP_MODE` | `fixed` | `fixed` 固定比例止损；`nearer` 固定比例与技术支撑取较近者 |
 | `NEWS_INTEL_AUTO_FETCH_ENABLED` | `false` | 总开关：开启后（定时模式 `SCHEDULE_ENABLED=true` 或 `--schedule` 下）定时抓取 AKShare 资讯并分类，同时保留分析前的惰性刷新 rss / newsnow 资讯源；`NEWS_INTEL_RETENTION_DAYS` 仍只管理 rss / atom / newsnow 来源，AKShare 资讯按下面两项分级保留 |
-| `NEWS_POLL_INTERVAL_MINUTES` | `10` | 交易日 08:00–15:30（中国时间）同时取财联社电报和东方财富快讯的间隔（分钟），合并去重；新浪 / 富途 / 同花顺仅在其中一个失败时备用 |
+| `NEWS_POLL_INTERVAL_MINUTES` | `10` | 交易日 08:00–15:30（中国时间）同时取财联社电报和东方财富快讯的间隔（分钟），合并去重；新浪 / 富途 / 同花顺 / 华尔街见闻仅在其中一个失败时依次备用；AkShare 取财联社失败时同一轮改用财联社官方接口直连 |
 | `NEWS_POLL_OFFHOURS_INTERVAL_MINUTES` | `30` | 其他时段和非交易日的轮询间隔（分钟） |
 | `NEWS_DAILY_FETCH_TIME` | `08:05` | 每个交易日抓取自选股（`STOCK_LIST`）和当前持仓公告、东方财富财经早餐的时间（`HH:MM`，本机时区，建议在 08:15 前） |
 | `NEWS_AKSHARE_CLS_SYMBOL` | `全部` | 财联社电报取数范围：`全部`（默认，检测漏抓窗口）/ `重点`（只取最近 20 条中的 A/B 级，条数很少，不检测漏抓窗口） |
@@ -1590,7 +1595,7 @@ python main.py --debug
 | `NEWS_COMPANY_RETENTION_DAYS` | `30` | 公告等个股事件保留天数（按发布日期） |
 | `NEWS_DEDUP_WINDOW_MINUTES` | `30` | 跨来源按标题近似去重的时间窗（分钟） |
 | `NEWS_FETCH_TIMEOUT_SEC` | `30` | 单次 AKShare 调用超时（秒）；超时或上一次调用未结束的来源本轮跳过 |
-| `NEWS_ANNOUNCEMENT_MODE` | `auto` | 公告取数方式：`auto` 在自选股 + 持仓不超过 `NEWS_ANNOUNCEMENT_BY_CODE_MAX` 只时逐只取（每只约 2 次请求，一次覆盖整个日期区间），否则取全市场当日公告再过滤（每天约 20–60 次请求）；也可固定为 `by_code` / `market` |
+| `NEWS_ANNOUNCEMENT_MODE` | `auto` | 公告取数方式：`auto` 在自选股 + 持仓不超过 `NEWS_ANNOUNCEMENT_BY_CODE_MAX` 只时逐只取，否则取全市场当日公告再过滤（每天约 20–60 次请求）；也可固定为 `by_code` / `market`。逐只取时先查巨潮资讯（`cninfo.com.cn` 公开公告检索，每只 1 次请求覆盖整个日期区间，股票 orgId 用巨潮官方映射表、每天取一次），失败的股票再改用东方财富（每只约 2 次请求）；全市场模式用东方财富当日列表，全部失败时改为逐只查巨潮。巨潮和东方财富在数据状态里分别显示状态，一只股票只有两个来源都失败才算失败 |
 | `NEWS_ANNOUNCEMENT_BY_CODE_MAX` | `12` | `auto` 模式下逐只取公告的代码数上限 |
 | `NEWS_POOL_MAX_CODES_PER_USER` | `50` | 多用户：公告抓取除主用户的自选股 + 持仓外，每个其他用户最多贡献的代码数（持仓优先，范围 0-500，0 关闭这部分覆盖；管理员级设置，写在 `.env`）。资讯池共享，只增加代码集合，不记录代码属于谁 |
 | `NEWS_POOL_MAX_CODES_TOTAL` | `300` | 多用户：所有其他用户合计最多新增的公告代码数（按用户轮流取，范围 0-5000）；主用户的代码不受限制 |
@@ -1740,6 +1745,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 |------|------|
 | `python main.py --serve` | 启动 API 服务 + 执行一次完整分析 |
 | `python main.py --serve-only` | 仅启动 API 服务；可手动触发分析，并恢复配置中已启用的定时任务，但启动时不立即分析 |
+| `python main.py --serve --require-serve --schedule` | 有守护进程（launchd、systemd、Docker restart 策略）的长期服务：API 端口被占用时最多等 30 秒重试，仍起不来就以非零码退出，交给守护进程重启。不加 `--require-serve` 时，`--serve` 的 API 启动失败只记录错误，调度和分析照常运行 |
 
 ### 功能特性
 
@@ -2013,6 +2019,7 @@ A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是
 - 缓存缺失或过期时，工具仍会按原逻辑从数据源获取日线数据；获取成功后会 best-effort 写回 `stock_daily`，保存失败不会阻断 Agent 回复。
 - `search_stock_news` 与 `search_comprehensive_intel` 成功返回后会 best-effort 写入 `news_intel`，复用现有 URL / fallback key 去重逻辑。
 - `search_market_news(keyword, days=3)` 按题材 / 关键词查新闻，不绑定单只股票：先查资讯库里最近 `days` 天（1–7）的快讯和公告（标题、摘要、关联板块命中任一关键词），命中少于 3 条时再用已配置的搜索引擎做题材搜索；不写入 `news_intel`。
+- 助手的系统接口权限（只给 Web 助手页 / 助手抽屉 / 飞书助手所用的单 Agent Chat，不给报告分析、定时任务、Bot 命令和多 Agent 模式）：`read_api_doc` 按层读取 `/api/v1` 的接口文档（不带参数是分组目录；`group` 是某个分组的接口列表；`endpoint="GET /api/v1/plan/account"` 是参数、请求体和返回结构），文档由当前代码的 OpenAPI 生成，不会和代码脱节；`call_api(method, path, query, body)` 在进程内调用任意 `/api/v1` 接口，读写都可以，和登录用户在网页上的权限一样，不经过鉴权中间件。系统提示只告诉助手文档在哪里，接口细节由它按需查阅。唯一不能调用的是助手自己的对话接口（`/agent/chat`、`/agent/chat/stream` 及其取消接口，避免自我调用）和不会结束的 SSE 流 `GET /analysis/tasks/stream`；三个上传文件的接口需要 multipart，助手调用不了。Codex 后端不提供这两个工具。
 - Chat 股票作用域：没有讨论对象的问题（如「寒潮有哪些股票值得关注」）使用 `open` 作用域，个股工具可以查询任何能校验通过的 A 股 / 指数代码；一旦会话里确认了股票、助手抽屉选中了股票、在做对比或对象待澄清，仍只允许查询这些对象，越界调用返回 `stock_scope_violation`。
 - `get_realtime_quote` 不复用 `stock_daily` 作为实时行情缓存，也不会把盘中实时行情写入日线表；如需实时行情缓存，应单独设计实时行情存储。
 

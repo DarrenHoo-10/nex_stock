@@ -137,6 +137,8 @@ class PlanInput:
     boards: List[Dict[str, Any]] = field(default_factory=list)
     holding: Optional[HoldingInfo] = None
     gaps: List[str] = field(default_factory=list)
+    # Fixed-rule company-event risks (src/services/stock_event_service.risk_notes): 解禁、减持、质押、业绩预告
+    event_risks: List[str] = field(default_factory=list)
 
     @property
     def held(self) -> bool:
@@ -345,6 +347,9 @@ def build_prompt(inp: PlanInput, levels: Dict[str, Any], drafts: Dict[str, Horiz
     lines.append(
         f"止损幅度 {rules.stop_loss_pct:g}%（从买入价或成本起算，系统另行执行）；总资金 {fmt_num(inp.account.total_capital)} 元。"
     )
+    if inp.event_risks:
+        lines += ["", "## 公司事件（按固定规则筛出的风险，写进 risks 时可以引用）"]
+        lines += [f"- {note}" for note in inp.event_risks]
     lines += [
         "",
         "## 今日行情",
@@ -921,6 +926,7 @@ def build_plan(
     elif inp.limit_state in ("down", "one_word_down"):
         risks.append("收盘跌停，次日可能继续低开，卖单可能成交不了")
     risks.extend(extra_risks)
+    risks.extend(inp.event_risks)
     risks.extend(model_risks)
 
     gap_list = list(dict.fromkeys(g for g in gaps if g))

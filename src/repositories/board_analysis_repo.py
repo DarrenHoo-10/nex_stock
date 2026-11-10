@@ -48,7 +48,7 @@ BOARD_DAILY_CALC_COLUMNS: Tuple[str, ...] = (
 )
 MARKET_DAILY_CALC_COLUMNS: Tuple[str, ...] = (
     "total_amount", "up_count", "down_count", "limit_up_count", "limit_down_count",
-    "touched_up_count", "break_rate", "all_a_ret",
+    "touched_up_count", "break_rate", "all_a_ret", "max_consecutive", "promotion_rate", "ladder",
 )
 _STOCK_COLUMNS: Tuple[str, ...] = (
     "code", "name", "exchange_board", "is_st", "is_suspended", "list_date",
@@ -134,8 +134,10 @@ class BoardAnalysisRepository:
             data = _row_dict(
                 row,
                 ("trade_date", "benchmark_code", "benchmark_ret", "total_amount", "up_count", "down_count",
-                 "limit_up_count", "limit_down_count", "touched_up_count", "break_rate", "all_a_ret"),
+                 "limit_up_count", "limit_down_count", "touched_up_count", "break_rate", "all_a_ret",
+                 "max_consecutive", "promotion_rate"),
             )
+            data["ladder"] = loads_json(row.ladder) if row.ladder else None
             data["quality"] = loads_json(row.quality)
         return data
 

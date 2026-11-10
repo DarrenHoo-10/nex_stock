@@ -337,11 +337,12 @@ LITELLM_MODEL=openai/hermes-agent
 
 ### Ask-Stock Visible Chat Context Compression
 
-By default, ask-stock injects only the 20 most recent visible messages. The following LLM compression applies only to **Default model** ask-stock: Codex Agent always uses the 20 most recent user-visible messages and never calls `AGENT_LITELLM_MODEL` to summarize history. Switching to Codex does not clear the saved compression setting; it takes effect again after switching back to **Default model**.
+Automatic compression is on by default for **Default model** ask-stock: once visible history reaches 80% of the Agent model's context window (`AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO=0.8`; the window is LiteLLM's known `max_input_tokens`), older turns are folded into a rolling summary; until then history is kept verbatim. When the window is unknown or the ratio is `0`, the fixed `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` (blank follows the profile) is used. The ratio compares conversation history only, not the system prompt or tool results; with very large windows (e.g. 1M) each turn may carry a long history before compression, so lower the ratio or set `0` with a fixed threshold to save tokens. The summary call's timeout grows with its input (20-300 s). Set `AGENT_CONTEXT_COMPRESSION_ENABLED=false` for the old behavior (only the 20 most recent visible messages). Codex Agent always uses the 20 most recent user-visible messages and never calls `AGENT_LITELLM_MODEL` to summarize history. Switching to Codex does not clear the saved compression setting; it takes effect again after switching back to **Default model**.
 
 ```env
 AGENT_CONTEXT_COMPRESSION_ENABLED=true
 AGENT_CONTEXT_COMPRESSION_PROFILE=balanced
+AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO=0.8
 # Blank values follow the selected profile preset
 AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS=
 AGENT_CONTEXT_PROTECTED_TURNS=

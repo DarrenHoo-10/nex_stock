@@ -104,14 +104,19 @@ def put_holdings(
     request: HoldingsSnapshotRequest,
     service: Any = Depends(get_daily_plan_service),
 ) -> AccountResponse:
+    from src.services.stock_code_guard import LegacyBseCodeError, resolve_bse_code
+
+    holdings = []
+    for item in request.holdings:
+        row = item.model_dump()
+        try:
+            row["code"] = resolve_bse_code(row["code"])  # old 北交所 codes -> new 920 codes
+        except LegacyBseCodeError as exc:
+            raise api_error(400, "legacy_bse_code", str(exc))
+        holdings.append(row)
     return _call(
         "Save holdings snapshot failed",
-        lambda: AccountResponse.model_validate(
-            service.set_holdings_snapshot(
-                request.cash,
-                [item.model_dump() for item in request.holdings],
-            )
-        ),
+        lambda: AccountResponse.model_validate(service.set_holdings_snapshot(request.cash, holdings)),
     )
 
 

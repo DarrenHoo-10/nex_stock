@@ -117,8 +117,17 @@ def test_open_id_config_target_has_no_known_session_until_send_response(db):
 
 def test_session_id_mapping(db):
     repo = FeishuBindingRepository(db)
-    # p2p: one stable session per chat, even for messages carrying thread ids
-    assert binding.resolve_session_id(chat_id="oc_p", chat_type="p2p", root_id="om_x", repo=repo) == "feishu:oc_p"
+    # p2p: a plain message opens its own session; a message inside its topic carries the root id
+    assert binding.resolve_session_id(chat_id="oc_p", chat_type="p2p", message_id="om_a", repo=repo) == "feishu:oc_p:om_a"
+    assert binding.resolve_session_id(chat_id="oc_p", chat_type="p2p", message_id="om_b", repo=repo) == "feishu:oc_p:om_b"
+    assert binding.resolve_session_id(
+        chat_id="oc_p", chat_type="p2p", message_id="om_c", root_id="om_a", thread_id="omt_a", repo=repo,
+    ) == "feishu:oc_p:om_a"
+    # p2p reply to a known push continues the push's session
+    repo.remember_message_session("om_push_p", "oc_p", "feishu:oc_p", kind="push")
+    assert binding.resolve_session_id(
+        chat_id="oc_p", chat_type="p2p", message_id="om_d", root_id="om_push_p", parent_id="om_push_p", repo=repo,
+    ) == "feishu:oc_p"
     # group: per thread when present, per chat otherwise
     assert binding.resolve_session_id(chat_id="oc_g", chat_type="group", repo=repo) == "feishu:oc_g"
     assert binding.resolve_session_id(chat_id="oc_g", chat_type="group", thread_id="omt_1", repo=repo) == "feishu:oc_g:omt_1"
@@ -334,6 +343,10 @@ def test_reply_card_returns_new_message_id_and_uses_interactive_reply():
     assert request.message_id == "om_user"
     assert request.request_body.msg_type == "interactive"
     assert json.loads(request.request_body.content)["config"]["update_multi"] is True
+    assert not request.request_body.reply_in_thread
+
+    client.reply_card("om_user", PLACEHOLDER_TEXT, in_thread=True)
+    assert client._client.im.v1.message.reply.call_args.args[0].request_body.reply_in_thread is True
     client._client.im.v1.message.reply.return_value = _fail()
     assert client.reply_card("om_user", "x") is None
 
@@ -418,15 +431,16 @@ class _FakeReplyClient:
     def get_bot_open_id(self):
         return self.bot_open_id
 
-    def reply_card(self, message_id, content, updatable=True):
+    def reply_card(self, message_id, content, updatable=True, in_thread=False):
         with self._lock:
             self._n += 1
             new_id = f"om_card{self._n}"
-        self._record("reply_card", message_id=message_id, content=content, id=new_id)
+        self._record("reply_card", message_id=message_id, content=content, id=new_id, in_thread=in_thread)
         return new_id
 
-    def finish_card(self, placeholder_id, message_id, text):
-        self._record("finish_card", placeholder_id=placeholder_id, message_id=message_id, text=text)
+    def finish_card(self, placeholder_id, message_id, text, in_thread=False):
+        self._record("finish_card", placeholder_id=placeholder_id, message_id=message_id, text=text,
+                     in_thread=in_thread)
         return [placeholder_id] if placeholder_id else []
 
     def reply_text(self, message_id, text, at_user=False, user_id=None):
@@ -505,8 +519,30 @@ def test_p2p_plain_text_goes_to_assistant_with_placeholder_then_patch(handler_en
     assert placeholder["content"] == PLACEHOLDER_TEXT and placeholder["message_id"] == "om_1"
     finish = reply.calls[kinds.index("finish_card")][1]
     assert finish["placeholder_id"] == placeholder["id"] and finish["text"] == "最终答案"
-    assert assistant.asked == [("feishu:oc_c", "宁德时代怎么看")]
+    # p2p answers open a topic rooted at the user's message; the session is keyed by it
+    assert placeholder["in_thread"] is True and finish["in_thread"] is True
+    assert assistant.asked == [("feishu:oc_c:om_1", "宁德时代怎么看")]
     assert commands == []
+
+
+def test_p2p_new_message_opens_new_session_and_topic_follow_up_continues_it(handler_env, db):
+    FeishuBindingRepository(db).remember_message_session("om_push", "oc_c", "feishu:oc_c", kind="push")
+    assistant = _FakeAssistant()
+    handler, reply, _ = handler_env(assistant=assistant)
+
+    handler.handle_message(_event("第一个问题", message_id="om_1"))
+    assert _wait_for(lambda: len(assistant.asked) == 1)
+    handler.handle_message(_event("话题内追问", message_id="om_2", root_id="om_1", parent_id="om_card1",
+                                  thread_id="omt_1"))
+    handler.handle_message(_event("另一个新问题", message_id="om_3"))
+    handler.handle_message(_event("就这条推送追问", message_id="om_4", root_id="om_push", parent_id="om_push"))
+    assert _wait_for(lambda: len(assistant.asked) == 4)
+    assert sorted(assistant.asked) == sorted([
+        ("feishu:oc_c:om_1", "第一个问题"),
+        ("feishu:oc_c:om_1", "话题内追问"),
+        ("feishu:oc_c:om_3", "另一个新问题"),
+        ("feishu:oc_c", "就这条推送追问"),
+    ])
 
 
 def test_slash_command_goes_to_dispatcher_not_assistant(handler_env):
@@ -619,12 +655,20 @@ def test_second_question_gets_its_placeholder_immediately_while_first_runs(handl
     assistant = _FakeAssistant(delay=0.5)
     handler, reply, _ = handler_env(assistant=assistant)
     handler.handle_message(_event("第一问", message_id="om_1"))
-    handler.handle_message(_event("第二问", message_id="om_2"))
+    handler.handle_message(_event("第二问", message_id="om_2", root_id="om_1", thread_id="omt_1"))
     assert _wait_for(lambda: reply.kinds().count("reply_card") == 2, timeout=0.4)
     assert reply.kinds().count("finish_card") == 0
     assert _wait_for(lambda: reply.kinds().count("finish_card") == 2, timeout=5)
-    # per-conversation FIFO: answers are produced in order
+    # per-topic FIFO: answers in one topic are produced in order
     assert [q for _, q in assistant.asked] == ["第一问", "第二问"]
+
+
+def test_separate_p2p_topics_are_answered_in_parallel(handler_env):
+    assistant = _FakeAssistant(delay=0.5)
+    handler, reply, _ = handler_env(assistant=assistant)
+    handler.handle_message(_event("第一问", message_id="om_1"))
+    handler.handle_message(_event("第二问", message_id="om_2"))
+    assert _wait_for(lambda: len(assistant.asked) == 2, timeout=0.4)
 
 
 def test_without_assistant_legacy_routing_is_unchanged():

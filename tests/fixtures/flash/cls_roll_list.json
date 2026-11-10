@@ -1,0 +1,361 @@
+{
+ "errno": 0,
+ "msg": "",
+ "data": {
+  "roll_data": [
+   {
+    "id": 2528622,
+    "ctime": 1794192886,
+    "modified_time": 1794192886,
+    "title": "主力资金监控：工业富联净买入超11亿",
+    "brief": "【主力资金监控：工业富联净买入超11亿】财联社11月9日电，财联社盯盘数据显示，今日早盘主力资金净流入电子、通信、机械设备等板块，净流出电新行业、非银金融、能源金属等板块，其中电子板块净流入超77亿元。个股方面，工业富联主力资金净买入超11亿元位居首位，中际旭创、新易盛、寒武纪获主力资金净流入居前；宁德时代遭净卖出超5亿元，阳光电源、长鑫科技、亿纬锂能资金净流出额居前。",
+    "content": "【主力资金监控：工业富联净买入超11亿】财联社11月9日电，财联社盯盘数据显示，今日早盘主力资金净流入电子、通信、机械设备等板块，净流出电新行业、非银金融、能源金属等板块，其中电子板块净流入超77亿元。个股方面，工业富联主力资金净买入超11亿元位居首位，中际旭创、新易盛、寒武纪获主力资金净流入居前；宁德时代遭净卖出超5亿元，阳光电源、长鑫科技、亿纬锂能资金净流出额居前。",
+    "level": "C",
+    "shareurl": "https://api3.cls.cn/share/article/2528622?os=web&sv=7.7.5&app=",
+    "stock_list": [
+     {
+      "rise_range_has_null": 0.0327,
+      "RiseRange": 3.2699997,
+      "name": "中际旭创",
+      "StockID": "sz300308",
+      "schema": "cailianshe://stock_detail?stock_id=sz300308",
+      "status": "L",
+      "last": 462.63,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": 0.0585,
+      "RiseRange": 5.85,
+      "name": "工业富联",
+      "StockID": "sh601138",
+      "schema": "cailianshe://stock_detail?stock_id=sh601138",
+      "status": "L",
+      "last": 43.09,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": -0.0399,
+      "RiseRange": -3.99,
+      "name": "阳光电源",
+      "StockID": "sz300274",
+      "schema": "cailianshe://stock_detail?stock_id=sz300274",
+      "status": "L",
+      "last": 78.7,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": -0.0067,
+      "RiseRange": -0.66999996,
+      "name": "长鑫科技",
+      "StockID": "sh688825",
+      "schema": "cailianshe://stock_detail?stock_id=sh688825",
+      "status": "L",
+      "last": 40.14,
+      "is_stib": true
+     },
+     {
+      "rise_range_has_null": -0.0531,
+      "RiseRange": -5.31,
+      "name": "亿纬锂能",
+      "StockID": "sz300014",
+      "schema": "cailianshe://stock_detail?stock_id=sz300014",
+      "status": "L",
+      "last": 49.26,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": 0.0487,
+      "RiseRange": 4.87,
+      "name": "寒武纪",
+      "StockID": "sh688256",
+      "schema": "cailianshe://stock_detail?stock_id=sh688256",
+      "status": "L",
+      "last": 842,
+      "is_stib": true
+     },
+     {
+      "rise_range_has_null": -0.0251,
+      "RiseRange": -2.51,
+      "name": "宁德时代",
+      "StockID": "sz300750",
+      "schema": "cailianshe://stock_detail?stock_id=sz300750",
+      "status": "L",
+      "last": 247.84,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": 0.0403,
+      "RiseRange": 4.03,
+      "name": "新易盛",
+      "StockID": "sz300502",
+      "schema": "cailianshe://stock_detail?stock_id=sz300502",
+      "status": "L",
+      "last": 179.03,
+      "is_stib": false
+     }
+    ],
+    "subjects": [
+     {
+      "article_id": 2528622,
+      "subject_id": 1103,
+      "subject_name": "盘面直播",
+      "subject_img": "",
+      "subject_description": "",
+      "category_id": 0,
+      "attention_num": 184596,
+      "is_attention": false,
+      "is_reporter_subject": false,
+      "plate_id": 0,
+      "channel": "cls"
+     }
+    ],
+    "reading_num": 26366,
+    "type": -1,
+    "is_ad": 0
+   },
+   {
+    "id": 2528620,
+    "ctime": 1794192837,
+    "modified_time": 1794192837,
+    "title": "全球AI大模型周调用量榜单出炉 中国产品拿下前五中四席",
+    "brief": "【全球AI大模型周调用量榜单出炉 中国产品拿下前五中四席】财联社11月9日电，根据OpenRouter最新数据测算，上周（11月2日至8日）全球AI大模型总调用量为210万亿Token，环比增长8.25%。其中，上榜的AI大模型中，中国AI大模型周调用量达116.18万亿Token，环比增长16.71%；同期美国AI大模型周量为13.98万亿Token，环比下滑32.4%。中国大模型周调用量连续二十八周超过美国，稳居全球首位。记者注意到，上周，全球调用量排名前五的AI大模型中，有四款中国大模型。其中，DeepSeek V4.1 Flash 1017连续三周位居第一，周调用量达56万亿Token",
+    "content": "【全球AI大模型周调用量榜单出炉 中国产品拿下前五中四席】财联社11月9日电，根据OpenRouter最新数据测算，上周（11月2日至8日）全球AI大模型总调用量为210万亿Token，环比增长8.25%。其中，上榜的AI大模型中，中国AI大模型周调用量达116.18万亿Token，环比增长16.71%；同期美国AI大模型周量为13.98万亿Token，环比下滑32.4%。中国大模型周调用量连续二十八周超过美国，稳居全球首位。记者注意到，上周，全球调用量排名前五的AI大模型中，有四款中国大模型。其中，DeepSeek V4.1 Flash 1017连续三周位居第一，周调用量达56万亿Token，环比增长17%。 （每经网）",
+    "level": "C",
+    "shareurl": "https://api3.cls.cn/share/article/2528620?os=web&sv=7.7.5&app=",
+    "stock_list": [],
+    "subjects": [
+     {
+      "article_id": 2528620,
+      "subject_id": 1321,
+      "subject_name": "人工智能",
+      "subject_img": "",
+      "subject_description": "",
+      "category_id": 0,
+      "attention_num": 73290,
+      "is_attention": false,
+      "is_reporter_subject": false,
+      "plate_id": 207,
+      "channel": "cls,stib"
+     }
+    ],
+    "reading_num": 31950,
+    "type": -1,
+    "is_ad": 0
+   },
+   {
+    "id": 2528618,
+    "ctime": 1794192662,
+    "modified_time": 1794192662,
+    "title": "外国企业对特定动态随机存取存储器(DRAM)设备、NAND闪存设备及其下游产品和组件提起337调查申请",
+    "brief": "【外国企业对特定动态随机存取存储器(DRAM)设备、NAND闪存设备及其下游产品和组件提起337调查申请】财联社11月9日电，据中国贸易救济信息网消息，2026年11月6日，美国Netlist, Inc. of Irvine, California根据《美国1930年关税法》第337节规定向美国国际贸易委员会提出申请，主张对美出口、在美进口及销售的特定动态随机存取存储器(DRAM)设备、NAND闪存设备及其下游产品和组件（Certain Dynamic Random Access Memory (DRAM) Devices and NAND Flash Memory Devices, Prod",
+    "content": "【外国企业对特定动态随机存取存储器(DRAM)设备、NAND闪存设备及其下游产品和组件提起337调查申请】财联社11月9日电，据中国贸易救济信息网消息，2026年11月6日，美国Netlist, Inc. of Irvine, California根据《美国1930年关税法》第337节规定向美国国际贸易委员会提出申请，主张对美出口、在美进口及销售的特定动态随机存取存储器(DRAM)设备、NAND闪存设备及其下游产品和组件（Certain Dynamic Random Access Memory (DRAM) Devices and NAND Flash Memory Devices, Products Containing the Same, And Components Thereof）违反了美国337条款。",
+    "level": "C",
+    "shareurl": "https://api3.cls.cn/share/article/2528618?os=web&sv=7.7.5&app=",
+    "stock_list": [],
+    "subjects": [],
+    "reading_num": 50175,
+    "type": -1,
+    "is_ad": 0
+   },
+   {
+    "id": 2528607,
+    "ctime": 1794192662,
+    "modified_time": 1794192662,
+    "title": "【电报解读】美国人工智能建设遭遇电力瓶颈，机构预计全球数据中心柴发市场规模年均增长近20%，这家公司拟收购企业细分产品市占率全球第二",
+    "brief": "美国人工智能建设遭遇电力瓶颈，机构预计全球数据中心柴发市场规模年均增长近20%，这家公司拟收购企业细分产品市占率全球第二，另一家已构建起柴油发电机组、天然气发电机组的产品矩阵。",
+    "content": "美国人工智能建设遭遇电力瓶颈，机构预计全球数据中心柴发市场规模年均增长近20%，这家公司拟收购企业细分产品市占率全球第二，另一家已构建起柴油发电机组、天然气发电机组的产品矩阵。",
+    "level": "C",
+    "shareurl": "https://api3.cls.cn/share/article/2528607?os=web&sv=7.7.5&app=",
+    "stock_list": [],
+    "subjects": null,
+    "reading_num": 0,
+    "type": 20026,
+    "is_ad": 0
+   },
+   {
+    "id": 2528617,
+    "ctime": 1794192537,
+    "modified_time": 1794192537,
+    "title": "",
+    "brief": "财联社11月9日电，印度尼西亚股市基准指数上涨1%，报5100.11点。",
+    "content": "财联社11月9日电，印度尼西亚股市基准指数上涨1%，报5100.11点。",
+    "level": "C",
+    "shareurl": "https://api3.cls.cn/share/article/2528617?os=web&sv=7.7.5&app=",
+    "stock_list": [],
+    "subjects": [
+     {
+      "article_id": 2528617,
+      "subject_id": 1556,
+      "subject_name": "环球市场情报",
+      "subject_img": "",
+      "subject_description": "",
+      "category_id": 0,
+      "attention_num": 173857,
+      "is_attention": false,
+      "is_reporter_subject": false,
+      "plate_id": 0,
+      "channel": "cls"
+     }
+    ],
+    "reading_num": 73903,
+    "type": -1,
+    "is_ad": 0
+   },
+   {
+    "id": 2528614,
+    "ctime": 1794192245,
+    "modified_time": 1794192245,
+    "title": "光纤概念震荡反弹 长盈通涨超10%",
+    "brief": "【光纤概念震荡反弹 长盈通涨超10%】财联社11月9日电，光纤概念盘中震荡反弹，长盈通涨超10%，长飞光纤、亨通光电、通鼎互联、特发信息、中天科技等跟涨。消息面上，近日，我国完成全球首个千公里空芯光纤双向实时传输验证。据了解，这种技术比当前性能最好的实芯光纤传输容量提升一倍，传输距离提升60%。",
+    "content": "【光纤概念震荡反弹 长盈通涨超10%】财联社11月9日电，光纤概念盘中震荡反弹，长盈通涨超10%，长飞光纤、亨通光电、通鼎互联、特发信息、中天科技等跟涨。消息面上，近日，我国完成全球首个千公里空芯光纤双向实时传输验证。据了解，这种技术比当前性能最好的实芯光纤传输容量提升一倍，传输距离提升60%。",
+    "level": "C",
+    "shareurl": "https://api3.cls.cn/share/article/2528614?os=web&sv=7.7.5&app=",
+    "stock_list": [
+     {
+      "rise_range_has_null": 0.0357,
+      "RiseRange": 3.5700002,
+      "name": "特发信息",
+      "StockID": "sz000070",
+      "schema": "cailianshe://stock_detail?stock_id=sz000070",
+      "status": "L",
+      "last": 12.48,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": 0.0397,
+      "RiseRange": 3.9700003,
+      "name": "通鼎互联",
+      "StockID": "sz002491",
+      "schema": "cailianshe://stock_detail?stock_id=sz002491",
+      "status": "L",
+      "last": 13.89,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": 0.0737,
+      "RiseRange": 7.3700004,
+      "name": "长飞光纤",
+      "StockID": "sh601869",
+      "schema": "cailianshe://stock_detail?stock_id=sh601869",
+      "status": "L",
+      "last": 257.7,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": 0.0435,
+      "RiseRange": 4.35,
+      "name": "亨通光电",
+      "StockID": "sh600487",
+      "schema": "cailianshe://stock_detail?stock_id=sh600487",
+      "status": "L",
+      "last": 42.68,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": 0.0281,
+      "RiseRange": 2.8100002,
+      "name": "中天科技",
+      "StockID": "sh600522",
+      "schema": "cailianshe://stock_detail?stock_id=sh600522",
+      "status": "L",
+      "last": 23.8,
+      "is_stib": false
+     },
+     {
+      "rise_range_has_null": 0.0945,
+      "RiseRange": 9.45,
+      "name": "长盈通",
+      "StockID": "sh688143",
+      "schema": "cailianshe://stock_detail?stock_id=sh688143",
+      "status": "L",
+      "last": 116.9,
+      "is_stib": true
+     }
+    ],
+    "subjects": [
+     {
+      "article_id": 2528614,
+      "subject_id": 1103,
+      "subject_name": "盘面直播",
+      "subject_img": "",
+      "subject_description": "",
+      "category_id": 0,
+      "attention_num": 184596,
+      "is_attention": false,
+      "is_reporter_subject": false,
+      "plate_id": 0,
+      "channel": "cls"
+     },
+     {
+      "article_id": 2528614,
+      "subject_id": 2378,
+      "subject_name": "光纤光缆",
+      "subject_img": "",
+      "subject_description": "",
+      "category_id": 0,
+      "attention_num": 7436,
+      "is_attention": false,
+      "is_reporter_subject": false,
+      "plate_id": 1670,
+      "channel": "cls,stib"
+     }
+    ],
+    "reading_num": 94105,
+    "type": -1,
+    "is_ad": 0
+   },
+   {
+    "id": 2528613,
+    "ctime": 1794192191,
+    "modified_time": 1794192191,
+    "title": "美国一架遣返伊朗公民的航班临时取消",
+    "brief": "【美国一架遣返伊朗公民的航班临时取消】当地时间11月8日，据美国方面消息，美国一架计划将伊朗公民遣返回国的航班当天上午突然取消，原因尚不清楚。至少8名伊朗公民当天上午在亚利桑那州登上一架原计划经格鲁吉亚和巴基斯坦飞往伊朗的遣返航班，但航班随后被取消。消息称，此前公布的法院文件显示，尽管美伊冲突仍在持续，特朗普政府截至10月中旬仍计划通过第三国遣返伊朗公民。美国国土安全部拒绝就具体遣返行动发表评论。此前，一名联邦法官已要求美国政府提前向法院通报相关遣返计划。代表部分被拘留者的律师认为，此次行动可能违反法院的提前通知要求。",
+    "content": "【美国一架遣返伊朗公民的航班临时取消】当地时间11月8日，据美国方面消息，美国一架计划将伊朗公民遣返回国的航班当天上午突然取消，原因尚不清楚。至少8名伊朗公民当天上午在亚利桑那州登上一架原计划经格鲁吉亚和巴基斯坦飞往伊朗的遣返航班，但航班随后被取消。消息称，此前公布的法院文件显示，尽管美伊冲突仍在持续，特朗普政府截至10月中旬仍计划通过第三国遣返伊朗公民。美国国土安全部拒绝就具体遣返行动发表评论。此前，一名联邦法官已要求美国政府提前向法院通报相关遣返计划。代表部分被拘留者的律师认为，此次行动可能违反法院的提前通知要求。 （央视新闻）",
+    "level": "C",
+    "shareurl": "https://api3.cls.cn/share/article/2528613?os=web&sv=7.7.5&app=",
+    "stock_list": [],
+    "subjects": [
+     {
+      "article_id": 2528613,
+      "subject_id": 10986,
+      "subject_name": "中东冲突",
+      "subject_img": "",
+      "subject_description": "",
+      "category_id": 0,
+      "attention_num": 53607,
+      "is_attention": false,
+      "is_reporter_subject": false,
+      "plate_id": 0,
+      "channel": "cls"
+     }
+    ],
+    "reading_num": 103354,
+    "type": -1,
+    "is_ad": 0
+   },
+   {
+    "id": 2528599,
+    "ctime": 1794191771,
+    "modified_time": 1794191771,
+    "title": "【风口研报·公司】单台机器人使用约3kg钕铁硼磁体，这家公司已对机器人客户实现规模化交付，配套空心杯电机、无框力矩电机等核心部件",
+    "brief": "单台机器人使用约3kg钕铁硼磁体，每100万台对应需求约3000吨，这家公司已对机器人客户实现规模化交付，配套空心杯电机、无框力矩电机等核心部件，并针对小型、高功率密度电机推进高精微加工技术迭代和专用产线建设。",
+    "content": "单台机器人使用约3kg钕铁硼磁体，每100万台对应需求约3000吨，这家公司已对机器人客户实现规模化交付，配套空心杯电机、无框力矩电机等核心部件，并针对小型、高功率密度电机推进高精微加工技术迭代和专用产线建设。",
+    "level": "C",
+    "shareurl": "https://api3.cls.cn/share/article/2528599?os=web&sv=7.7.5&app=",
+    "stock_list": [],
+    "subjects": null,
+    "reading_num": 0,
+    "type": 20021,
+    "is_ad": 0
+   }
+  ],
+  "is_vip": 0,
+  "update_num": 0,
+  "banners": null,
+  "dynamic_tag": {
+   "id": 0,
+   "title": "",
+   "category": ""
+  }
+ }
+}

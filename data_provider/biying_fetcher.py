@@ -372,6 +372,36 @@ class BiyingFetcher(BaseFetcher):
         )
         return self._rows_to_bars(payload)
 
+    def get_opening_auction(self, code: str, day: str, is_today: bool) -> List[Dict[str, Any]]:
+        """Last valid price per auction minute, plus the actual 09:25 match in shares."""
+        import math
+        import re
+
+        dated_path = "" if is_today else day.replace("-", "") + "/"
+        rows = self._as_rows(self._get_json(f"hsrl/zbjy/{dated_path}{code}/{{licence}}"))
+        quotes = {}
+        matches = []
+        for row in rows:
+            stamp = str(row.get("t", ""))
+            if row.get("d") != day or not re.fullmatch(r"09:(?:1[5-9]|2[0-5]):[0-5][0-9]", stamp):
+                continue
+            price = safe_float(row.get("p"))
+            if price is None or not math.isfinite(price) or price <= 0:
+                continue
+            minute = stamp[:5]
+            if minute == "09:25":
+                volume = safe_float(row.get("v"))
+                if volume and math.isfinite(volume) and volume > 0:
+                    matches.append((stamp, price, int(volume)))
+            elif minute not in quotes or stamp > quotes[minute]["time"]:
+                quotes[minute] = {"time": stamp, "price": price}
+
+        points = [quotes[minute] for minute in sorted(quotes)]
+        if matches and len({price for _, price, _ in matches}) == 1:
+            points.append({"time": max(stamp for stamp, _, _ in matches), "price": matches[0][1],
+                           "volume": sum(volume for _, _, volume in matches)})
+        return points
+
     def get_history_bars(self, stock_code: str, trade_date: str) -> List[Dict[str, Any]]:
         """5-minute bars of one past session (``YYYY-MM-DD``), oldest first.
 

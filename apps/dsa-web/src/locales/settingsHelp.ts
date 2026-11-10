@@ -1170,10 +1170,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.agent.context_compression': {
     title: '问股上下文压缩',
-    summary: '控制问股可见对话历史的滚动摘要压缩，默认关闭以保持既有行为。',
+    summary: '控制问股可见对话历史的滚动摘要压缩，默认开启：历史达到模型上下文窗口的 80% 时自动压缩。',
     usage: 'AGENT_CONTEXT_COMPRESSION_ENABLED 开启后，仅压缩同一 session_id 下用户可见的 user/assistant 文本历史；profile 控制默认触发阈值和保留轮次。',
     valueNotes: [
       'cost、balanced、long_context_raw_first 分别偏向节省 token、均衡推荐和保留更多原文。',
+      'AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO（默认 0.8）：历史达到模型上下文窗口的该比例时触发压缩；设为 0 或模型窗口未知时改用固定阈值 AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS。',
       'AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS 和 AGENT_CONTEXT_PROTECTED_TURNS 留空时跟随当前 profile preset，显式填写时覆盖 preset。',
     ],
     impact: ['降低长问股会话的 token 消耗，但可能让更早的对话细节以摘要形式参与后续回答。'],
@@ -2541,10 +2542,11 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.agent.context_compression': {
     title: 'Ask-Stock Context Compression',
-    summary: 'Controls rolling summary compression for visible ask-stock chat history. It is off by default to preserve existing behavior.',
+    summary: 'Controls rolling summary compression for visible ask-stock chat history. On by default: history is compressed once it reaches 80% of the model context window.',
     usage: 'When AGENT_CONTEXT_COMPRESSION_ENABLED is on, only visible user/assistant text history under the same session_id is compressed; the profile controls the default trigger threshold and protected turns.',
     valueNotes: [
       'cost, balanced, and long_context_raw_first respectively prioritize token savings, balanced behavior, and retaining more raw context.',
+      'AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO (default 0.8): compression triggers once history reaches this share of the model context window; 0, or an unknown window, falls back to the fixed AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS.',
       'AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS and AGENT_CONTEXT_PROTECTED_TURNS follow the current profile preset when blank, and override the preset when explicitly set.',
     ],
     impact: ['Reduces token usage in long ask-stock conversations, while older details may participate in later answers as summaries.'],

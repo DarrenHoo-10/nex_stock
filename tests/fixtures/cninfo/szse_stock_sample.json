@@ -1,0 +1,39 @@
+{
+ "stockList": [
+  {
+   "code": "000001",
+   "pinyin": "payh",
+   "category": "A股",
+   "orgId": "gssz0000001",
+   "zwjc": "平安银行"
+  },
+  {
+   "code": "300750",
+   "pinyin": "ndsd",
+   "category": "A股",
+   "orgId": "GD165627",
+   "zwjc": "宁德时代"
+  },
+  {
+   "code": "600089",
+   "pinyin": "tbdg",
+   "category": "A股",
+   "orgId": "gssh0600089",
+   "zwjc": "特变电工"
+  },
+  {
+   "code": "601318",
+   "pinyin": "zgpa",
+   "category": "A股",
+   "orgId": "9900002221",
+   "zwjc": "中国平安"
+  },
+  {
+   "code": "920002",
+   "pinyin": "wdzc",
+   "category": "A股",
+   "orgId": "gfbj0873843",
+   "zwjc": "万达轴承"
+  }
+ ]
+}

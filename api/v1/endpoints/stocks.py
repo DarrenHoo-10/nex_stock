@@ -24,7 +24,14 @@ from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
     IntradayBar,
+    OpeningAuctionResponse,
     KLineData,
+    StockEventItem,
+    StockEventsResponse,
+    StockCapitalResponse,
+    StockResearchResponse,
+    StockQaItem,
+    StockQaResponse,
     StockHistoryResponse,
     StockIntradayResponse,
     StockProfileResponse,
@@ -46,6 +53,7 @@ from src.services.import_parser import (
     parse_import_from_bytes,
     parse_import_from_text,
 )
+from src.services.stock_code_guard import LegacyBseCodeError, resolve_bse_code
 from src.services.stock_service import StockService
 from src.services.stock_profile_service import InvalidStockProfileCode, StockProfileService
 from src.services.run_diagnostics import sanitize_diagnostic_text
@@ -352,9 +360,18 @@ def add_to_watchlist(
     user: CurrentUser = Depends(get_current_user),
 ) -> WatchlistResponse:
     try:
-        _validate_and_normalize_stock_code(request.stock_code)
-        codes, _ = WatchlistService(config_service=service).add(user.user_id, request.stock_code)
-        return WatchlistResponse(stock_codes=codes, message=f"已加入 {request.stock_code.strip()}")
+        validated = _validate_and_normalize_stock_code(request.stock_code)
+        entered = request.stock_code.strip()
+        try:
+            renamed = resolve_bse_code(validated)
+        except LegacyBseCodeError as exc:
+            raise HTTPException(status_code=400, detail={"error": "legacy_bse_code", "message": str(exc)})
+        if renamed != validated:
+            # Old 北交所 codes return frozen quotes in some sources: store the new code.
+            entered = renamed
+        codes, _ = WatchlistService(config_service=service).add(user.user_id, entered)
+        note = f"（{request.stock_code.strip()} 是北交所旧代码，已换成新代码）" if entered != request.stock_code.strip() else ""
+        return WatchlistResponse(stock_codes=codes, message=f"已加入 {entered}{note}")
     except HTTPException:
         raise
     except Exception as e:
@@ -582,13 +599,245 @@ def get_stock_history(
         )
 
 
+# 503 intraday_unavailable: user-facing message per ``IntradayDataUnavailable.reason`` (top-level ``reason``).
+INTRADAY_UNAVAILABLE_MESSAGES = {
+    "biying_not_configured": "历史交易日的分时来自必盈数据源，还没有配置必盈 licence：请在设置的数据源里填写 BIYING_LICENCE 后重试。",
+    "not_configured": "没有可用的分钟线数据源：请在设置的数据源里配置 Tushare 或必盈 licence（BIYING_LICENCE）。",
+    "no_bars": "数据源没有这一天的分时数据，可能当天停牌或不是交易日。",
+    "source_failed": "分钟线数据源请求失败，请稍后重试；多次失败请检查数据源配置和网络。",
+}
+
+
+@router.get(
+    "/{stock_code}/events",
+    response_model=StockEventsResponse,
+    responses={
+        200: {"description": "公司事件和风险"},
+        400: {"description": "不是 A 股个股代码（指数代码、港美股等）", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取个股公司事件（业绩预告、增减持、回购、解禁、质押、调研）",
+    description=(
+        "返回最近 days 天的公司事件（解禁额外包含未来 30 天），以及按固定规则得出的风险："
+        "未来 30 天解禁占流通股 1% 以上、近 30 天单个股东减持占总股本 0.5% 以上、股权质押比例 50% 以上、"
+        "近 60 天业绩预告为预减 / 首亏 / 续亏 / 略减。数据来自 Tushare，每天全市场入库一次；"
+        "本地没有近期数据时会按需补取这只股票（龙虎榜只能按交易日全市场取，只来自每日入库）。kinds 用逗号分隔，"
+        "可选 forecast, express, holder_trade, repurchase, share_float, pledge, survey, research（券商研报）, "
+        "dragon_tiger（龙虎榜）, limit_board（开盘啦涨停 / 炸板 / 跌停）, hot_rank（同花顺热股榜 / 东方财富人气榜，"
+        "含同花顺 AI 摘要）, risk_watch（东方财富重点监控名单）, price_anomaly（东方财富严重异常波动）。"
+        "后两类每天从东方财富取一次，在重点监控名单内的股票选股会直接排除。"
+    ),
+)
+def get_stock_events(
+    stock_code: str,
+    kinds: Optional[str] = Query(None, description="逗号分隔的事件类型，留空返回全部"),
+    days: int = Query(30, ge=1, le=120, description="回看天数"),
+) -> StockEventsResponse:
+    from src.services.stock_code_guard import require_stock_code
+    from src.services.stock_event_service import KIND_LABELS, StockEventService
+
+    try:
+        code = require_stock_code(stock_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_stock_code", "message": str(exc)})
+    wanted = [k.strip() for k in (kinds or "").split(",") if k.strip()] or None
+    unknown = [k for k in (wanted or []) if k not in KIND_LABELS]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_kind", "message": f"未知事件类型：{', '.join(unknown)}"},
+        )
+    try:
+        result = StockEventService().events_for(code, kinds=wanted, days=days)
+    except Exception as e:
+        logger.error(f"获取公司事件失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取公司事件失败"})
+    return StockEventsResponse(
+        stock_code=code,
+        as_of=result["as_of"],
+        events=[StockEventItem(**{**event, "kind_label": KIND_LABELS[event["kind"]]})
+                for event in result["events"] if event["kind"] in KIND_LABELS],
+        risks=result["risks"],
+        fetch=result["fetch"],
+    )
+
+
+def _require_a_share(stock_code: str) -> str:
+    from src.services.stock_code_guard import require_stock_code
+
+    try:
+        return require_stock_code(stock_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_stock_code", "message": str(exc)})
+
+
+@router.get(
+    "/{stock_code}/research",
+    response_model=StockResearchResponse,
+    responses={
+        200: {"description": "券商研报和一致预期"},
+        400: {"description": "不是 A 股个股代码", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取个股券商研报与一致预期",
+    description=(
+        "Tushare report_rc（券商盈利预测）：每份报告的机构、标题、评级、目标价、各预测年度的 EPS / 净利润。"
+        "summary 是最近 days 天内每家机构最新一份报告的一致预期（EPS 元、净利润亿元）和评级分布。"
+        "研报每天随公司事件全市场入库；本地没有近期数据时按需补取这只股票。研报正文不提供。"
+    ),
+)
+def get_stock_research(
+    stock_code: str,
+    days: int = Query(90, ge=7, le=120, description="回看天数"),
+) -> StockResearchResponse:
+    from src.services.stock_event_service import KIND_LABELS, StockEventService, research_summary
+
+    code = _require_a_share(stock_code)
+    try:
+        service = StockEventService()
+        result = service.events_for(code, kinds=("research",), days=days)
+    except Exception as e:
+        logger.error(f"获取券商研报失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取券商研报失败"})
+    reports = sorted(result["events"], key=lambda e: str(e["event_date"]), reverse=True)
+    as_of = result["as_of"]
+    from datetime import date as _date
+
+    return StockResearchResponse(
+        stock_code=code, as_of=as_of,
+        summary=research_summary(reports, _date.fromisoformat(as_of), days=days),
+        reports=[StockEventItem(**{**event, "kind_label": KIND_LABELS["research"]}) for event in reports],
+        fetch=result["fetch"],
+    )
+
+
+@router.get(
+    "/{stock_code}/capital",
+    response_model=StockCapitalResponse,
+    responses={
+        200: {"description": "个股资金面"},
+        400: {"description": "不是 A 股个股代码", "model": ErrorResponse},
+    },
+    summary="获取个股资金面（两融、主力资金、龙虎榜、北向）",
+    description=(
+        "两融来自 Tushare margin_detail（近 days 个交易日），主力资金来自新浪个股历史资金流，龙虎榜来自每日入库的"
+        "公司事件（近 30 天），北向 / 南向为全市场数据（Tushare moneyflow_hsgt，进程内缓存 1 小时；"
+        "2024 年 8 月起只有成交额口径，见 northbound.note）。每部分独立获取，某一来源失败时该部分返回 "
+        "{status: failed, error}，其余照常返回。"
+    ),
+)
+def get_stock_capital(
+    stock_code: str,
+    days: int = Query(20, ge=5, le=60, description="两融回看交易日数"),
+) -> StockCapitalResponse:
+    from src.services.capital_service import CapitalService
+    from src.services.stock_event_service import KIND_LABELS
+
+    code = _require_a_share(stock_code)
+    result = CapitalService().overview(code, days=days)
+    result["dragon_tiger"] = [StockEventItem(**{**event, "kind_label": KIND_LABELS["dragon_tiger"]})
+                              for event in result["dragon_tiger"]]
+    return StockCapitalResponse(**result)
+
+
+_QA_REFRESH_HOURS = 6
+
+
+@router.get(
+    "/{stock_code}/qa",
+    response_model=StockQaResponse,
+    responses={
+        200: {"description": "已回复的投资者问答"},
+        400: {"description": "不是 A 股个股代码", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取个股投资者问答（互动易 / 上证e互动）",
+    description=(
+        "深市公司来自巨潮互动易，沪市公司来自上证e互动，只返回已回复的问答，按回复时间倒序。"
+        "问答存进资讯库（item_kind=qa）；本地近 6 小时没有取过这只股票时，会先从平台刷新一次。"
+        "两个平台只保留约近 1 个月，北交所公司两个平台都没有。"
+    ),
+)
+def get_stock_qa(
+    stock_code: str,
+    days: int = Query(30, ge=1, le=60, description="回看天数"),
+) -> StockQaResponse:
+    import json as _json
+    from datetime import timedelta as _timedelta
+
+    from src.repositories.intelligence_repo import IntelligenceRepository
+    from src.services.news_pool_service import NewsPoolService, china_now
+    from src.services.sources.investor_qa import route
+    from src.services.stock_code_guard import require_stock_code
+
+    try:
+        code = require_stock_code(stock_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_stock_code", "message": str(exc)})
+    platform = route(code)
+    labels = {"irm": "巨潮互动易", "sse_e": "上证e互动"}
+    if platform is None:
+        return StockQaResponse(stock_code=code, platform=None, items=[],
+                               coverage="北交所公司不在互动易和上证e互动上，没有问答数据")
+    coverage = f"{labels[platform]}，只含已回复的问答，平台只保留约近 1 个月"
+    try:
+        repo = IntelligenceRepository()
+        now = china_now()
+        since = now - _timedelta(days=days)
+
+        def stored():
+            return repo.list_stock_news(code=code, since=since, kinds=("qa",), limit=100)
+
+        rows = stored()
+        fetched_at = max((row.fetched_at for row in rows if row.fetched_at), default=None)
+        fetch: dict = {}
+        if fetched_at is None or now - fetched_at > _timedelta(hours=_QA_REFRESH_HOURS):
+            fetch = NewsPoolService(repo).fetch_qa_for_codes([code], now=now, since=since)
+            rows = stored()
+    except Exception as e:
+        logger.error(f"获取投资者问答失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "获取投资者问答失败"})
+    items = []
+    for row in rows:
+        try:
+            payload = _json.loads(row.raw_payload) if row.raw_payload else {}
+        except (TypeError, ValueError):
+            payload = {}
+        question, answer = payload.get("question"), payload.get("answer")
+        if not question or not answer:
+            continue
+        items.append(StockQaItem(
+            question=question, answer=answer, asked_at=(payload.get("asked_at") or "")[:16].replace("T", " ") or None,
+            answered_at=row.published_at.strftime("%Y-%m-%d %H:%M") if row.published_at else None,
+            platform=payload.get("platform") or platform, platform_label=labels[payload.get("platform") or platform],
+        ))
+    return StockQaResponse(stock_code=code, platform=platform, coverage=coverage, items=items, fetch=fetch)
+
+
+@router.get("/{stock_code}/opening-auction", response_model=OpeningAuctionResponse)
+def get_opening_auction(
+    stock_code: str, date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+) -> OpeningAuctionResponse:
+    try:
+        result = get_intraday_snapshot_service().get_opening_auction(stock_code, date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="股票代码或交易日期无效") from exc
+    return OpeningAuctionResponse(**result)
+
+
 @router.get(
     "/{stock_code}/intraday",
     response_model=StockIntradayResponse,
     responses={
         200: {"description": "指定交易日的分时（5 分钟）行情"},
         422: {"description": "日期格式错误或为未来日期", "model": ErrorResponse},
-        503: {"description": "没有可用的分钟线数据源", "model": ErrorResponse},
+        503: {
+            "description": (
+                "取不到分时：error=intraday_unavailable，reason 为 biying_not_configured / "
+                "not_configured / no_bars / source_failed，message 是对应的中文说明"
+            ),
+            "model": ErrorResponse,
+        },
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取个股某个交易日的分时行情",
@@ -609,10 +858,16 @@ def get_stock_intraday(
             detail={"error": "invalid_date", "message": str(e)},
         )
     except IntradayDataUnavailable as e:
-        logger.info("分时行情不可用 %s %s: %s", stock_code, date, e)
+        reason = getattr(e, "reason", "source_failed")
+        logger.info("分时行情不可用 %s %s (%s): %s", stock_code, date, reason, e)
         raise HTTPException(
             status_code=503,
-            detail={"error": "intraday_unavailable", "message": "暂时取不到这一天的分时数据"},
+            detail={
+                "error": "intraday_unavailable",
+                "message": INTRADAY_UNAVAILABLE_MESSAGES.get(reason, INTRADAY_UNAVAILABLE_MESSAGES["source_failed"]),
+                # Top level, not under ``detail``: the Web error parser reads a ``detail`` object as the message.
+                "reason": reason,
+            },
         )
     except Exception as e:
         logger.error(f"获取分时行情失败: {e}", exc_info=True)

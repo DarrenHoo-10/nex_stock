@@ -36,6 +36,7 @@ const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const DataCenterPage = lazy(() => import('./pages/DataCenterPage'));
+const ClosingAnalysisPage = lazy(() => import('./pages/plan/ClosingAnalysisPage'));
 const BoardsPage = lazy(() => import('./pages/plan/BoardsPage'));
 const PicksPage = lazy(() => import('./pages/plan/PicksPage'));
 const MinePage = lazy(() => import('./pages/plan/MinePage'));
@@ -118,6 +119,7 @@ const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 const planRouteChildren = [
+  { path: '/closing-analysis', element: <ClosingAnalysisPage /> },
   { path: '/boards', element: <BoardsPage /> },
   // Running the screening is an administrator action (POST /screening/screen/tasks).
   { path: '/picks', element: <AdminOnly variant="plan"><PicksPage /></AdminOnly> },

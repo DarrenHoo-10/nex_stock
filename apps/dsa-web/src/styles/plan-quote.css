@@ -122,6 +122,11 @@
 }
 .plan-shell .qi-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .plan-shell .qi-top h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--t1); }
+.plan-shell .qi-auction {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px;
+  color: var(--t2); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.plan-shell .qi-auction svg { max-width: 45%; cursor: crosshair; }
 .plan-shell .qi-readout {
   display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; font-size: 12.5px; font-variant-numeric: tabular-nums;
 }

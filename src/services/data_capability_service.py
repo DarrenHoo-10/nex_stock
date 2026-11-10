@@ -21,6 +21,9 @@ class _ProviderDefinition:
     fetcher_name: Optional[str]
     dataset_markets: Mapping[str, Sequence[str]]
     builtin: bool = False
+    # Config keys a user sets to enable / tune this source (the credential first). The settings page
+    # edits exactly these; ``_is_provider_configured`` decides from the credential(s) among them.
+    config_keys: Sequence[str] = ()
 
     @property
     def datasets(self) -> Sequence[str]:
@@ -102,6 +105,21 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         builtin=True,
     ),
     _ProviderDefinition(
+        name="eastmoney",
+        label="东方财富（统一限速）",
+        fetcher_name=None,
+        dataset_markets={},
+        builtin=True,
+        config_keys=("EASTMONEY_MIN_INTERVAL_SEC", "EASTMONEY_BAN_COOLDOWN_MINUTES"),
+    ),
+    _ProviderDefinition(
+        name="sina_fund_flow",
+        label="新浪财经（个股资金流备用）",
+        fetcher_name=None,
+        dataset_markets={},
+        builtin=True,
+    ),
+    _ProviderDefinition(
         name="tushare",
         label="Tushare",
         fetcher_name="TushareFetcher",
@@ -110,6 +128,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
             "kline.daily": ("cn", "hk"),
             "market.overview": ("cn",),
         },
+        config_keys=("TUSHARE_TOKEN",),
     ),
     _ProviderDefinition(
         name="tickflow",
@@ -121,6 +140,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
             "index.daily": ("cn",),
             "market.overview": ("cn",),
         },
+        config_keys=("TICKFLOW_API_KEY", "TICKFLOW_PRIORITY"),
     ),
     _ProviderDefinition(
         name="biying",
@@ -129,6 +149,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         dataset_markets={
             "quote.realtime": ("cn",),
         },
+        config_keys=("BIYING_LICENCE", "BIYING_TIMEOUT_SECONDS"),
     ),
     _ProviderDefinition(
         name="longbridge",
@@ -138,6 +159,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
             "quote.realtime": ("hk", "us"),
             "kline.daily": ("hk", "us"),
         },
+        config_keys=("LONGBRIDGE_APP_KEY", "LONGBRIDGE_APP_SECRET", "LONGBRIDGE_ACCESS_TOKEN", "LONGBRIDGE_OAUTH_CLIENT_ID"),
     ),
     _ProviderDefinition(
         name="futu",
@@ -148,6 +170,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
             "kline.daily": ("hk",),
             "financial.snapshot": ("hk",),
         },
+        config_keys=("FUTU_OPEND_HOST", "FUTU_OPEND_PORT"),
     ),
     _ProviderDefinition(
         name="finnhub",
@@ -156,6 +179,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         dataset_markets={
             "kline.daily": ("us",),
         },
+        config_keys=("FINNHUB_API_KEY",),
     ),
     _ProviderDefinition(
         name="alphavantage",
@@ -164,6 +188,7 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         dataset_markets={
             "kline.daily": ("us",),
         },
+        config_keys=("ALPHAVANTAGE_API_KEY",),
     ),
 )
 
@@ -297,13 +322,20 @@ class DataCapabilityService:
             enabled = bool(definition.builtin or configured)
             warnings: List[str] = []
 
-            if not configured and not definition.builtin:
+            cooldown = None
+            if definition.name == "eastmoney":
+                status, cooldown, gate_warnings = self._eastmoney_gate_status()
+                warnings.extend(gate_warnings)
+            elif definition.name == "sina_fund_flow":
+                status, source_warnings = self._sina_fund_flow_status()
+                warnings.extend(source_warnings)
+            elif not configured and not definition.builtin:
                 status = "unconfigured"
             elif fetcher is None and enabled:
                 status = "unavailable"
                 warnings.append("provider_not_initialized")
             else:
-                status = self._provider_runtime_status(fetcher)
+                status = self._provider_runtime_status(fetcher, definition)
                 if status == "unavailable":
                     warnings.append("provider_marked_unavailable")
                 elif status == "unknown":
@@ -325,15 +357,50 @@ class DataCapabilityService:
                     },
                     "warnings": warnings,
                     "last_error": self._safe_last_error(fetcher),
-                    "cooldown": None,
+                    "cooldown": cooldown,
+                    "config_keys": list(definition.config_keys),
                 }
             )
 
         return providers
 
     @staticmethod
-    def _provider_runtime_status(fetcher: Any) -> str:
+    def _eastmoney_gate_status() -> tuple:
+        """(status, cooldown, warnings) of the process-wide East Money gate."""
+        try:
+            from data_provider import eastmoney_gate
+
+            rows = eastmoney_gate.GATE.status()
+        except Exception as exc:  # noqa: BLE001 - diagnostics must fail open.
+            logger.debug("East Money gate status unavailable: %s", exc)
+            return "unknown", None, ["runtime_probe_not_performed"]
+        cooling = [row for row in rows if row["cooling_down"]]
+        warnings = [f"cooldown:{row['host']} until {row['cooldown_until']}" for row in cooling]
+        return ("partial" if cooling else "ok"), bool(cooling), warnings
+
+    @staticmethod
+    def _sina_fund_flow_status() -> tuple:
+        """(status, warnings) from the latest 新浪资金流 request of this process (no probe request)."""
+        try:
+            from src.services.sources import sina_fund_flow
+
+            last = sina_fund_flow.last_status()
+        except Exception as exc:  # noqa: BLE001 - diagnostics must fail open.
+            logger.debug("Sina fund-flow status unavailable: %s", exc)
+            last = {}
+        if not last:
+            return "unknown", ["runtime_probe_not_performed"]
+        if last.get("ok"):
+            return "ok", []
+        return "unavailable", [f"last_call_failed:{last.get('at')} {last.get('error')}"]
+
+    @staticmethod
+    def _provider_runtime_status(fetcher: Any, definition: Optional[_ProviderDefinition] = None) -> str:
         probe_result = DataCapabilityService._probe_fetcher_available(fetcher)
+        if probe_result is False and definition is not None and "quote.realtime" in definition.datasets:
+            # Realtime-only sources (e.g. Biying) refuse capability-less requests by design; ask with
+            # the capability they actually serve instead of reporting them unavailable.
+            probe_result = DataCapabilityService._probe_fetcher_available(fetcher, "realtime_quote")
         if probe_result is True:
             return "ok"
         if probe_result is False:

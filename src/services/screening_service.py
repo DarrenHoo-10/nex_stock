@@ -62,6 +62,10 @@ DSA_SCREENING_MIN_HOTSPOT_CACHE_COUNT = 3
 DSA_SCREENING_HOTSPOT_DETAIL_CACHE_TTL_SECONDS = 30 * 60
 DSA_SCREENING_HOTSPOT_EVENT_SUMMARY_MAX_CHARS = 90
 DSA_SCREENING_WHY_NOW_MAX_AGE_DAYS = 30
+# News / events per candidate: extra web rows to request (unreadable and off-topic ones are dropped),
+# and how much of a stored news summary to keep.
+_CANDIDATE_NEWS_EXTRA_RESULTS = 3
+_CANDIDATE_NEWS_SNIPPET_CHARS = 300
 DSA_SCREENING_HOTSPOT_PREFETCH_DETAIL_COUNT = 8
 DSA_SCREENING_HOTSPOT_CALL_TIMEOUT_SECONDS = 8
 DSA_SCREENING_HOTSPOT_SEARCH_TIMEOUT_SECONDS = 12
@@ -1377,6 +1381,7 @@ class ScreeningService:
             "正在补充入选股票的新闻与事件",
         )
         selected, dsa_enrichment = _enrich_candidates_with_dsa(selected, candidate_context_cache=candidate_context_cache)
+        selected = _attach_event_risks(selected)
         selected = [
             _attach_candidate_explanations(
                 candidate,
@@ -3637,56 +3642,239 @@ def get_dsa_fundamental_context(stock_code: str) -> Dict[str, Any]:
 
 
 def search_dsa_stock_news(stock_code: str, stock_name: str = "", max_results: int = 3) -> Dict[str, Any]:
-    service = _get_dsa_search_service()
-    if not getattr(service, "is_available", False):
-        return {
-            "success": False,
-            "error": "DSA search service unavailable",
-            "results": [],
-        }
+    """News for one candidate: the stored news pool first, then web search for the rest.
 
-    response = service.search_stock_news(stock_code, stock_name or stock_code, max_results=max_results)
-    return _normalize_dsa_search_response(response, max_results=max_results)
+    Web results only count when they are readable and name the stock (code or name); search
+    engines otherwise fill the slots with garbled pages or other companies' news.
+    """
+    return _search_candidate_evidence(
+        stock_code,
+        stock_name,
+        max_results=max_results,
+        pool_kinds=None,
+        web_search=lambda service, code, name, limit: service.search_stock_news(code, name, max_results=limit),
+    )
 
 
 def search_dsa_stock_events(stock_code: str, stock_name: str = "", max_results: int = 3) -> Dict[str, Any]:
-    """Reuse DSA event search for earnings, reduction and announcement context."""
+    """Earnings, reduction and announcement context.
+
+    Structured company events (``stock_event``: 解禁、增减持、业绩预告 …) first, then stored
+    announcements, then event search for what is still missing.
+    """
+    structured = _structured_stock_events(stock_code, limit=max(0, int(max_results)))
+    if len(structured) >= max_results:
+        return {"query": "", "provider": "stock_event", "success": True, "error": None,
+                "results": structured[:max_results]}
+    rest = _search_candidate_evidence(
+        stock_code,
+        stock_name,
+        max_results=max_results - len(structured),
+        pool_kinds=("announcement",),
+        web_search=lambda service, code, name, _limit: service.search_stock_events(code, name),
+    )
+    if not structured:
+        return rest
+    providers = "+".join(p for p in ("stock_event", rest.get("provider")) if p)
+    return dict(rest, results=structured + list(rest.get("results") or []), success=True, error=None,
+                provider=providers)
+
+
+# Risk-relevant kinds first: they matter most to a buy decision.
+_STRUCTURED_EVENT_ORDER = (
+    "price_anomaly", "risk_watch", "share_float", "holder_trade", "forecast", "express", "pledge", "dragon_tiger",
+    "limit_board", "hot_rank", "repurchase", "research", "survey",
+)
+
+
+def _structured_stock_events(stock_code: str, *, limit: int) -> List[Dict[str, Any]]:
+    """Company events of one candidate as evidence items (best effort; empty when unavailable)."""
+    code = _env_text(stock_code)
+    if limit <= 0 or not re.fullmatch(r"\d{6}", code):
+        return []
+    try:
+        from src.services.stock_event_service import KIND_LABELS, StockEventService
+
+        events = StockEventService().events_for(code, days=60)["events"]
+    except Exception as exc:  # noqa: BLE001 - structured events are an add-on
+        logger.debug("company events unavailable for %s: %s", code, exc)
+        return []
+    order = {kind: index for index, kind in enumerate(_STRUCTURED_EVENT_ORDER)}
+    events = sorted(events, key=lambda e: (order.get(e["kind"], 99), str(e["event_date"])), reverse=False)
+    items = []
+    for event in events[:limit]:
+        items.append({
+            "title": f"{KIND_LABELS.get(event['kind'], event['kind'])}：{event['title']}",
+            "snippet": event["title"],
+            "url": "",
+            "source": "Tushare 公司事件",
+            "published_date": event["event_date"],
+            "retrieved_at": event.get("fetched_at"),
+        })
+    return items
+
+
+def _attach_event_risks(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fixed-rule company-event risks (unlocks, holder sales, pledges, bad forecasts) on every candidate."""
+    try:
+        from src.services.stock_event_service import StockEventService
+
+        service = StockEventService()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("company event risks unavailable: %s", exc)
+        return candidates
+    for candidate in candidates:
+        code = _env_text(candidate.get("code"))
+        if not re.fullmatch(r"\d{6}", code):
+            continue
+        notes = service.risk_notes(code)
+        if notes:
+            candidate["event_risks"] = notes
+            existing = candidate.get("risk_flags") if isinstance(candidate.get("risk_flags"), list) else []
+            candidate["risk_flags"] = list(dict.fromkeys([*existing, *notes]))
+    return candidates
+
+
+def _search_candidate_evidence(
+    stock_code: str,
+    stock_name: str,
+    *,
+    max_results: int,
+    pool_kinds: Optional[Tuple[str, ...]],
+    web_search: Callable[[Any, str, str, int], Any],
+) -> Dict[str, Any]:
+    limit = max(0, int(max_results))
+    name = stock_name or stock_code
+    pool = _pool_stock_news(stock_code, stock_name, kinds=pool_kinds, limit=limit)
+    if len(pool) >= limit:
+        return {"query": "", "provider": "news_pool", "success": True, "error": None, "results": pool[:limit]}
+
     service = _get_dsa_search_service()
     if not getattr(service, "is_available", False):
+        if pool:
+            return {"query": "", "provider": "news_pool", "success": True, "error": None, "results": pool}
         return {
             "success": False,
             "error": "DSA search service unavailable",
             "results": [],
         }
 
-    response = service.search_stock_events(stock_code, stock_name or stock_code)
-    return _normalize_dsa_search_response(response, max_results=max_results)
-
-
-def _normalize_dsa_search_response(response: Any, *, max_results: int) -> Dict[str, Any]:
-    results = []
-    for item in (getattr(response, "results", []) or [])[:max(0, int(max_results))]:
-        results.append(
-            {
-                "title": getattr(item, "title", ""),
-                "snippet": getattr(item, "snippet", ""),
-                "url": getattr(item, "url", ""),
-                "source": getattr(item, "source", ""),
-                "published_date": getattr(item, "published_date", None),
-                # Preserve upstream fetch time; normalization may read cached
-                # results and must not mark them as retrieved just now.
-                "retrieved_at": getattr(item, "retrieved_at", None),
-            }
-        )
-    return _remove_non_finite_json_values(
-        {
-            "query": getattr(response, "query", ""),
-            "provider": getattr(response, "provider", ""),
-            "success": bool(getattr(response, "success", False)),
-            "error": getattr(response, "error_message", None),
-            "results": results,
-        }
+    # Ask for a few extra rows: unreadable and off-topic ones are dropped below.
+    response = web_search(service, stock_code, name, limit + _CANDIDATE_NEWS_EXTRA_RESULTS)
+    web = _normalize_dsa_search_response(
+        response, max_results=limit + _CANDIDATE_NEWS_EXTRA_RESULTS, stock_code=stock_code, stock_name=stock_name,
     )
+    seen = {item.get("url") or item.get("title") for item in pool}
+    merged = pool + [item for item in web["results"] if (item.get("url") or item.get("title")) not in seen]
+    providers = [label for label, used in (("news_pool", bool(pool)), (web.get("provider"), True)) if used and label]
+    payload = dict(web, results=merged[:limit], success=bool(web["success"] or pool), provider="+".join(providers))
+    if pool and not web["success"]:
+        payload["error"] = None
+    return payload
+
+
+def _pool_stock_news(
+    stock_code: str, stock_name: str, *, kinds: Optional[Tuple[str, ...]], limit: int,
+) -> List[Dict[str, Any]]:
+    """Stored 财联社 / 东方财富 flashes and announcements linked to or naming the stock (best effort)."""
+    code = _env_text(stock_code)
+    if limit <= 0 or not re.fullmatch(r"\d{6}", code):
+        return []
+    try:
+        from src.repositories.intelligence_repo import IntelligenceRepository
+        from src.services.news_pool_service import china_now
+
+        rows = IntelligenceRepository().list_stock_news(
+            code=code,
+            name=_env_text(stock_name),
+            since=china_now() - timedelta(days=DSA_SCREENING_WHY_NOW_MAX_AGE_DAYS),
+            kinds=kinds,
+            limit=limit * 2,
+        )
+    except Exception as exc:  # noqa: BLE001 - the pool is optional; web search still runs.
+        logger.debug("news pool lookup failed for %s: %s", code, exc)
+        return []
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        published = row.published_at or row.fetched_at
+        item = {
+            "title": row.title or "",
+            "snippet": (row.summary or "")[:_CANDIDATE_NEWS_SNIPPET_CHARS],
+            "url": row.url or "",
+            "source": row.source or row.source_name or "news_pool",
+            "published_date": published.isoformat() if published else None,
+            "retrieved_at": row.fetched_at.isoformat() if row.fetched_at else None,
+        }
+        if not _is_garbled_evidence(item):
+            items.append(item)
+    return items[:limit]
+
+
+def _is_garbled_evidence(item: Dict[str, Any]) -> bool:
+    from src.search_service import SearchResult, SearchService
+
+    probe = SearchResult(
+        title=str(item.get("title") or ""),
+        snippet=str(item.get("snippet") or ""),
+        url=str(item.get("url") or ""),
+        source=str(item.get("source") or ""),
+    )
+    return SearchService._has_garbled_text_signal(probe)
+
+
+def _names_candidate(item: Dict[str, Any], stock_code: str, stock_name: str) -> bool:
+    """Whether a result is about this stock: its title or snippet carries the code or the name."""
+    text = re.sub(r"\s+", "", f"{item.get('title') or ''}{item.get('snippet') or ''}")
+    code = _env_text(stock_code)
+    if code and re.search(rf"(?<!\d){re.escape(code)}(?!\d)", text):
+        return True
+    name = re.sub(r"\s+", "", _env_text(stock_name))
+    if not name or name == code:
+        return False
+    names = {name, re.sub(r"^\*?ST", "", name)}
+    return any(len(candidate) >= 2 and candidate in text for candidate in names)
+
+
+def _normalize_dsa_search_response(
+    response: Any,
+    *,
+    max_results: int,
+    stock_code: str = "",
+    stock_name: str = "",
+) -> Dict[str, Any]:
+    """Plain search payload; with ``stock_code`` it keeps only readable results naming the stock."""
+    results = []
+    dropped_garbled = dropped_off_topic = 0
+    for item in getattr(response, "results", []) or []:
+        if len(results) >= max(0, int(max_results)):
+            break
+        row = {
+            "title": getattr(item, "title", ""),
+            "snippet": getattr(item, "snippet", ""),
+            "url": getattr(item, "url", ""),
+            "source": getattr(item, "source", ""),
+            "published_date": getattr(item, "published_date", None),
+            # Preserve upstream fetch time; normalization may read cached
+            # results and must not mark them as retrieved just now.
+            "retrieved_at": getattr(item, "retrieved_at", None),
+        }
+        if stock_code and _is_garbled_evidence(row):
+            dropped_garbled += 1
+            continue
+        if stock_code and not _names_candidate(row, stock_code, stock_name):
+            dropped_off_topic += 1
+            continue
+        results.append(row)
+    payload = {
+        "query": getattr(response, "query", ""),
+        "provider": getattr(response, "provider", ""),
+        "success": bool(getattr(response, "success", False)),
+        "error": getattr(response, "error_message", None),
+        "results": results,
+    }
+    if dropped_garbled or dropped_off_topic:
+        payload["dropped"] = {"garbled": dropped_garbled, "off_topic": dropped_off_topic}
+    return _remove_non_finite_json_values(payload)
 
 
 def get_dsa_candidate_context(

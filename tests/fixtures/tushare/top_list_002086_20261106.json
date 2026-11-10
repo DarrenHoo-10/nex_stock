@@ -1,0 +1,53 @@
+[
+ {
+  "trade_date": "20261106",
+  "ts_code": "002086.SZ",
+  "name": "东方海洋",
+  "close": 3.97,
+  "pct_change": 9.9723,
+  "turnover_rate": 42.55,
+  "amount": 5495134178.0,
+  "l_sell": 523651581.94,
+  "l_buy": 621988265.09,
+  "l_amount": 1145639847.03,
+  "net_amount": 98336683.15,
+  "net_rate": 1.79,
+  "amount_rate": 20.85,
+  "float_values": 6276455941.9,
+  "reason": "连续三个交易日内，涨幅偏离值累计达到20%的证券"
+ },
+ {
+  "trade_date": "20261106",
+  "ts_code": "002086.SZ",
+  "name": "东方海洋",
+  "close": 3.97,
+  "pct_change": 9.9723,
+  "turnover_rate": 42.55,
+  "amount": 2576110018.0,
+  "l_sell": 345079501.89,
+  "l_buy": 345576029.11,
+  "l_amount": 690655531.0,
+  "net_amount": 496527.22,
+  "net_rate": 0.02,
+  "amount_rate": 26.81,
+  "float_values": 6276455941.9,
+  "reason": "日换手率达到20%的前5只证券"
+ },
+ {
+  "trade_date": "20261106",
+  "ts_code": "002086.SZ",
+  "name": "东方海洋",
+  "close": 3.97,
+  "pct_change": 9.9723,
+  "turnover_rate": 42.55,
+  "amount": 2576110018.0,
+  "l_sell": 345079501.89,
+  "l_buy": 345576029.11,
+  "l_amount": 690655531.0,
+  "net_amount": 496527.22,
+  "net_rate": 0.02,
+  "amount_rate": 26.81,
+  "float_values": 6276455941.9,
+  "reason": "日涨幅偏离值达到7%的前5只证券"
+ }
+]

@@ -49,6 +49,7 @@ const categoryDescriptionMap: Record<UiLanguage, Partial<Record<SystemConfigCate
 
 const fieldTitleMap: Record<string, string> = {
   STOCK_LIST: '自选股列表',
+  ASHARE_API_KEY: '开盘集合竞价 API Key',
   TUSHARE_TOKEN: 'Tushare Token',
   BOCHA_API_KEYS: 'Bocha API Keys',
   TAVILY_API_KEYS: 'Tavily API Keys',
@@ -212,6 +213,7 @@ const fieldTitleMap: Record<string, string> = {
   AGENT_EVENT_ALERT_RULES_JSON: '事件告警规则（JSON）',
   AGENT_CONTEXT_COMPRESSION_ENABLED: '上下文压缩',
   AGENT_CONTEXT_COMPRESSION_PROFILE: '上下文压缩策略',
+  AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO: '压缩触发比例（上下文窗口）',
   AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS: '压缩触发阈值（tokens）',
   AGENT_CONTEXT_PROTECTED_TURNS: '原文保护轮次',
   BACKTEST_ENABLED: '启用回测',
@@ -223,6 +225,7 @@ const fieldTitleMap: Record<string, string> = {
 
 const fieldDescriptionMap: Record<string, string> = {
   STOCK_LIST: '推荐使用英文逗号分隔股票代码；中文逗号、顿号、分号、空格和换行会在保存后规范为英文逗号。',
+  ASHARE_API_KEY: '用于获取 A 股开盘前的竞价走势，需要 ashareapi.com 专业版及以上权限。',
   TUSHARE_TOKEN: '用于接入 Tushare Pro 数据服务的凭据。',
   BOCHA_API_KEYS: '用于新闻检索的 Bocha 密钥，支持逗号分隔多个（最高优先级）。',
   TAVILY_API_KEYS: '用于新闻检索的 Tavily 密钥，支持逗号分隔多个。',
@@ -384,9 +387,10 @@ const fieldDescriptionMap: Record<string, string> = {
   AGENT_EVENT_MONITOR_ENABLED: '启用 Agent 事件监控与告警能力。',
   AGENT_EVENT_MONITOR_INTERVAL_MINUTES: '事件监控轮询间隔（分钟）。',
   AGENT_EVENT_ALERT_RULES_JSON: '事件告警规则 JSON 配置；用于定义触发条件与阈值。',
-  AGENT_CONTEXT_COMPRESSION_ENABLED: "开启后，问股会在长会话中压缩可见历史上下文，减少重复 token 消耗；默认关闭。",
+  AGENT_CONTEXT_COMPRESSION_ENABLED: "开启后，问股会在长会话中压缩可见历史上下文，减少重复 token 消耗；默认开启。",
+  AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO: "历史达到模型上下文窗口的该比例时自动压缩，默认 0.8；设为 0 或模型窗口未知时使用固定 token 阈值。",
   AGENT_CONTEXT_COMPRESSION_PROFILE: "选择问股长会话上下文压缩策略。cost 偏省 token，balanced 均衡推荐、兼顾保真与成本，long_context_raw_first 优先保留更多原文。",
-  AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS: "估算历史 token 超过该值时触发摘要；留空则跟随当前上下文压缩策略 profile 默认值。",
+  AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS: "压缩触发比例为 0 或模型窗口未知时，估算历史 token 超过该值触发摘要；留空则跟随当前上下文压缩策略 profile 默认值。",
   AGENT_CONTEXT_PROTECTED_TURNS: "压缩时最近 N 个用户轮次及其后的回复保持原文；留空则跟随当前上下文压缩策略 profile 默认值。",
   BACKTEST_ENABLED: '是否启用回测功能（true/false）。',
   BACKTEST_EVAL_WINDOW_DAYS: '回测评估窗口长度，单位为交易日。',

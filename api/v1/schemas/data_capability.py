@@ -44,6 +44,10 @@ class DataProviderCapability(BaseModel):
     warnings: List[str] = Field(default_factory=list, description="Stable warning codes")
     last_error: Optional[str] = Field(None, description="Last known non-sensitive error summary")
     cooldown: Optional[bool] = Field(None, description="Whether the provider is currently in cooldown")
+    config_keys: List[str] = Field(
+        default_factory=list,
+        description="Config keys (PUT /system/config) that enable or tune this provider; empty for built-in sources",
+    )
 
 
 class DataDatasetQuality(BaseModel):

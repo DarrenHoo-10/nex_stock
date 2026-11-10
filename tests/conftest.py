@@ -249,3 +249,59 @@ class _ThreadlessTestClient:
 
 fastapi.testclient.TestClient = _ThreadlessTestClient
 starlette.testclient.TestClient = _ThreadlessTestClient
+
+
+# ---------------------------------------------------------------------------
+# East Money gate (data_provider/eastmoney_gate.py) is process-wide: no pacing in tests, and a
+# mocked 403 in one test must not leave a host cooling down for the next.
+# ---------------------------------------------------------------------------
+import os as _os
+
+import pytest as _pytest
+
+_os.environ.setdefault("EASTMONEY_MIN_INTERVAL_SEC", "0")
+
+
+@_pytest.fixture(autouse=True)
+def _reset_eastmoney_gate():
+    try:
+        from data_provider import eastmoney_gate
+    except Exception:  # noqa: BLE001 - modules that never import data_provider
+        yield
+        return
+    eastmoney_gate.GATE._states.clear()
+    yield
+    eastmoney_gate.GATE._states.clear()
+
+
+@_pytest.fixture(autouse=True)
+def _no_live_company_event_fetch(monkeypatch):
+    """Company events are fetched per stock from Tushare on demand; never from tests."""
+    try:
+        from src.services import stock_event_service
+    except Exception:  # noqa: BLE001
+        return
+    monkeypatch.setattr(stock_event_service.StockEventService, "_needs_code_fetch", lambda self, code: False)
+    # Screening reads the stored 重点监控名单; tests that need it restore the real method.
+    monkeypatch.setattr(stock_event_service.StockEventService, "watched_codes", lambda self, as_of=None: {})
+
+
+class _OfflineHttpForTests:
+    def get(self, *args, **kwargs):
+        raise ConnectionError("network disabled in tests")
+
+    post = get
+
+
+@_pytest.fixture(autouse=True)
+def _offline_direct_http_sources(monkeypatch):
+    """巨潮公告、互动易 / 上证e互动、深交所公告、新浪资金流 are direct HTTP sources: offline unless a test stubs them."""
+    for module_name in ("src.services.news_cninfo_source", "src.services.sources.investor_qa",
+                        "src.services.sources.szse_disclosure", "src.services.sources.sina_fund_flow",
+                        "src.services.sources.eastmoney_risk", "src.services.sources.cls_telegraph",
+                        "src.services.sources.wscn_lives"):
+        try:
+            module = __import__(module_name, fromlist=["_session"])
+        except Exception:  # noqa: BLE001
+            continue
+        monkeypatch.setattr(module, "_session", lambda: _OfflineHttpForTests())

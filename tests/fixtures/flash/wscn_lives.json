@@ -1,0 +1,88 @@
+{
+ "code": 20000,
+ "message": "OK",
+ "data": {
+  "items": [
+   {
+    "id": 3196626,
+    "display_time": 1794192198,
+    "score": 1,
+    "title": "",
+    "content_text": "光纤概念股震荡拉升，长盈通涨超10%，长飞光纤涨超7%，宇特光电、衡东光、光迅科技、长进光子涨幅居前。",
+    "uri": "https://wallstreetcn.com/livenews/3196626",
+    "channels": [
+     "a-stock-channel"
+    ],
+    "symbols": [],
+    "type": "live"
+   },
+   {
+    "id": 3196623,
+    "display_time": 1794191717,
+    "score": 1,
+    "title": "",
+    "content_text": "上海钢联发布数据显示，今日MMLC电池级碳酸锂（早盘）中间价报92950元/吨，较上日16:30价格下跌850元/吨。",
+    "uri": "https://wallstreetcn.com/livenews/3196623",
+    "channels": [
+     "a-stock-channel"
+    ],
+    "symbols": [],
+    "type": "live"
+   },
+   {
+    "id": 3196620,
+    "display_time": 1794191614,
+    "score": 2,
+    "title": "国务院关税税则委员会发布关于调整对原产于美国的进口商品加征关税措施的公告",
+    "content_text": "为落实中美两国元首华盛顿会晤达成的成果共识，根据《中华人民共和国关税法》、《中华人民共和国海关法》、《中华人民共和国对外贸易法》等法律法规和国际法基本原则，经国务院批准，自2026年11月10日13时01分起，调整《国务院关税税则委员会关于对原产于美国的进口商品加征关税的公告》（税委会公告2025年第4号）规定的加征关税措施，在2个月内继续暂停实施24%的对美加征关税税率，保留10%的对美加征关税税率。",
+    "uri": "https://wallstreetcn.com/livenews/3196620",
+    "channels": [
+     "a-stock-channel"
+    ],
+    "symbols": [],
+    "type": "live"
+   },
+   {
+    "id": 3196611,
+    "display_time": 1794190136,
+    "score": 1,
+    "title": "",
+    "content_text": "半导体芯片股震荡拉升，复旦微电涨超10%，燧原科技、慧智微、寒武纪、航宇微、敏芯股份涨超5%。",
+    "uri": "https://wallstreetcn.com/livenews/3196611",
+    "channels": [
+     "a-stock-channel"
+    ],
+    "symbols": [],
+    "type": "live"
+   },
+   {
+    "id": 3196608,
+    "display_time": 1794189632,
+    "score": 1,
+    "title": "",
+    "content_text": "整点回顾：市场早间高开震荡，三大指数集体反弹，北证50涨超2%，机器人、煤炭、军工、燃气等方向领涨，个股涨多跌少，沪深京三市约4200股飘红，开盘半小时成交5333亿，较上日此时缩量近1300亿。",
+    "uri": "https://wallstreetcn.com/livenews/3196608",
+    "channels": [
+     "a-stock-channel"
+    ],
+    "symbols": [],
+    "type": "live"
+   },
+   {
+    "id": 3196603,
+    "display_time": 1794188812,
+    "score": 1,
+    "title": "",
+    "content_text": "PCB概念股震荡拉升，世运电路涨停，超声电子、一博科技、胜宏科技、崇达技术、强达电路等纷纷走高。",
+    "uri": "https://wallstreetcn.com/livenews/3196603",
+    "channels": [
+     "a-stock-channel"
+    ],
+    "symbols": [],
+    "type": "live"
+   }
+  ],
+  "next_cursor": "1794186001",
+  "polling_cursor": "3196626"
+ }
+}

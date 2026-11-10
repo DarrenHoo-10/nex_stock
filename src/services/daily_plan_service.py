@@ -523,8 +523,20 @@ class DailyPlanService:
                 bars=bars, rules=ctx.rules, account=ctx.account, trade_date=trade_date, next_trade_date=next_date,
                 limit_state=last.get("limit_state") if last and last["trade_date"] == trade_date else None,
                 boards=list(boards.get(code, [])), holding=holding, gaps=gaps,
+                event_risks=self._event_risks(code),
             )
         return inputs
+
+    @staticmethod
+    def _event_risks(code: str) -> List[str]:
+        """Company-event risks from stored events (read-only: the daily news job keeps them current)."""
+        try:
+            from src.services.stock_event_service import StockEventService
+
+            return StockEventService().risk_notes(code)
+        except Exception as exc:  # noqa: BLE001 - events are an add-on to the plan
+            logger.debug("[DailyPlan] %s 公司事件风险读取失败: %s", code, exc)
+            return []
 
     def _plan_one(self, inp: PlanInput, llm: Optional[LlmFn], label: str) -> PlanOutcome:
         try:

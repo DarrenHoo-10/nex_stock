@@ -361,7 +361,7 @@
 }
 @media (max-width:860px){
   .plan-shell .app{padding:18px 16px 120px}
-  .plan-shell .ornament{left:50%;top:auto;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);flex-direction:row;width:auto;padding:6px;border-radius:999px}
+  .plan-shell .ornament{left:50%;top:auto;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);flex-direction:row;width:max-content;max-width:calc(100vw - 16px);padding:6px;border-radius:999px}
   .plan-shell .orn-btn{width:66px;padding:7px 0 5px;border-radius:999px}
   .plan-shell .orn-sep{width:1px;height:auto;margin:8px 2px}
   .plan-shell .head h1{font-size:28px}

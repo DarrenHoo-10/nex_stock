@@ -32,6 +32,10 @@ from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 from zoneinfo import ZoneInfo
 
+from data_provider.eastmoney_gate import install as _install_eastmoney_gate
+
+_install_eastmoney_gate()  # AkShare flash / notice calls hit East Money
+
 logger = logging.getLogger(__name__)
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -40,6 +44,8 @@ SOURCE_TYPE = "akshare"
 KIND_FLASH = "flash"
 KIND_ANNOUNCEMENT = "announcement"
 KIND_MORNING_BRIEF = "morning_brief"
+KIND_QA = "qa"  # investor Q&A (互动易 / 上证e互动), src/services/sources/investor_qa.py
+KIND_ARTICLE = "article"  # long news (Tushare major_news): background, not part of the flash pool
 
 SOURCE_CLS = "cls"
 SOURCE_EM = "em"
@@ -47,10 +53,17 @@ SOURCE_SINA = "sina"
 SOURCE_FUTU = "futu"
 SOURCE_THS = "ths"
 SOURCE_NOTICE = "notice"
+SOURCE_SZSE = "szse"  # 深交所公告, third announcement source (src/services/sources/szse_disclosure.py)
+SOURCE_IRM = "irm"  # 巨潮互动易
+SOURCE_SSE_E = "sse_e"  # 上证e互动
+SOURCE_CNINFO = "cninfo"  # 巨潮资讯公告, fetched in news_cninfo_source (direct HTTP, not AKShare)
 SOURCE_CJZC = "cjzc"
+SOURCE_WSCN = "wscn"  # 华尔街见闻 A 股快讯, direct HTTP (src/services/sources/wscn_lives.py)
+SOURCE_MAJOR = "major"  # Tushare major_news (长篇新闻)
 
 PRIMARY_FLASH_SOURCES = (SOURCE_CLS, SOURCE_EM)
-FALLBACK_FLASH_SOURCES = (SOURCE_SINA, SOURCE_FUTU, SOURCE_THS)
+# 华尔街见闻 is last: the AKShare fallbacks keep their order; it is reached when AKShare itself is down.
+FALLBACK_FLASH_SOURCES = (SOURCE_SINA, SOURCE_FUTU, SOURCE_THS, SOURCE_WSCN)
 
 SOURCE_LABELS: Dict[str, str] = {
     SOURCE_CLS: "财联社电报",
@@ -58,8 +71,14 @@ SOURCE_LABELS: Dict[str, str] = {
     SOURCE_SINA: "新浪财经快讯",
     SOURCE_FUTU: "富途快讯",
     SOURCE_THS: "同花顺快讯",
+    SOURCE_CNINFO: "巨潮资讯公告",
     SOURCE_NOTICE: "东方财富公告",
+    SOURCE_SZSE: "深交所公告",
+    SOURCE_IRM: "巨潮互动易",
+    SOURCE_SSE_E: "上证e互动",
     SOURCE_CJZC: "东方财富财经早餐",
+    SOURCE_WSCN: "华尔街见闻快讯",
+    SOURCE_MAJOR: "长篇新闻（Tushare）",
 }
 
 NO_URL_PREFIX = "no-url:intel:"  # same marker as IntelligenceService for URL-less items
@@ -410,8 +429,60 @@ _FLASH_PARSERS: Dict[str, Callable[[Any], List[NewsRecord]]] = {
 }
 
 
+def wscn_records(lives: Iterable[Any]) -> List[NewsRecord]:
+    """华尔街见闻 lives (``sources.wscn_lives.Live``) as flash records."""
+    records = []
+    for live in lives:
+        record = _build_flash(SOURCE_WSCN, title=live.title, body=live.text, url=live.url,
+                              published_at=live.published_at, raw={"id": live.item_id, "important": live.important})
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def cls_direct_records(items: Iterable[Any]) -> List[NewsRecord]:
+    """财联社 direct telegraphs as ``cls`` records.
+
+    Same title / body / time / synthetic URL as ``parse_cls`` builds from AKShare's 标题 / 内容 / 发布时间, so
+    an item seen by both implementations is the same pool row.
+    """
+    records = []
+    for item in items:
+        record = _build_flash(SOURCE_CLS, title=item.title, body=item.content, url=None,
+                              published_at=item.published_at, raw={"via": "direct", "id": item.item_id,
+                                                                   "level": item.level})
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def fetch_cls_direct(*, timeout_sec: float, cls_symbol: str = "全部") -> List[NewsRecord]:
+    """财联社 without AKShare (used when the AKShare call fails); ``重点`` keeps the red (A / B) items."""
+    from src.services.sources import cls_telegraph
+
+    return cls_direct_records(cls_telegraph.fetch(timeout_sec=timeout_sec, important_only=cls_symbol == "重点"))
+
+
+def parse_major_news(rows: Iterable[Dict[str, Any]]) -> List[NewsRecord]:
+    """Tushare ``major_news`` rows (``title``, ``pub_time``, ``src``, ``url``) as ``article`` records."""
+    records = []
+    for row in rows:
+        published = _to_cn_datetime(row.get("pub_time"))
+        record = _build_flash(SOURCE_MAJOR, title=row.get("title"), body=row.get("content") or "",
+                              url=row.get("url"), published_at=published, kind=KIND_ARTICLE,
+                              raw={"src": row.get("src")})
+        if record is not None:
+            records.append(record)
+    return records
+
+
 def fetch_flash(source_key: str, *, timeout_sec: float, cls_symbol: str = "全部") -> List[NewsRecord]:
-    """One AKShare flash call (``cls`` / ``em`` / ``sina`` / ``futu`` / ``ths``), parsed."""
+    """One flash call, parsed: AKShare for ``cls`` / ``em`` / ``sina`` / ``futu`` / ``ths``, direct for ``wscn``."""
+    if source_key == SOURCE_WSCN:
+        from src.services.sources import wscn_lives
+
+        return wscn_records(call_with_timeout(source_key, lambda: wscn_lives.fetch(timeout_sec=timeout_sec),
+                                              timeout_sec))
     parser = _FLASH_PARSERS.get(source_key)
     if parser is None:
         raise NewsSourceError(f"unknown flash source: {source_key}")

@@ -1,0 +1,15 @@
+.plan-shell .closing-date { display: flex; align-items: center; gap: 10px; color: var(--t2); }
+.plan-shell .closing-date select { width: auto; min-width: 0; }
+.plan-shell .closing-report { margin-bottom: 18px; padding: clamp(18px, 3vw, 34px); }
+.plan-shell .closing-report > h2 { font-size: 20px; font-weight: 650; }
+.plan-shell .closing-body { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--t2); overflow-x: auto; overflow-wrap: anywhere; }
+.plan-shell .closing-body :is(h1,h2,h3) { color: var(--t1); margin: 1em 0 .4em; font-weight: 600; }
+.plan-shell .closing-body h1 { font-size: 20px; }
+.plan-shell .closing-body h2 { font-size: 17px; }
+.plan-shell .closing-body > :first-child { margin-top: 0; }
+.plan-shell .closing-body p { margin-bottom: .65em; white-space: pre-line; }
+.plan-shell .closing-body ul { list-style: disc; padding-left: 1.5em; }
+.plan-shell .closing-body ol { list-style: decimal; padding-left: 1.5em; }
+.plan-shell .closing-body table { border-collapse: collapse; }
+.plan-shell .closing-body :is(td,th) { padding: 6px 16px; border-bottom: 1px solid var(--line); }
+.plan-shell .closing-body a { color: var(--accent); text-decoration: underline; }

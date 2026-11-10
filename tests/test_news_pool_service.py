@@ -24,6 +24,7 @@ from tests.news_fixtures import (
     NOW,
     at,
     brief_df,
+    cninfo_fixture,
     cls_df,
     em_df,
     futu_df,
@@ -283,9 +284,12 @@ def test_announcements_for_a_small_watchlist_are_fetched_per_code_with_a_pause_b
     result = service.run_daily_fetch(day=day, now=at(8, 5))
 
     ann = result["announcements"]
-    assert ann["mode"] == "by_code" and ann["codes"] == 3 and ann["api_calls"] == 3 and ann["inserted"] == 3
+    # 巨潮 is not stubbed for these codes, so every code falls back to 东方财富 (3 + 3 calls).
+    assert ann["mode"] == "by_code" and ann["codes"] == 3 and ann["api_calls"] == 6 and ann["inserted"] == 3
+    assert ann["sources"]["cninfo"]["status"] == "failed" and ann["sources"]["notice"]["status"] == "ok"
     assert stub.calls.count("notice_code:600519") == 1 and not any(c.startswith("notice_day") for c in stub.calls)
-    assert len(sleeps) == 2 and all(s > 0 for s in sleeps)  # paced: no burst against the data centre
+    # paced: 2 pauses between the 3 announcement codes, 2 more between the 3 Q&A codes
+    assert len(sleeps) == 4 and all(s > 0 for s in sleeps)
     assert stub.notice_calls[0] == {"security": "300750", "begin": "2026-11-08", "end": "2026-11-09"}  # sorted, yesterday..today
     rows = [r for r in all_items(db) if r.item_kind == "announcement"]
     assert sorted(r.scope_value for r in rows) == ["300750", "600519", "601318"]
@@ -333,6 +337,70 @@ def test_one_failing_code_does_not_stop_the_others_and_repeated_failures_stop_th
     failed = make_service(db, config).run_daily_fetch(day=day, now=at(8, 6))["announcements"]
     assert failed["status"] == "failed" and len(stub.notice_calls) == 3  # stops after 3 consecutive failures
     assert any("停止" in e for e in failed["errors"])
+
+
+def test_cninfo_is_the_primary_announcement_source_per_code(db, stub):
+    day = date(2026, 11, 9)
+    stub.cninfo_by_code["600089"] = dict(cninfo_fixture(), hasMore=False)
+    stub.cninfo_by_code["300750"] = {"announcements": [], "hasMore": False}
+    service = make_service(db, make_config(stock_list=["600089", "300750"]))
+    ann = service.run_daily_fetch(day=day, now=at(8, 5))["announcements"]
+
+    assert ann["status"] == "ok" and ann["sources"] == {
+        "cninfo": {"status": "ok", "calls": 2, "fetched": 3, "errors": []},
+    }
+    assert not any(c.startswith("notice") for c in stub.calls)  # 东方财富 is not touched while 巨潮 works
+    assert stub.calls.count("cninfo_orgids") == 1  # orgId map is loaded once and cached
+    # 300750's real orgId (GD165627) is irregular; the pattern guess would have been gssz0300750.
+    by_code = {r["stock"].split(",")[0]: r for r in stub.cninfo_requests}
+    assert by_code["300750"]["stock"] == "300750,GD165627" and by_code["600089"]["stock"] == "600089,gssh0600089"
+    assert by_code["600089"]["seDate"] == "2026-11-08~2026-11-09"
+
+    rows = sorted((r for r in all_items(db) if r.item_kind == "announcement"), key=lambda r: r.url)
+    assert len(rows) == 3 and {r.source for r in rows} == {"巨潮资讯公告"}
+    assert {r.source_name for r in rows} == {"akshare:cninfo"}
+    assert all(r.scope_type == "symbol" and r.scope_value == "600089" and r.url.startswith(
+        "https://static.cninfo.com.cn/finalpage/2026-10-30/") for r in rows)
+    assert "特变电工股份有限公司2026年第三季度报告" in {r.title for r in rows}  # already starts with the name
+    assert rows[0].published_at == datetime(2026, 10, 30, 0, 0)
+
+    health = get_news_health(repo=service.repo, now=NOW, config=make_config())
+    by_source = {s["source"]: s for s in health["sources"]}
+    assert by_source["cninfo"]["label"] == "巨潮资讯公告" and by_source["cninfo"]["last_status"] == "ok"
+    assert by_source["notice"]["last_status"] == "never"
+
+
+def test_cninfo_failure_falls_back_to_east_money_for_that_code_only(db, stub):
+    day = date(2026, 11, 9)
+    stub.cninfo_by_code["600089"] = cninfo_fixture()
+    stub.cninfo_by_code["600519"] = ConnectionError("cninfo reset")
+    stub.notice_by_code["600519"] = notice_df([{"code": "600519", "title": "回购公告", "day": day, "art": "D1"}])
+    service = make_service(db, make_config(stock_list=["600089", "600519"]))
+    ann = service.run_daily_fetch(day=day, now=at(8, 5))["announcements"]
+
+    assert ann["status"] == "ok" and ann["errors"] == []  # every code was covered by some source
+    assert ann["sources"]["cninfo"]["status"] == "partial" and "cninfo reset" in ann["sources"]["cninfo"]["errors"][0]
+    assert ann["sources"]["notice"] == {"status": "ok", "calls": 1, "fetched": 1, "errors": []}
+    assert stub.calls.count("notice_code:600519") == 1 and "notice_code:600089" not in stub.calls
+    health = {s["source"]: s for s in get_news_health(repo=service.repo, now=NOW, config=make_config())["sources"]}
+    assert health["cninfo"]["last_status"] == "partial" and health["notice"]["last_status"] == "ok"
+
+    # Next run starts from the day either source last succeeded.
+    assert service._announcement_window_begin(date(2026, 11, 10)) == date(2026, 11, 9)
+
+
+def test_orgid_map_failure_uses_the_code_pattern_and_market_mode_falls_back_to_cninfo(db, stub):
+    day = date(2026, 11, 9)
+    stub.cninfo_orgid_map = ConnectionError("map down")
+    stub.cninfo_by_code["600089"] = cninfo_fixture()
+    stub.notice_by_day["20261109"] = RuntimeError("em listing blocked")
+    stub.notice_by_day["20261108"] = RuntimeError("em listing blocked")
+    config = make_config(stock_list=["600089"], news_announcement_mode="market")
+    ann = make_service(db, config).run_daily_fetch(day=day, now=at(8, 5))["announcements"]
+
+    assert ann["mode"] == "market" and ann["inserted"] == 3 and ann["status"] == "ok"
+    assert ann["sources"]["notice"]["status"] == "failed" and ann["sources"]["cninfo"]["status"] == "ok"
+    assert stub.cninfo_requests[0]["stock"] == "600089,gssh0600089"
 
 
 def test_no_watchlist_and_no_holdings_skips_announcements_but_still_fetches_the_brief(db, stub):

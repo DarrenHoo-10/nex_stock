@@ -2459,15 +2459,38 @@ class DataFetcherManager:
             setattr(quote, "provider_timestamp", None)
             setattr(quote, "stale_seconds", None)
             setattr(quote, "is_stale", None)
-            return quote
-
-        setattr(quote, "provider_timestamp", provider_dt.isoformat())
-        fetched_dt = self._parse_realtime_timestamp(fetched_at) or datetime.now(timezone.utc)
-        stale_seconds = max(0, int((fetched_dt - provider_dt).total_seconds()))
-        ttl = realtime_cache_ttl if realtime_cache_ttl is not None else 600
-        setattr(quote, "stale_seconds", stale_seconds)
-        setattr(quote, "is_stale", stale_seconds > int(ttl))
+        else:
+            setattr(quote, "provider_timestamp", provider_dt.isoformat())
+            fetched_dt = self._parse_realtime_timestamp(fetched_at) or datetime.now(timezone.utc)
+            stale_seconds = max(0, int((fetched_dt - provider_dt).total_seconds()))
+            ttl = realtime_cache_ttl if realtime_cache_ttl is not None else 600
+            setattr(quote, "stale_seconds", stale_seconds)
+            setattr(quote, "is_stale", stale_seconds > int(ttl))
+        self._mark_frozen_quote(quote)
         return quote
+
+    @staticmethod
+    def _mark_frozen_quote(quote) -> None:
+        """Flag quotes that look current but are not (a-stock-data §1.1 "zombie" quotes).
+
+        * an old 北交所 code (43/83/87): some sources keep returning a frozen price -> stale;
+        * price equal to the previous close with no turnover: no trade yet today (pre-open,
+          suspension) -> labelled only, since every stock looks like this before the open.
+        """
+        code = str(getattr(quote, "code", "") or "").strip()
+        digits = code[-6:] if len(code) >= 6 else code
+        if digits.isdigit() and len(digits) == 6 and digits.startswith(("43", "83", "87")):
+            setattr(quote, "stale_reason", "legacy_bse_code")
+            setattr(quote, "is_stale", True)
+            return
+        price = getattr(quote, "price", None)
+        pre_close = getattr(quote, "pre_close", None)
+        amount = getattr(quote, "amount", None)
+        volume = getattr(quote, "volume", None)
+        no_turnover = (amount is not None and amount == 0) or (amount is None and volume == 0)
+        if (isinstance(price, (int, float)) and price > 0 and isinstance(pre_close, (int, float))
+                and abs(price - pre_close) < 1e-9 and no_turnover):
+            setattr(quote, "stale_reason", "no_trade_today")
     
     def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True,
                            analysis_target: Optional[AnalysisTarget] = None):
@@ -4735,6 +4758,34 @@ class DataFetcherManager:
                 if isinstance(payload.get("errors"), list):
                     payload["errors"].append(f"{fetcher.name}: {sup_err}")
                 logger.warning("[资金流] %s 获取 %s 失败: %s", fetcher.name, stock_code, sup_err)
+        self._supplement_capital_flow_from_sina(stock_code, payload, remaining)
+
+    def _supplement_capital_flow_from_sina(self, stock_code: str, payload: Dict[str, Any], budget_seconds: float) -> None:
+        """最后一个备用源：新浪个股历史资金流（无需配置，只覆盖沪深股票），只用前面剩下的预算。"""
+        stock_flow = payload.get("stock_flow") or {}
+        if isinstance(stock_flow, dict) and any(v is not None for v in stock_flow.values()):
+            return
+        from src.services.sources import sina_fund_flow
+
+        if budget_seconds <= 0 or sina_fund_flow.symbol(str(stock_code)) is None:
+            return
+        supplemental, sup_err, sup_cost_ms = self._run_with_timeout(
+            lambda: sina_fund_flow.capital_flow(str(stock_code), timeout_sec=budget_seconds),
+            budget_seconds,
+            "capital_flow_supplement",
+            quarantine_key=("sina", "capital_flow"),
+        )
+        if isinstance(supplemental, dict) and supplemental.get("errors"):
+            payload.setdefault("errors", []).extend(supplemental["errors"])
+        if isinstance(supplemental, dict) and supplemental.get("stock_flow"):
+            payload["stock_flow"] = supplemental["stock_flow"]
+            payload.setdefault("source_chain", []).extend(supplemental.get("source_chain") or [])
+            logger.info("[资金流] %s 使用新浪补充个股资金流 (%dms)", stock_code, sup_cost_ms)
+            return
+        if sup_err:
+            if isinstance(payload.get("errors"), list):
+                payload["errors"].append(f"sina: {sup_err}")
+            logger.warning("[资金流] 新浪获取 %s 失败: %s", stock_code, sup_err)
 
     def _supplement_fundamental_bundle_from_fetchers(
         self,

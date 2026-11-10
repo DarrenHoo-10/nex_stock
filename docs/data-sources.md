@@ -31,6 +31,9 @@
 | [妙想 MX](#51-妙想东方财富-mx_api) | `MX_APIKEY` | A 股 | 东财接口受限时兜底筹码分布与个股资金流 | `MX_PRIORITY`，默认 6（不参与日线） |
 | [台湾三大法人](#52-台湾三大法人) | 否 | 台股 | 三大法人买卖超（仅数据层） | — |
 | [FXMacroData](#53-fxmacrodata) | 可选 `FXMACRODATA_API_KEY` | 宏观 / 外汇 | 助手与报告 Agent 的宏观工具 | — |
+| [新浪资金流](#57-新浪财经个股资金流无需配置) | 否 | A 股（沪深） | 个股资金流补充链的最后一个备用源、`/stocks/{code}/capital` 的主力资金 | —（不参与日线） |
+| [东方财富风险名单](#58-东方财富风险名单无需配置) | 否 | A 股 | 重点监控名单（选股排除）、严重异常波动（风险） | — |
+| [快讯备用源](#59-快讯备用源财联社直连华尔街见闻tushare-长篇新闻) | 否（长篇新闻需 Tushare） | A 股 | 财联社直连、华尔街见闻快讯、长篇新闻 | — |
 
 优先级数字越小越先尝试。
 
@@ -63,6 +66,12 @@ TUSHARE_TOKEN=你的token
 **安全提示**：`TUSHARE_HTTP_URL` 指向非官方地址时，Token 和全部请求内容都会经过该服务器，请自行评估风险。GitHub Actions 里它是"接入地址"配置，不是凭据；`vars` 非空时会压过同名 Secret，详见 [完整指南](full-guide.md) 的相关说明。
 
 **确认它在工作**：启动日志出现 “检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升为最高”；未配置时日志是 “Tushare Token 未配置，此数据源不可用”。GitHub Actions 的每日任务日志里也会打印 Tushare Token 是否已配置。运行时优先级可在 [数据中心](data-center-diagnostics.md) 查看。
+
+**公司事件**：业绩预告 `forecast`、业绩快报 `express`、股东增减持 `stk_holdertrade`、回购 `repurchase`、限售解禁 `share_float`、股权质押 `pledge_stat`、机构调研 `stk_surv`、券商盈利预测 `report_rc`、龙虎榜 `top_list` + 席位 `top_inst` 由 `src/services/stock_event_service.py` 调用，存入 `stock_event` 表（研报为 `research`、龙虎榜为 `dragon_tiger`）；打板和情绪数据也存在这里：开盘啦涨停 / 炸板 / 跌停 `kpl_list`（`limit_board`，含连板状态和涨停原因题材）、同花顺热股榜 `ths_hot` 与东方财富人气榜 `dc_hot`（合并为 `hot_rank`，各取前 100，同花顺的 `rank_reason` 是 AI 摘要，截取 300 字），每个交易日按交易日入库（补最近 5 天，每天 5 次请求）。每个交易日的资讯任务（`NEWS_DAILY_FETCH_TIME`）按日取一次全市场（约 10 次请求；第一次补最近 30 天，研报补 90 天、龙虎榜补 10 天，约 250 次），没有 Token 时跳过；某只股票本地没有近期数据时，`GET /api/v1/stocks/{code}/events` 和选股会按需单独补取这只股票（每类 1 次）。龙虎榜只能按交易日取全市场，所以只来自每日入库；Tushare 约 20 点发布当天榜单，当天和取到空结果的交易日下次运行会再取一次。
+
+**资金面**：两融 `margin_detail`（单只股票，近 20 个交易日）和北向 / 南向 `moneyflow_hsgt`（全市场，进程内缓存 1 小时）不入库，由 `src/services/capital_service.py` 在 `GET /api/v1/stocks/{code}/capital` 时按需读取。`moneyflow_hsgt` 单位为百万元；2024 年 8 月起交易所盘后只公布北向成交额，数值量级与成交额一致，不能当作净买入。这些接口在 15000 积分账号上已采样确认可用；公告 `anns_d`、互动问答 `irm_qa_*`、研报 `research_report`、短讯 `news` 需要单独购买，项目不使用。竞价 `stk_auction` 仅在分时页作为可选的撮合结果补充源。
+
+**宏观和指数**：PMI `cn_pmi`、货币供应量 `cn_m`、社会融资规模 `sf_month`、LPR `shibor_lpr`、主要指数估值 `index_dailybasic`（PE / PE TTM / PB）、指数成分和权重 `index_weight`（沪深300、中证500、中证1000、上证50、创业板指、科创50 的月度快照）由 `src/services/macro_service.py` 调用，存入 `macro_series` 表。每天的资讯任务刷新一次（每个序列 20 小时内不重复取，约 15 次请求），没有 Token 时跳过；`GET /api/v1/data/macro` 和 `GET /api/v1/data/indices/{code}/constituents` 只读本地表。这几个接口在本账号已采样确认可用，所以没有用 a-stock-data 列出的统计局 / 人民银行 / 中证官网网页。
 
 **相关**：股票列表导出脚本见 [Tushare 股票列表指南](TUSHARE_STOCK_LIST_GUIDE.md)。
 
@@ -102,7 +111,8 @@ BIYING_TIMEOUT_SECONDS=8   # 可选，单次请求超时（秒）
 
 **在 Web 里的用处**
 
-- 个股行情窗口 / 个股计划页：双击日 K 查看当天分时（`GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD`）。当天先走 Tushare `rt_min_daily`，再走必盈当天 5 分钟线；历史交易日只走必盈历史 5 分钟线，并缓存 6 小时。**没有配置 `BIYING_LICENCE` 时，历史分时会返回 503，页面提示"分时读取失败"**。
+- 开盘集合竞价与 5 分钟线独立加载。优先使用必盈当天或历史逐笔交易（历史自 2026-08-13 起归档）。09:15–09:24 每分钟保留最后一个有效价格，09:25 单独展示实际撮合价和成交股数。各分钟的可见性取决于源返回的记录，当天逐笔数据盘中约每小时更新。必盈缺数据时，若配置了 `ASHARE_API_KEY`，尝试 ashareapi.com 的竞价分时；最后尝试 Tushare 的 `stk_auction`（ETF 用 `etf_auction`）获取最终撮合结果。竞价量不重复计入盘中均价。
+- 个股行情窗口 / 个股计划页：双击日 K 查看当天分时（`GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD`）。当天先走 Tushare `rt_min_daily`，再走必盈当天 5 分钟线；历史交易日只走必盈历史 5 分钟线，并缓存 6 小时。**没有配置 `BIYING_LICENCE` 时，历史分时会返回 503**。503 的 `error` 是 `intraday_unavailable`，`reason` 说明原因：`biying_not_configured`（历史交易日需要必盈证书）、`not_configured`（当天没有任何分钟线数据源）、`no_bars`（数据源没有这天的数据，如停牌、非交易日）、`source_failed`（数据源请求失败），`message` 是对应的中文说明，页面直接显示这条说明，不再显示通用的「检查代理、DNS」。
 - 助手：盘中全市场快照、个股报价、5 分钟线（Tushare 失败后用必盈兜底）。
 
 **确认它在工作**：行情窗口里双击一根历史日 K 能看到分时；或在日志里看到实时来源为 `biying`。证书错误时日志是 `Biying error: ***` 一类的打码信息，HTTP 非 200 为 `Biying HTTP <状态码>`。
@@ -159,6 +169,8 @@ PYTDX_PORT=7709
 ### 3.6 Tencent（腾讯财经）
 
 默认优先级 5，普通 A 股日线的最终兜底；同时是**已登记指数固定链的第一位**。实时行情里的 `tencent` 有量比 / 换手率 / PE / PB，单股查询稳定，是免费实时源的推荐首选。
+
+选股的日线直连（`src/services/screening/daily.py`）在腾讯的三个 K 线入口间轮换：`web.ifzq.gtimg.cn`、`proxy.finance.qq.com/ifzqgtimg`、`ifzq.gtimg.cn` 各自限流，单个入口约 600 次后开始返回空结果；某个入口返回空结果或请求失败时冷却 120 秒，改用下一个。
 
 ## 4. 港股与美股渠道
 
@@ -233,6 +245,55 @@ ENABLE_EASTMONEY_PATCH=true
 
 会注入 NID 令牌和随机 User-Agent，降低被东财限流的概率。默认关闭。
 
+### 5.5 东方财富统一限速（默认开启）
+
+东方财富按 IP 风控：每秒超过约 5 次、同一 IP 10 个以上并发、每分钟约 200 次就会临时封 IP，不同子域名（`push2`、`push2his`、`datacenter-web` 等）分开封。本进程内所有发往 `*.eastmoney.com` 的请求（AkShare、efinance、选股、热点、资讯库）都经过 `data_provider/eastmoney_gate.py`：
+
+- 同一子域名一次只发一个请求，两次请求至少间隔 `EASTMONEY_MIN_INTERVAL_SEC` 秒（默认 1.0），另加 0.1–0.5 秒随机抖动；不同子域名互不影响。
+- 某子域名返回 HTTP 403（封禁信号）后不重试，暂停 `EASTMONEY_BAN_COOLDOWN_MINUTES` 分钟（默认 30）；期间对它的请求直接抛 `EastmoneyCoolingDown`（属于 `requests` 的连接错误），各处现有的回退逻辑会换用其他来源。
+- 在子进程里运行的 AkShare 东财函数（如 `stock_zh_a_hist`、`stock_zh_a_spot_em`）整个调用期间占住对应子域名。
+- 设置 →「数据状态」里有「东方财富（统一限速）」一行：显示是否有子域名在冷却（warnings 里写明子域名和恢复时间），两个配置项可以直接修改，保存后立即生效。
+- 选股原有的 `SCREENING_EASTMONEY_MIN_INTERVAL_SEC` / `SCREENING_EASTMONEY_JITTER_SEC` 仍作用于选股自己的东财请求，排队和 403 冷却与全局共用。
+- 与 5.4 的东财接口补丁可以同时开启，两者叠加。
+
+### 5.6 投资者问答与深交所公告（直连官方平台）
+
+Tushare 的 `irm_qa_sz` / `irm_qa_sh` 在本账号没有权限，问答直接读两个官方平台（`src/services/sources/investor_qa.py`）：
+
+- **巨潮互动易**（深市，00 / 30 开头）：先按代码查公司 `secid`，再取问答列表（参数放在查询串里，请求体为空，否则返回 400）。
+- **上证e互动**（沪市，60 / 68 开头）：解析网页；公司 uid 在公司列表里按代码倍增 + 二分查找（首次约 10 次请求，之后缓存一天）；回复时间可能是「昨天 18:22」这类相对时间，按北京时间换算。
+- 两个平台都只保留约近 1 个月；北交所公司两个平台都没有。
+- 只存已回复的问答，存进资讯库（`item_kind=qa`，按股票关联），每个交易日的资讯任务给自选股和持仓各取一次；`GET /api/v1/stocks/{code}/qa` 在近 6 小时没取过时会先刷新。选股候选的新闻优先读资讯库，所以问答也会作为候选的资料出现。
+- 数据状态里分别显示「巨潮互动易」「上证e互动」两个来源的状态。
+
+**深交所公告**（`src/services/sources/szse_disclosure.py`）是深市股票公告的第三个来源：巨潮和东方财富都失败时才用，PDF 链接指向 `disc.static.szse.cn`。上交所没有可用的公开公告接口。
+
+### 5.7 新浪财经个股资金流（无需配置）
+
+`src/services/sources/sina_fund_flow.py` 直连新浪 `MoneyFlow.ssl_qsfx_zjlrqs`（个股历史资金流，只覆盖沪深股票），两个用途：
+
+- 个股资金流补充链的最后一个备用源：AkShare（东方财富）、Tushare `moneyflow`、妙想都没给出主力净流入时，用前面剩下的预算请求一次，补上当日主力净流入（`r0_net`，即新浪页面上的「主力净流入」）和 5 日 / 10 日合计，`source_chain` 记为 `sina:moneyflow:<日期>`。东方财富冷却（见 5.5）时主链路会立刻失败，预算基本都留给备用源。
+- `GET /api/v1/stocks/{code}/capital` 的 `fund_flow` 部分（近 20 个交易日）。
+
+设置 →「数据状态」里的「新浪财经（个股资金流备用）」显示本进程最近一次请求的结果（不额外发探测请求）。
+
+### 5.8 东方财富风险名单（无需配置）
+
+`src/services/sources/eastmoney_risk.py` 每个交易日的资讯任务各取一次（不需要 Tushare，经过 5.5 的统一限速）：
+
+- **重点监控名单**：`mobappconfig.securities.eastmoney.com/emcfg/stock_monitor.json`，一个文件就是全量，每只股票带约两周的有效期；名单里的基金会被丢掉。存为公司事件 `risk_watch`。**在有效期内的股票选股直接排除**（快照硬过滤之后、读本地表，记在结果的 `degradation` 里），次日计划和选股候选的风险里写「在东方财富重点监控名单内」。
+- **严重异常波动**：`dycalchis.eastmoney.com/price-anomaly/list`，必须带固定参数 `team=h5&product=EastMoney&client=WAP&version=9001&name=WAP&user=123`，否则返回 `unknow team`。存为 `price_anomaly`（累计偏离、天数、当日涨跌幅、规则编号），近 10 天内出现的写进风险。
+
+两个名单各自失败，不影响对方和资讯任务的其他部分。
+
+### 5.9 快讯备用源：财联社直连、华尔街见闻、Tushare 长篇新闻
+
+- **财联社直连**（`src/services/sources/cls_telegraph.py`）：AkShare 取财联社电报失败时，同一轮里改用官方 `v1/roll/get_roll_list`（签名 `md5(sha1(按键名排序的查询串))` 在本地算，不需要 key），仍记为 `cls` 来源，轮询结果里 `via: direct`；生成的去重键和 AkShare 那条一样，两种取法取到同一条不会重复入库。`NEWS_AKSHARE_CLS_SYMBOL=重点` 时只保留 A / B 级。
+- **华尔街见闻**（`src/services/sources/wscn_lives.py`）：A 股频道快讯，排在备用快讯顺序最后（新浪 → 富途 → 同花顺 → 华尔街见闻），AkShare 整体不可用时仍能取到。
+- **长篇新闻**：Tushare `major_news`（只取标题和链接），每天的资讯任务取最近 24 小时，存为 `item_kind=article`，不进快讯池（快讯摘要、缺口检测都不读它），按公告类的保留期（`NEWS_COMPANY_RETENTION_DAYS`）清理；助手的 `search_market_news` 会搜到它。没有 Token 时跳过。
+
+数据状态的资讯来源里新增「华尔街见闻快讯」「长篇新闻（Tushare）」两行。
+
 ## 6. 优先级与回退规则
 
 **A 股日线**：`DataFetcherManager` 按优先级数字从小到大尝试，单个渠道失败就换下一个，连续失败会短期熔断。默认顺序：
@@ -282,7 +343,7 @@ tushare(-1，仅配置 Token 后) > efinance(0) > akshare(1) > tushare/pytdx/tic
 | 启动日志提示 Tushare Token 未配置 | 没填 `TUSHARE_TOKEN` | 填写后重启；不填则自动用免费渠道 |
 | 实时行情总是落到免费源 | Tushare 未开通 `rt_k`，或没配必盈 | 开通 RT 权限，或配置 `BIYING_LICENCE`；冷却期 10 分钟后会重试 |
 | 港股数据查不到 | Tushare 账号没有港股接口权限 | 配置 Futu / Longbridge，或依赖 AkShare / YFinance |
-| 双击日 K 提示“分时读取失败” | 未配置 `BIYING_LICENCE`；证书无效；该日非交易日；非 A 股或指数 | 配置有效证书；确认是 A 股个股 / ETF 的交易日；看后端日志里的 `intraday_unavailable` |
+| 双击日 K 提示“分时读取失败” | 页面上的说明对应 503 的 `reason`：提示配置必盈 licence 是 `biying_not_configured`；没有这天的分时是 `no_bars`（停牌、非交易日）；请求失败是 `source_failed`（证书无效、网络）；非 A 股或指数不提供 | 按提示配置有效证书；确认是 A 股个股 / ETF 的交易日；看后端日志里的 `分时行情不可用 ... (reason)` |
 | 日志里出现 `Biying HTTP 4xx/5xx` | 证书失效、超出频率或服务端异常 | 检查证书和额度，必要时调大 `BIYING_TIMEOUT_SECONDS` |
 | 东财类接口 `RemoteDisconnected` | 被东财限流 | 开启 `ENABLE_EASTMONEY_PATCH`，降低 Efinance 优先级，或配置 Tushare / TickFlow |
 | 美股日线 / 实时失败 | Longbridge 冷却中，或 YFinance 被限流 | 等冷却结束，配置 Longbridge 凭据 |

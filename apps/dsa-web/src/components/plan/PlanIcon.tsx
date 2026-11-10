@@ -2,6 +2,7 @@ import type React from 'react';
 
 /** Stroke icon paths from the prototype (24x24 viewBox). */
 const ICON_PATHS = {
+  closing: <path d="M3 16h18M5 20h14M7 16a5 5 0 0 1 10 0M12 3v4m-8 2 2 2m14-2-2 2" />,
   boards: <path d="M5 20v-7M12 20V5M19 20v-10" />,
   picks: (
     <>

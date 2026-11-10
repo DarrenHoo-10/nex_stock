@@ -39,7 +39,7 @@ AkShare 的业绩预告、快报是按 `date=YYYYMMDD` 查询的全市场表，�
 
 ## 统一数据能力只读契约
 
-Web/API 提供 `GET /api/v1/data/overview` 和等价别名 `GET /api/v1/data/capabilities`，用于把数据源能力、数据集质量和场景优先级以同一个只读结构暴露给首页看板、数据中心、个股详情、自选和选股页面。
+Web/API 提供 `GET /api/v1/data/overview` 和等价别名 `GET /api/v1/data/capabilities`，用于把数据源能力、数据集质量和场景优先级以同一个只读结构暴露给首页看板、数据中心、个股详情、自选和选股页面。每个 provider 另有 `config_keys`：启用或调整该数据源要设置的配置键（内置数据源为空），新版设置页「数据状态」据此在数据源行内直接编辑；接口本身仍只读，不返回任何配置值。
 
 首版契约只读取配置和 `DataFetcherManager` 的 fetcher 快照，不触发外部行情请求，也不返回任何原始密钥。响应分三层：
 

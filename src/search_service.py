@@ -3126,6 +3126,52 @@ class SearchService:
             or has_url_backed_download_page
         )
 
+    # Script blocks that mis-decoded CJK (GBK read as another code page) scatters across;
+    # real text in any one of these languages stays inside one or two of them.
+    _GARBLED_SCRIPT_RANGES: Tuple[Tuple[str, int, int], ...] = (
+        ("c1_controls", 0x0080, 0x009F),
+        ("latin_ext_b_ipa", 0x0180, 0x02AF),
+        ("combining_marks", 0x0300, 0x036F),
+        ("cyrillic", 0x0400, 0x052F),
+        ("armenian", 0x0530, 0x058F),
+        ("hebrew", 0x0590, 0x05FF),
+        ("arabic", 0x0600, 0x06FF),
+        ("syriac", 0x0700, 0x074F),
+        ("arabic", 0x0750, 0x077F),
+        ("thaana_nko", 0x0780, 0x07FF),
+    )
+    # UTF-8 bytes read as Latin-1 / cp1252, e.g. "è‚¡ç¥¨" for "股票".
+    _UTF8_AS_LATIN1_RE = re.compile(r"[ÂÃâåæçèéêïð][\u0080-¿‘-›€]")
+
+    @classmethod
+    def _has_garbled_text_signal(cls, item: SearchResult) -> bool:
+        """Detect mojibake (text decoded with the wrong charset) in a result's title and snippet.
+
+        Such text cannot be repaired after the fact, and handing it to a model only produces
+        notes like "新闻文本编码异常". Content-based, not a list of sites.
+        """
+        text = " ".join(filter(None, [item.title, item.snippet]))
+        if not text:
+            return False
+        if text.count("�") >= 3:
+            return True
+        if len(cls._UTF8_AS_LATIN1_RE.findall(text)) >= 4:
+            return True
+        groups = set()
+        rare = 0
+        visible = 0
+        for char in text:
+            if char.isspace():
+                continue
+            visible += 1
+            point = ord(char)
+            for group, start, end in cls._GARBLED_SCRIPT_RANGES:
+                if start <= point <= end:
+                    groups.add(group)
+                    rare += 1
+                    break
+        return rare >= 6 and len(groups) >= 3 and rare / max(visible, 1) >= 0.08
+
     @classmethod
     def _has_adult_service_spam_news_page_signal(cls, item: SearchResult) -> bool:
         """Detect adult-service spam by content signals instead of domain names."""
@@ -3451,8 +3497,12 @@ class SearchService:
         dropped_low_quality = 0
         dropped_adult_spam = 0
         dropped_zero_relevance = 0
+        dropped_garbled = 0
 
         for item in response.results:
+            if cls._has_garbled_text_signal(item):
+                dropped_garbled += 1
+                continue
             is_official_source = cls._is_trusted_official_news_source(item)
             if (
                 not is_official_source
@@ -3480,10 +3530,10 @@ class SearchService:
         else:
             filtered_results = candidates
 
-        if dropped_low_quality or dropped_adult_spam or dropped_zero_relevance:
+        if dropped_low_quality or dropped_adult_spam or dropped_zero_relevance or dropped_garbled:
             logger.info(
                 "[新闻准入] %s: provider=%s, total=%s, kept=%s, "
-                "drop_low_quality=%s, drop_adult_spam=%s, drop_zero_relevance=%s",
+                "drop_low_quality=%s, drop_adult_spam=%s, drop_zero_relevance=%s, drop_garbled=%s",
                 log_scope,
                 response.provider,
                 len(response.results),
@@ -3491,6 +3541,7 @@ class SearchService:
                 dropped_low_quality,
                 dropped_adult_spam,
                 dropped_zero_relevance,
+                dropped_garbled,
             )
 
         return SearchResponse(

@@ -302,6 +302,61 @@ def _bar(time_text, close=10.0):
             "volume": 100, "amount": 1000.0}
 
 
+class TestOpeningAuction(unittest.TestCase):
+    def test_history_quotes_sorted_and_cached_by_session(self):
+        service, manager, _ = _service()
+        with patch("src.config.get_config", return_value=SimpleNamespace(ashare_api_key="test")), \
+                patch("data_provider.auction_quotes.requests.get") as http:
+            http.return_value.json.return_value = {"ok": True, "data": [
+                {"time": "09:25:00", "price": 10}, {"time": "09:15:05", "price": 9},
+                {"time": "09:15:00", "price": 8}, {"time": "09:30", "price": 11},
+                {"time": "09:20", "price": "inf"},
+            ]}
+            result = service.get_opening_auction("600000", "2026-11-05")
+            self.assertEqual(result["points"], [
+                {"time": "09:15:05", "price": 9}, {"time": "09:25:00", "price": 10},
+            ])
+            self.assertEqual(service.get_opening_auction("SH600000", "2026-11-05"), result)
+            self.assertEqual(http.call_args.kwargs["params"],
+                             {"code": "600000", "date": "2026-11-05", "mode": "stock-history"})
+            http.assert_called_once()
+            manager.get_fetcher.assert_called_once_with("BiyingFetcher", capability="realtime_quote")
+
+    def test_final_match_for_requested_stock_and_day(self):
+        fetcher = _tushare(None)
+        fetcher._api.stk_auction.return_value = pd.DataFrame([
+            {"ts_code": "600000.SH", "trade_date": "20261104", "price": 7, "vol": 200},
+            {"ts_code": "600000.SH", "trade_date": "20261105", "price": 10, "vol": 300},
+        ])
+        service, _, _ = _service(tushare=fetcher)
+        with patch("src.config.get_config", return_value=SimpleNamespace(ashare_api_key=None)):
+            self.assertEqual(service.get_opening_auction("600000", "2026-11-05"), {
+                "source": "tushare", "points": [{"time": "09:25:00", "price": 10, "volume": 300}],
+            })
+
+    def test_biying_prints_exclude_other_dates_and_regular_trades(self):
+        fetcher = BiyingFetcher(licence="test")
+        tushare = _tushare(None)
+        service, _, _ = _service(biying=fetcher, tushare=tushare)
+        with patch("src.config.get_config", return_value=SimpleNamespace(ashare_api_key=None)), \
+                patch("data_provider.biying_fetcher.requests.get") as http:
+            http.return_value.status_code = 200
+            http.return_value.json.return_value = [
+                {"d": d, "t": t, "p": 10, "v": v} for d, t, v in [
+                    ("2026-11-05", "09:25:02", 830200), ("2026-11-05", "09:15:05", 0),
+                    ("2026-11-05", "09:15:02", 1200),
+                    ("2026-11-04", "09:25:00", 400), ("2026-11-05", "09:30:00", 600),
+                ]
+            ]
+            result = service.get_opening_auction("600000", "2026-11-05")
+            self.assertEqual(result, {"source": "biying", "points": [
+                {"time": "09:15:05", "price": 10},
+                {"time": "09:25:02", "price": 10, "volume": 830200},
+            ]})
+            self.assertIn("/hsrl/zbjy/20261105/600000/", http.call_args.args[0])
+            tushare._api.stk_auction.assert_not_called()
+
+
 class TestSessionBars(unittest.TestCase):
     """Bars of one given trading day (double-click on a daily candle)."""
 
@@ -358,8 +413,9 @@ class TestSessionBars(unittest.TestCase):
         biying = MagicMock(spec=BiyingFetcher)
         biying.get_history_bars.return_value = []
         service, _, _ = _service(biying=biying)
-        with self.assertRaises(IntradayDataUnavailable):
+        with self.assertRaises(IntradayDataUnavailable) as empty:
             service.get_session_bars("600000", "2026-11-05")
+        self.assertEqual(empty.exception.reason, "no_bars")
 
         failing = MagicMock(spec=BiyingFetcher)
         failing.get_history_bars.side_effect = DataFetchError("Biying HTTP 500")
@@ -367,11 +423,39 @@ class TestSessionBars(unittest.TestCase):
         with self.assertRaises(IntradayDataUnavailable) as caught:
             service2.get_session_bars("600000", "2026-11-05")
         self.assertIn("Biying HTTP 500", str(caught.exception))
+        self.assertEqual(caught.exception.reason, "source_failed")
 
     def test_missing_biying_is_unavailable_not_a_crash(self):
         service, _, _ = _service()
-        with self.assertRaises(IntradayDataUnavailable):
+        with self.assertRaises(IntradayDataUnavailable) as caught:
             service.get_session_bars("600000", "2026-11-05")
+        self.assertEqual(caught.exception.reason, "biying_not_configured")
+
+    def test_past_date_needs_biying_even_when_tushare_is_configured(self):
+        service, _, _ = _service(tushare=_tushare(_by_pattern(GOOD_FRAMES)))
+        with self.assertRaises(IntradayDataUnavailable) as caught:
+            service.get_session_bars("600000", "2026-11-05")
+        self.assertEqual(caught.exception.reason, "biying_not_configured")
+
+    def test_today_reason_separates_missing_sources_empty_data_and_failures(self):
+        nothing, _, _ = _service()
+        with self.assertRaises(IntradayDataUnavailable) as unconfigured:
+            nothing.get_session_bars("600000", "2026-11-06")
+        self.assertEqual(unconfigured.exception.reason, "not_configured")
+
+        quiet = _tushare(_by_pattern(GOOD_FRAMES))
+        quiet._api.rt_min_daily.return_value = pd.DataFrame()
+        service, _, _ = _service(tushare=quiet)
+        with self.assertRaises(IntradayDataUnavailable) as empty:
+            service.get_session_bars("600000", "2026-11-06")
+        self.assertEqual(empty.exception.reason, "no_bars")
+
+        broken = _tushare(_by_pattern(GOOD_FRAMES))
+        broken._api.rt_min_daily.side_effect = DataFetchError("rt_min_daily HTTP 500")
+        service, _, _ = _service(tushare=broken)
+        with self.assertRaises(IntradayDataUnavailable) as failed:
+            service.get_session_bars("600000", "2026-11-06")
+        self.assertEqual(failed.exception.reason, "source_failed")
 
     def test_malformed_and_future_dates_are_rejected_before_any_fetch(self):
         biying = MagicMock(spec=BiyingFetcher)

@@ -1218,6 +1218,12 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+_MARKET_DAILY_LADDER_COLUMN_SQL: Dict[str, str] = {
+    "max_consecutive": "INTEGER",
+    "promotion_rate": "FLOAT",
+    "ladder": "TEXT",
+}
+
 _INTELLIGENCE_ITEM_NEWS_COLUMN_SQL: Dict[str, str] = {
     "item_kind": "VARCHAR(32)",
     "news_scope": "VARCHAR(16)",
@@ -1775,6 +1781,10 @@ class MarketDaily(Base):
     touched_up_count = Column(Integer)
     break_rate = Column(Float)
     all_a_ret = Column(Float)
+    # 连板梯队：最高连板数、昨日涨停今日继续涨停的比例（%）、各连板高度家数与晋级（JSON）
+    max_consecutive = Column(Integer)
+    promotion_rate = Column(Float)
+    ladder = Column(Text)
     quality = Column(Text)  # JSON：缺失或延迟的数据项
 
 
@@ -1905,6 +1915,58 @@ class BoardRecommendation(Base):
     model = Column(String(128))
     note = Column(Text)  # why the rule fallback was used, if it was
     created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+# === 公司事件（docs/design/a-stock-data-adoption.md 第 3 节，src/services/stock_event_service.py）===
+
+class StockEvent(Base):
+    """One company event (业绩预告 / 快报、增减持、回购、解禁、质押、机构调研) of one A-share."""
+
+    __tablename__ = 'stock_event'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, index=True)
+    kind = Column(String(24), nullable=False, index=True)
+    # 公告日；解禁为解禁日（可能是未来日期）；质押为统计截止日
+    event_date = Column(Date, nullable=False, index=True)
+    title = Column(String(300), nullable=False)
+    payload = Column(Text)  # original fields (JSON)
+    payload_hash = Column(String(40), nullable=False)
+    source = Column(String(16), nullable=False, default='tushare')
+    fetched_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('code', 'kind', 'event_date', 'payload_hash', name='uix_stock_event_identity'),
+        Index('ix_stock_event_code_kind_date', 'code', 'kind', 'event_date'),
+    )
+
+
+class MacroSeries(Base):
+    """宏观和指数数据（src/services/macro_service.py）：每个序列、每个期间一行，数值为 JSON。"""
+
+    __tablename__ = 'macro_series'
+
+    series = Column(String(48), primary_key=True)  # pmi / money / social_financing / lpr / index_valuation / index_weight:<code>
+    period = Column(String(16), primary_key=True)  # YYYYMM 或 YYYYMMDD
+    value = Column(Text, nullable=False, default='{}')
+    source = Column(String(16), nullable=False, default='tushare')
+    fetched_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class StockEventIngest(Base):
+    """Which announcement days of which event kind have been stored for the whole market."""
+
+    __tablename__ = 'stock_event_ingest'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String(24), nullable=False)
+    ann_date = Column(Date, nullable=False)
+    rows = Column(Integer, nullable=False, default=0)
+    status = Column(String(16), nullable=False)  # ok / failed
+    error = Column(String(500))
+    fetched_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+    __table_args__ = (UniqueConstraint('kind', 'ann_date', name='uix_stock_event_ingest_day'),)
 
 
 # === 次日计划（docs/daily-plan-api.md，src/services/daily_plan_service.py）===
@@ -2079,6 +2141,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_stock_daily_canonical_id()
             self._ensure_intelligence_item_scope_values()
             self._ensure_intelligence_item_news_columns()
+            self._ensure_market_daily_ladder_columns()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
             self._ensure_chat_session_schema()
@@ -2930,6 +2993,31 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                         )
                         if delay > 0:
                             time.sleep(delay)
+                        continue
+                    raise
+
+    def _ensure_market_daily_ladder_columns(self) -> None:
+        """Additive migration: nullable 连板梯队 columns on ``market_daily``."""
+        table = MarketDaily.__tablename__
+        try:
+            existing = {col["name"] for col in inspect(self._engine).get_columns(table)}
+        except Exception as exc:
+            logger.warning("market_daily 连板列检查失败，已跳过: %s", exc)
+            return
+        for column, column_type in _MARKET_DAILY_LADDER_COLUMN_SQL.items():
+            if column in existing:
+                continue
+            for attempt in range(self._sqlite_write_retry_max + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_engine and self._is_sqlite_duplicate_column_error(exc, column):
+                        break
+                    if (self._is_sqlite_engine and self._is_sqlite_locked_error(exc)
+                            and attempt < self._sqlite_write_retry_max):
+                        time.sleep(self._sqlite_write_retry_base_delay * (2 ** attempt))
                         continue
                     raise
 

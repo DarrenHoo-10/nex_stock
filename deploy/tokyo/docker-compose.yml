@@ -36,6 +36,7 @@ services:
       - python
       - main.py
       - --serve
+      - --require-serve
       - --schedule
       - --no-run-immediately
       - --host

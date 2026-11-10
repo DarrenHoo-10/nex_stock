@@ -20,6 +20,13 @@ if TYPE_CHECKING:
     from src.services.agent_chat_session_service import AgentChatSessionService, ResolvedChatTurn
 
 
+def _has_api_tools(backend: Any) -> bool:
+    """Whether this backend's tools include call_api (the assistant's chat registry)."""
+    registry = getattr(backend, "tool_registry", None)
+    resolve = getattr(registry, "resolve", None)
+    return callable(resolve) and resolve("call_api") is not None
+
+
 @dataclass(frozen=True)
 class PreparedAgentChatTurn:
     """A persisted user turn that is ready for backend execution."""
@@ -126,6 +133,7 @@ class AgentChatExecutor:
             include_provider_trace=not self.backend.runtime_owns_loop,
             strict_initial_stock_scope=self.backend.runtime_owns_loop,
             user_id=acting_user,
+            api_access=_has_api_tools(self.backend),
             **resolved_kwargs,
         )
         baseline_len = len(prepared.history_messages) + 2

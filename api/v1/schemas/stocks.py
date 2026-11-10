@@ -131,6 +131,17 @@ class IntradayBar(BaseModel):
     amount: Optional[float] = Field(None, description="成交额（元）")
 
 
+class OpeningAuctionPoint(BaseModel):
+    time: str
+    price: float
+    volume: Optional[float] = Field(None, description="最终撮合成交量（股），试撮报价不提供")
+
+
+class OpeningAuctionResponse(BaseModel):
+    source: Optional[Literal["ashareapi", "tushare", "biying"]] = None
+    points: List[OpeningAuctionPoint]
+
+
 class StockIntradayResponse(BaseModel):
     """某个交易日的分时（5 分钟）行情响应"""
 
@@ -217,3 +228,92 @@ class StockProfileResponse(BaseModel):
     portfolio: StockProfilePortfolioBlock
     monitors: StockProfileMonitorBlock
     evidence_quality: StockProfileEvidenceQuality
+
+
+class StockEventItem(BaseModel):
+    """一条公司事件（业绩预告 / 快报、股东增减持、回购、限售解禁、股权质押、机构调研、券商研报、龙虎榜、
+    打板、热股榜、东方财富风险名单）。"""
+
+    kind: Literal[
+        "forecast", "express", "holder_trade", "repurchase", "share_float", "pledge", "survey", "research",
+        "dragon_tiger", "limit_board", "hot_rank", "risk_watch", "price_anomaly",
+    ] = Field(..., description="事件类型")
+    kind_label: str = Field(..., description="事件类型中文名")
+    event_date: str = Field(
+        ...,
+        description=(
+            "公告日；解禁为解禁日（可能在未来）；质押为统计截止日；研报为报告日；龙虎榜、打板、热股榜、异常波动为交易日；"
+            "重点监控名单为名单开始日（结束日在 payload.end）"
+        ),
+    )
+    title: str = Field(..., description="一句话中文摘要")
+    payload: Dict[str, object] = Field(default_factory=dict, description="Tushare 原始字段")
+    source: str = Field(..., description="数据来源（tushare / eastmoney）")
+
+
+class StockEventsResponse(BaseModel):
+    """个股公司事件列表和按固定规则算出的风险。"""
+
+    stock_code: str
+    as_of: str = Field(..., description="计算风险时的日期")
+    events: List[StockEventItem]
+    risks: List[str] = Field(default_factory=list, description="按固定规则得出的风险：近期解禁、大股东减持、高质押、业绩预告转差")
+    fetch: Dict[str, object] = Field(default_factory=dict, description="本次按需从 Tushare 补取时各类事件的结果（没有补取时为空）")
+
+
+class StockResearchResponse(BaseModel):
+    """个股券商研报：每份报告的评级、目标价、盈利预测，以及按机构去重后的一致预期。"""
+
+    stock_code: str
+    as_of: str
+    summary: Dict[str, object] = Field(
+        default_factory=dict,
+        description=(
+            "一致预期：reports 报告数、institutions 机构数、ratings 评级分布、consensus 按预测年度的 EPS（元）和"
+            "净利润（net_profit_yi，亿元）的均值 / 中位数 / 最小 / 最大、target_price 目标价；每家机构只算最新一份"
+        ),
+    )
+    reports: List[StockEventItem] = Field(default_factory=list, description="研报列表（kind=research），新的在前")
+    fetch: Dict[str, object] = Field(default_factory=dict, description="本次按需从 Tushare 补取的结果（没有补取时为空）")
+
+
+class StockCapitalResponse(BaseModel):
+    """个股资金面：两融、主力资金、龙虎榜、北向。各部分独立，失败时该部分为 {status: failed, error}。"""
+
+    stock_code: str
+    as_of: str
+    margin: Dict[str, object] = Field(
+        default_factory=dict,
+        description="两融（Tushare margin_detail）：rows 每日融资余额 / 买入 / 偿还 / 融券余额（元），summary 为亿元汇总",
+    )
+    fund_flow: Dict[str, object] = Field(
+        default_factory=dict, description="主力资金（新浪个股历史资金流）：rows 每日主力净流入（元），summary 近 5 日合计（亿元）",
+    )
+    dragon_tiger: List[StockEventItem] = Field(
+        default_factory=list, description="近 30 天龙虎榜（每日入库，payload 含上榜原因、席位、机构和沪深股通净额）",
+    )
+    dragon_tiger_status: Dict[str, object] = Field(default_factory=dict)
+    northbound: Dict[str, object] = Field(
+        default_factory=dict, description="全市场北向 / 南向（Tushare moneyflow_hsgt，百万元），口径见 note",
+    )
+
+
+class StockQaItem(BaseModel):
+    """一条已回复的投资者问答。"""
+
+    question: str
+    answer: str
+    asked_at: Optional[str] = Field(None, description="提问时间（北京时间）")
+    answered_at: Optional[str] = Field(None, description="回复时间（北京时间）")
+    platform: Literal["irm", "sse_e"] = Field(..., description="irm 巨潮互动易（深市）/ sse_e 上证e互动（沪市）")
+    platform_label: str
+
+
+class StockQaResponse(BaseModel):
+    """个股投资者问答（只含已回复）。"""
+
+    stock_code: str
+    platform: Optional[Literal["irm", "sse_e"]] = Field(None, description="该股所在的问答平台；北交所为空")
+    coverage: str = Field(..., description="覆盖说明")
+    items: List[StockQaItem]
+    fetch: Dict[str, object] = Field(default_factory=dict, description="本次是否从平台刷新及结果")

@@ -44,6 +44,11 @@ export type StockIntradayBar = {
   amount?: number | null;
 };
 
+export type OpeningAuction = {
+  source: 'ashareapi' | 'tushare' | 'biying' | null;
+  points: { time: string; price: number; volume?: number | null }[];
+};
+
 export type StockIntradayResponse = {
   stockCode: string;
   tradeDate: string;
@@ -78,6 +83,13 @@ export const stocksApi = {
       { params: { period: 'daily', days: options.days ?? 250 }, signal: options.signal, timeout: 60000 },
     );
     return toCamelCase<StockHistoryResponse>(response.data);
+  },
+
+  async getOpeningAuction(code: string, date: string, signal: AbortSignal): Promise<OpeningAuction> {
+    const response = await apiClient.get<OpeningAuction>(
+      `/api/v1/stocks/${encodeURIComponent(code)}/opening-auction`, { params: { date }, signal },
+    );
+    return response.data;
   },
 
   /** 5-minute bars of one trading day (`YYYY-MM-DD`); A-share only, 503 when no minute source is configured. */

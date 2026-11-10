@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 VISIBLE_ROLES = {"user", "assistant"}
 SUMMARY_USER_PREFIX = "[系统生成的历史对话摘要，仅供延续本会话]"
 SUMMARY_LLM_TIMEOUT_SECONDS = 20
+SUMMARY_LLM_MAX_TIMEOUT_SECONDS = 300
 # Visible messages kept when no compression applies (no summary, or automatic compression off).
 FALLBACK_HISTORY_MESSAGES = 20
 
@@ -281,10 +282,7 @@ def _build_visible_history_state(
     preset = get_agent_context_compression_preset(
         getattr(config, "agent_context_compression_profile", None)
     )
-    trigger_tokens = _coerce_int(
-        getattr(config, "agent_context_compression_trigger_tokens", preset.trigger_tokens),
-        default=preset.trigger_tokens,
-    )
+    trigger_tokens = resolve_compression_trigger_tokens(config, preset)
     protected_turns = _coerce_int(
         getattr(config, "agent_context_protected_turns", preset.protected_turns),
         default=preset.protected_turns,
@@ -474,12 +472,13 @@ def _generate_summary(
     to_summarize: Sequence[VisibleMessage],
     max_tokens: int,
 ) -> Tuple[Optional[str], Any]:
+    summary_messages = build_summary_messages(previous_summary, to_summarize)
     try:
         response = llm_adapter.call_text(
-            build_summary_messages(previous_summary, to_summarize),
+            summary_messages,
             temperature=0,
             max_tokens=max_tokens,
-            timeout=SUMMARY_LLM_TIMEOUT_SECONDS,
+            timeout=_summary_timeout_seconds(estimate_messages_tokens(summary_messages, config)),
         )
     except Exception as exc:
         logger.warning("Conversation summary LLM call raised: %s", exc)
@@ -586,14 +585,49 @@ class ChatCompactResult:
     tokens_after: int = 0
 
 
+def resolve_compression_trigger_tokens(config: Any, preset: Any = None) -> int:
+    """History size that triggers automatic compression.
+
+    ``AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO`` x the Agent model's context
+    window when the window is known and the ratio is > 0; otherwise the fixed
+    ``AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS`` (or the profile preset).
+    """
+    if preset is None:
+        preset = get_agent_context_compression_preset(
+            getattr(config, "agent_context_compression_profile", None)
+        )
+    fixed = _coerce_int(
+        getattr(config, "agent_context_compression_trigger_tokens", preset.trigger_tokens),
+        default=preset.trigger_tokens,
+    )
+    try:
+        ratio = float(getattr(config, "agent_context_compression_trigger_ratio", 0) or 0)
+    except (TypeError, ValueError):
+        ratio = 0.0
+    if ratio <= 0:
+        return fixed
+    try:
+        from src.services.agent_model_service import resolve_model_context_window
+
+        window = resolve_model_context_window(config)
+    except Exception as exc:  # unknown window -> fixed trigger
+        logger.debug("Context window lookup failed; using fixed compression trigger: %s", exc)
+        window = None
+    if not window:
+        return fixed
+    return max(1000, int(window * ratio))
+
+
+def _summary_timeout_seconds(input_tokens: int) -> int:
+    """Large histories need longer than the base timeout to be summarized."""
+    return max(SUMMARY_LLM_TIMEOUT_SECONDS, min(SUMMARY_LLM_MAX_TIMEOUT_SECONDS, input_tokens // 4000))
+
+
 def _compression_limits(config: Any) -> Tuple[Any, int, int]:
     preset = get_agent_context_compression_preset(
         getattr(config, "agent_context_compression_profile", None)
     )
-    trigger_tokens = _coerce_int(
-        getattr(config, "agent_context_compression_trigger_tokens", preset.trigger_tokens),
-        default=preset.trigger_tokens,
-    )
+    trigger_tokens = resolve_compression_trigger_tokens(config, preset)
     protected_turns = _coerce_int(
         getattr(config, "agent_context_protected_turns", preset.protected_turns),
         default=preset.protected_turns,

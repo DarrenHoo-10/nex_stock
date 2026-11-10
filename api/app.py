@@ -410,6 +410,11 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     app.include_router(api_v1_router, prefix="/api/v1")
     app.include_router(user_center_router)
     add_error_handlers(app)
+
+    # The assistant's call_api tool dispatches /api/v1 routes in-process with this app's state.
+    from api.internal_client import register_running_app
+
+    register_running_app(app)
     
     # ============================================================
     # 根路由和健康检查

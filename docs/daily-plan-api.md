@@ -100,8 +100,23 @@
 | GET | `/plan/runs/latest` | `{"run": PlanRun \| null}` |
 | GET | `/plan/runs/{run_id}` | 指定运行详情：步骤（板块 / 选股 / 计划 / 换股 / 推送）、计数、失败项、飞书推送状态与预览 |
 | POST | `/plan/runs` | 手动运行，返回 202 与运行记录 |
+| GET | `/stocks/{code}/qa?days=30` | 个股已回复的投资者问答：深市来自巨潮互动易、沪市来自上证e互动（`platform`、`coverage`、`items: [{question, answer, asked_at, answered_at, platform}]`）；北交所返回空列表并说明原因 |
+| GET | `/stocks/{code}/events?kinds=&days=30` | 个股公司事件（业绩预告 / 快报、增减持、回购、解禁、质押、调研、券商研报 `research`、龙虎榜 `dragon_tiger`、开盘啦打板 `limit_board`、热股榜 `hot_rank`、东方财富重点监控名单 `risk_watch`、严重异常波动 `price_anomaly`）与按固定规则算出的风险；只接受 A 股个股代码，指数代码返回 400 |
+| GET | `/stocks/{code}/research?days=90` | 券商研报（Tushare `report_rc`）：每份报告的机构、评级、目标价、各年度 EPS / 净利润预测，以及每家机构只算最新一份的一致预期（`summary.consensus`，EPS 元、净利润亿元）和评级分布 |
+| GET | `/stocks/{code}/capital?days=20` | 资金面：两融（`margin`）、新浪主力资金（`fund_flow`）、近 30 天龙虎榜（`dragon_tiger`，含席位、机构和沪深股通净额）、全市场北向 / 南向（`northbound`，口径见 `note`）；每部分独立，某一来源失败时该部分为 `{status: failed, error}` |
 
 字段的完整定义见 `api/v1/schemas/boards.py` 与 `api/v1/schemas/daily_plan.py`，Web 侧类型见 `apps/dsa-web/src/types/boards.ts` 与 `apps/dsa-web/src/types/dailyPlan.ts`。
+
+### 公司事件与计划风险
+
+`src/services/stock_event_service.py` 每天把全市场的公司事件存进 `stock_event`（Tushare，见 [数据源说明](data-sources.md) 2.1）。生成次日计划时，每只股票按固定规则读出风险，写进计划的 `risks`，同时作为「公司事件」一节写进给模型的提示词：
+
+- 未来 30 天解禁占流通股 1% 以上；
+- 近 30 天单个股东减持占总股本 0.5% 以上；
+- 最新一期股权质押比例 50% 以上；
+- 近 60 天业绩预告为预减、首亏、续亏或略减。
+
+生成计划时只读本地表，不发请求；本地没有数据（例如没有配置 Tushare）时这几条风险为空。
 
 ## Web 页面
 
@@ -131,6 +146,7 @@
 - `kind=stock`：这只股票是当次提问的默认对象。会话里没有用文字确认过的股票时，没点名对象的问题（如「明天怎么看」「风险呢」）按它回答，工具也只允许查它；问题里点名了别的股票时以点名的为准，并去掉 `daily_plan`。它不写入会话状态，所以取消抽屉里的对象后，后续提问不再带它。顶层的 `stock_code` 仍只是提示，不会单独选定对象。
 - `kind=board`：板块 id、交易日写进提示词，模型用 `get_board_signal` 查询判定。
 - 交易日和周期（短线 / 波段）以一行文字带进对话上下文（`src/agent/executor.py::format_daily_plan_context_line`）。
+- 助手可以通过 `read_api_doc` / `call_api` 读写本文档里的全部接口（账户与持仓 `/plan/account`、`/plan/holdings`，计划 `/plan/stocks/{code}`，自选 `/stocks/watchlist` 等），包括改持仓、加自选、手动运行计划；说明见 `full-guide.md` 的「Agent 工具数据缓存与持久化」。
 - `kind=none` 且问题里也没有对象时（如「寒潮有哪些股票值得关注」），个股工具可以查任何能校验通过的代码（`open` 作用域），题材新闻用 `search_market_news` 查询。
 
 ### 设置页写入的配置项
@@ -143,6 +159,7 @@
 - 模型渠道（同一页左侧渠道列表、右侧编辑）：`LLM_CHANNELS` 与 `LLM_<NAME>_PROTOCOL`、`_BASE_URL`、`_API_KEY(S)`、`_ENABLED`、`_MODELS`（只保存打开的模型）；渠道名只能用小写字母、数字和下划线（`darren-cpa` 保存为 `darren_cpa`）；OpenAI 兼容、DeepSeek、Anthropic Messages 格式可经 `POST /system/config/llm/discover-models` 获取模型列表，其他格式手动添加；正在被某个用途使用的模型不能关闭，所在渠道不能停用或删除
 - 选股：`SCREENING_ENABLED`（选股页「开启选股」按钮）
 - 异动阈值：`BOARD_ANOMALY_THRESHOLDS`（经 `PUT /boards/thresholds` 写入）
+- 数据状态（数据源行的「配置 / 修改」）：每个需要配置的数据源编辑 `GET /data/overview` 里该数据源的 `config_keys`——Tushare `TUSHARE_TOKEN`；TickFlow `TICKFLOW_API_KEY`、`TICKFLOW_PRIORITY`；必盈 `BIYING_LICENCE`、`BIYING_TIMEOUT_SECONDS`；Longbridge `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`、`LONGBRIDGE_OAUTH_CLIENT_ID`；富途 `FUTU_OPEND_HOST`、`FUTU_OPEND_PORT`；Finnhub `FINNHUB_API_KEY`；Alpha Vantage `ALPHAVANTAGE_API_KEY`。内置数据源（AkShare、Efinance 等）没有可配置项。密钥类字段不回显，留空表示不修改；保存时带 `reload_now`，立即生效，随后刷新数据源状态
 
 `BOARD_ANOMALY_THRESHOLDS` 已随板块异动服务落地：值是一个 JSON 对象，只写被覆盖的键（空表示全部默认），字典型阈值可只写其中的字段（如 `{"excess_floor": {"concept": 3}}`）；它在 `src/core/config_registry.py` 中列为不在通用设置页显示的键（由异动阈值页面通过 `PUT /boards/thresholds` 编辑），`.env.example` 里有说明。`POSITION_*` 与 `DAILY_PLAN_ENABLED` 同样列为不在通用设置页显示的键（由新设置页的「仓位规则」「运行和推送」编辑），默认值、取值范围和含义见上面的「次日计划服务」，`.env.example` 里有说明；保存 `DAILY_PLAN_ENABLED` 会重建运行时调度器，其余键下一次读取即生效（非法值回到默认值并写日志）。
 

@@ -344,11 +344,12 @@ Hermes 是保留渠道名，只支持本机 loopback `/v1` OpenAI-compatible gen
 
 ### 问股可见对话上下文压缩
 
-默认情况下，问股仍按历史行为只注入最近 20 条可见对话。以下 LLM 压缩只适用于「默认模型」问股：Codex Agent 始终使用最近 20 条用户可见对话，不会调用 `AGENT_LITELLM_MODEL` 生成历史摘要。切换到 Codex 不会清空已保存的压缩配置，切回「默认模型」后会继续生效。需要为默认模型长会话省 token 时，可开启：
+「默认模型」问股默认开启自动压缩：可见对话历史达到 Agent 模型上下文窗口的 80%（`AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO=0.8`，窗口取 LiteLLM 已知的 `max_input_tokens`）时，把较早的对话折叠成滚动摘要，在此之前完整保留原文。模型窗口未知或比例设为 `0` 时，改用固定阈值 `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS`（留空跟随 profile）。比例只对比对话历史估算，不含系统提示和工具结果；窗口很大的模型（例如 1M）在压缩前每轮可能带上很长的历史，需要省 token 时调低比例或设 `0` 并用固定阈值。摘要调用的超时随待摘要内容变长（20–300 秒）。设 `AGENT_CONTEXT_COMPRESSION_ENABLED=false` 恢复旧行为（只注入最近 20 条可见对话）。Codex Agent 始终使用最近 20 条用户可见对话，不会调用 `AGENT_LITELLM_MODEL` 生成历史摘要。切换到 Codex 不会清空已保存的压缩配置，切回「默认模型」后会继续生效。
 
 ```env
 AGENT_CONTEXT_COMPRESSION_ENABLED=true
 AGENT_CONTEXT_COMPRESSION_PROFILE=balanced
+AGENT_CONTEXT_COMPRESSION_TRIGGER_RATIO=0.8
 # 留空则跟随 profile preset
 AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS=
 AGENT_CONTEXT_PROTECTED_TURNS=

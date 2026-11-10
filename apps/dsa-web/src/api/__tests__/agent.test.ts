@@ -131,4 +131,14 @@ describe('agentApi', () => {
     expect(parsed.status).toBe(409);
     expect(parsed.message).toContain('刷新');
   });
+
+  it('keeps the intraday 503 reason from the backend and only falls back for a bare 503', () => {
+    const parsed = parseApiError({ response: { status: 503, data: {
+      error: 'intraday_unavailable', message: '数据源没有这一天的分时数据，可能当天停牌或不是交易日。', reason: 'no_bars',
+    } } });
+    expect(parsed.code).toBe('intraday_unavailable');
+    expect(parsed.message).toBe('数据源没有这一天的分时数据，可能当天停牌或不是交易日。');
+    expect(parsed.category).toBe('http_error');
+    expect(parseApiError({ response: { status: 503, data: {} } }).category).toBe('upstream_network');
+  });
 });
