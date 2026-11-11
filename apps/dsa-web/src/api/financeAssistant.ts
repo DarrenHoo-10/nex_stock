@@ -12,6 +12,7 @@ export type Message = {
     content: string;
     seq: number;
     input_status?: string;
+    source_key?: string;
 };
 export type Topic = {
     conversationId: string;
@@ -26,16 +27,6 @@ export type Topic = {
         id: string;
         status: string;
     } | null;
-};
-export type Task = {
-    id: string;
-    objective: string;
-    status: string;
-    effects: Array<{
-        id: string;
-        tool_name: string;
-        status: string;
-    }>;
 };
 export type Models = {
     selection?: {
@@ -58,6 +49,8 @@ export type Models = {
     }>;
 };
 export type Feed = {
+    sync?: { privacyEpoch: number; bootId: string };
+    hasMore?: boolean;
     messages: Message[];
     streaming: Array<{
         taskId: string;
@@ -78,8 +71,7 @@ export const financeApi = {
   },
   connect:async()=>(await apiClient.post<{managed:boolean;bound:boolean}>(base+'connect',{})).data,
   topics:async()=>(await apiClient.get<{topics:Topic[]}>(base+'topics')).data.topics,
-  messages:async(conversationId:string)=>(await apiClient.get<Feed>(base+'messages',{params:{conversationId}})).data,
-  tasks:async(conversationId:string)=>(await apiClient.get<{tasks:Task[]}>(base+'tasks',{params:{conversationId}})).data.tasks,
+  messages:async(conversationId:string, cursor?: {after: number} | {before: number})=>(await apiClient.get<Feed>(base+'messages',{params:{conversationId,...cursor}})).data,
   models:async()=>(await apiClient.get<Models>(base+'models')).data,
   action:async<T=unknown>(action:string,data:Record<string,unknown>)=>(await apiClient.post<T>(base+action,data)).data,
 };

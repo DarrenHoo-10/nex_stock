@@ -96,19 +96,22 @@ describe('managed finance assistant', () => {
         fireEvent.click(await screen.findByRole('button', { name: /^群里的复盘/ }));
         fireEvent.change(screen.getByLabelText('金融助手消息'), { target: { value: '当前会话草稿' } });
         expect(screen.queryByText(/任务记录/)).toBeNull();
-        const remove = await screen.findByLabelText('删除会话 第二个会话');
+        const remove = await screen.findByLabelText('会话操作 第二个会话');
         fireEvent.click(remove);
+        fireEvent.click(screen.getByRole('menuitem', {name: '删除会话'}));
         fireEvent.click(screen.getByRole('button', { name: '取消' }));
         expect(api.action).not.toHaveBeenCalledWith('delete', expect.anything());
         fireEvent.click(remove);
+        fireEvent.click(screen.getByRole('menuitem', {name: '删除会话'}));
         fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
-        await waitFor(() => expect(screen.queryByLabelText('删除会话 第二个会话')).toBeNull());
+        await waitFor(() => expect(screen.queryByLabelText('会话操作 第二个会话')).toBeNull());
         expect(screen.getByLabelText('金融助手消息')).toHaveValue('当前会话草稿');
-        fireEvent.click(screen.getByLabelText('删除会话 群里的复盘'));
+        fireEvent.click(screen.getByLabelText('会话操作 群里的复盘'));
+        fireEvent.click(screen.getByRole('menuitem', {name: '删除会话'}));
         api.action.mockRejectedValueOnce(Error('delete failed'));
         fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
         expect(await screen.findByText('delete failed')).toBeVisible();
-        expect(screen.getByLabelText('删除会话 群里的复盘')).toBeInTheDocument();
+        expect(screen.getByLabelText('会话操作 群里的复盘')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
         expect(await screen.findByText('暂无历史会话')).toBeVisible();
         expect(screen.getByLabelText('金融助手消息')).toHaveValue('新会话的草稿');
@@ -116,7 +119,7 @@ describe('managed finance assistant', () => {
     it('preserves board identifiers and the displayed trade date', () => { expect(financeSource({ kind: 'board', boardId: 'BK1', boardName: '寒潮', tradeDate: '2026-11-09' })).toEqual({ kind: 'board', id: 'BK1', name: '寒潮', tradeDate: '2026-11-09' }); });
 });
 
-it('scopes read/edit/retry and surfaces unknown business effects without starting another task',async()=>{
+it('reads and edits queued messages without polling execution history',async()=>{
  vi.spyOn(document,'hasFocus').mockReturnValue(true);
  api.messages.mockResolvedValue({messages:[{id:'pending',role:'user',content:'pending question',seq:4,input_status:'pending'}],streaming:[]});
  api.tasks.mockResolvedValue([{id:'failed-task',objective:'write action',status:'failed',effects:[{id:'unknown-call',tool_name:'connector.call',status:'unknown'}]}]);
@@ -124,7 +127,48 @@ it('scopes read/edit/retry and surfaces unknown business effects without startin
  await waitFor(()=>expect(api.action).toHaveBeenCalledWith('read',{conversationId:'same-core-topic',seq:4}));
  fireEvent.click(await screen.findByRole('button',{name:'编辑排队消息'}));fireEvent.change(screen.getByLabelText('金融助手消息'),{target:{value:'corrected question'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
  await waitFor(()=>expect(api.action).toHaveBeenCalledWith('edit',expect.objectContaining({conversationId:'same-core-topic',messageId:'pending',text:'corrected question'})));
- fireEvent.click(screen.getByText('任务记录 · 1'));expect(screen.getByText('connector.call · unknown')).toBeInTheDocument();
- api.action.mockRejectedValueOnce(Error('结果未知，请先核对'));fireEvent.click(screen.getByRole('button',{name:'重试任务'}));expect(await screen.findByText('结果未知，请先核对')).toBeInTheDocument();expect(api.action).toHaveBeenCalledWith('retry',expect.objectContaining({conversationId:'same-core-topic',taskId:'failed-task'}));
+ expect(screen.queryByText(/任务记录/)).toBeNull();
+ expect(api.tasks).not.toHaveBeenCalled();
  vi.restoreAllMocks();
+});
+
+it('polls only new messages and resets previously displayed history when privacy changes', async () => {
+    vi.useFakeTimers();
+    try {
+        const sync = {bootId: 'one', privacyEpoch: 0};
+        const record = (seq: number, content: string) => ({id: String(seq), seq, content, role: 'assistant'});
+        api.messages.mockResolvedValueOnce({sync, messages: [record(10,'历史文本')], streaming: []})
+            .mockResolvedValueOnce({sync, messages: [record(11,'新回复')], streaming: []})
+            .mockResolvedValueOnce({sync: {...sync, privacyEpoch: 1}, messages: [], streaming: []})
+            .mockResolvedValueOnce({sync: {...sync, privacyEpoch: 1}, messages: [record(11,'新回复')], streaming: []});
+        render(<FinanceAssistantBoundary legacy={null}/>);
+        await act(async () => {});
+        await act(async () => { fireEvent.click(screen.getByRole('button', {name: /^群里的复盘/})); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+        expect(api.messages).toHaveBeenLastCalledWith(topic.conversationId, {after:10});
+        expect(screen.getByText('历史文本')).toBeVisible();
+        expect(screen.getByText('新回复')).toBeVisible();
+        expect(api.models).toHaveBeenCalledTimes(1); expect(api.topics).toHaveBeenCalledTimes(1);
+        await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+        expect(api.messages).toHaveBeenLastCalledWith(topic.conversationId);
+        expect(screen.queryByText('历史文本')).toBeNull();
+    } finally { vi.useRealTimers(); }
+});
+
+it('shows the outgoing bubble before acknowledgment and keeps the next draft when history catches up', async () => {
+    let accept!: (result: {conversationId: string; messageId: string}) => void;
+    api.action.mockImplementation((action) => action === 'input' ? new Promise(resolve => {accept = resolve;}) : Promise.resolve({}));
+    render(<FinanceAssistantBoundary legacy={null}/>);
+    fireEvent.click(await screen.findByRole('button', {name: /^群里的复盘/}));
+    await screen.findByText('公开答案');
+    const input = screen.getByLabelText('金融助手消息');
+    fireEvent.change(input, {target: {value:'先发送这条'}});
+    fireEvent.click(screen.getByRole('button', {name:'发送'}));
+    expect(screen.getByText('先发送这条')).toBeVisible();
+    expect(input).toHaveValue('');
+    fireEvent.change(input, {target: {value:'下一条草稿'}});
+    api.messages.mockResolvedValue({messages:[{id:'confirmed', seq:3, role:'user', content:'先发送这条'}], streaming:[]});
+    await act(async () => accept({conversationId:topic.conversationId, messageId:'confirmed'}));
+    expect(screen.getAllByText('先发送这条')).toHaveLength(1);
+    expect(input).toHaveValue('下一条草稿');
 });

@@ -1,9 +1,9 @@
 import { FinanceModelControls } from './FinanceModelControls';
 import { getParsedApiError } from '../../../api/error';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { financeApi as api, type Feed, type Models, type Source, type Task, type Topic } from '../../../api/financeAssistant';
+import { financeApi as api, type Feed, type Models, type Source, type Message, type Topic } from '../../../api/financeAssistant';
 import { usePlanUiStore, type AssistantContext } from '../../../stores/planUiStore';
 import { GlassDrawer } from '../GlassDrawer';
 import { financeSource } from './financeSource';
@@ -35,88 +35,169 @@ export function FinanceAssistantBoundary({ legacy, context, drawer = false }: {
 function ManagedFinanceAssistant({ source, compact = false }: {
     source?: Source; compact?: boolean;
 }) {
-    const [topics, setTopics] = useState<Topic[]>([]), [selected, setSelected] = useState<string | null>(null), [drafting, setDrafting] = useState(true), [draft, setDraft] = useState(''), [feed, setFeed] = useState<Feed>({ messages: [], streaming: [] }), [tasks, setTasks] = useState<Task[]>([]), [models, setModels] = useState<Models>(), [sending, setSending] = useState(false), [error, setError] = useState(''), [editing, setEditing] = useState<string>();
+    const [topics, setTopics] = useState<Topic[]>([]), [selected, setSelected] = useState<string | null>(null), [drafting, setDrafting] = useState(true), [draft, setDraft] = useState(''), [feed, setFeed] = useState<Feed>({ messages: [], streaming: [] }), [models, setModels] = useState<Models>(), [sending, setSending] = useState(false), [error, setError] = useState(''), [editing, setEditing] = useState<string>();
     const current = useRef<string | null>(null), epoch = useRef(0), read = useRef(new Map<string, number>()), drafts = useRef(new Map<string, string>()), request = useRef<{
         text: string;
         topic: string | null;
         edit?: string;
         id: string;
-    } | null>(null), retryIds = useRef(new Map<string, string>());
+    } | null>(null);
     const active = topics.find(t => t.conversationId === selected), selection = models?.selection;
     const [topicState, setTopicState] = useState<'loading' | 'ready' | 'failed'>('loading');
     const [topicError, setTopicError] = useState(''), [savingModel, setSavingModel] = useState(false);
-    const pending = useRef<{ topic: string | null; promise: Promise<void> } | null>(null);
-    function refresh(force = false): Promise<void> {
-        const topic = current.current;
-        if (!force && pending.current?.topic === topic) return pending.current.promise;
-        const version = ++epoch.current;
-        const live = () => version === epoch.current && topic === current.current;
-        const report = (failure: unknown) => { if (live()) setError(getParsedApiError(failure).message); };
-        const list = api.topics().then(value => {
-            if (!live()) return;
+    const listVersion = useRef(0), catalogVersion = useRef(0), busyList = useRef(false);
+    const lastFeed = useRef<Feed>({ messages: [], streaming: [] });
+    const pending = useRef<Promise<void> | null>(null);
+    const [loading, setLoading] = useState(false), [older, setOlder] = useState(false);
+    const transcript = useRef<HTMLDivElement>(null), follow = useRef(true);
+    const [outgoing, setOutgoing] = useState<{topic: string | null; text: string; clientId: string; messageId?: string}>();
+    const anchor = useRef<{height: number; top: number} | null>(null), paging = useRef(false);
+
+    function refreshList(force = false) {
+        if (busyList.current && !force) return;
+        const version = ++listVersion.current, topic = current.current;
+        busyList.current = true;
+        void api.topics().then(value => {
+            if (version !== listVersion.current) return;
             setTopics(value); setTopicState('ready'); setTopicError('');
-            if (topic && !value.some(item => item.conversationId === topic)) {
-                discardRemovedSession(topic);
-            }
+            if (topic && topic === current.current && !value.some(item => item.conversationId === topic)) discardRemovedSession(topic);
         }).catch(failure => {
-            if (live()) { setTopicState('failed'); setTopicError(getParsedApiError(failure).message); }
-        });
-        const catalog = api.models().then(value => { if (live()) setModels(value); }).catch(report);
-        const messages = topic ? api.messages(topic).then(async value => {
+            if (version === listVersion.current) { setTopicState('failed'); setTopicError(getParsedApiError(failure).message); }
+        }).finally(() => { if (version === listVersion.current) busyList.current = false; });
+    }
+    async function loadModels() {
+        const version = ++catalogVersion.current;
+        try {
+            const value = await api.models();
+            if (version === catalogVersion.current) setModels(value);
+        } catch (failure) { if (version === catalogVersion.current) setError(getParsedApiError(failure).message); }
+    }
+    function refresh(force = false) {
+        const topic = current.current;
+        if (!topic || (!force && pending.current)) return;
+        const version = ++epoch.current;
+        const live = () => version === epoch.current && current.current === topic;
+        const work = async () => {
+            const previous = lastFeed.current;
+            const queued = previous.messages.find(message => message.input_status === 'pending');
+            const after = queued ? Math.max(0, queued.seq - 1) : previous.messages.at(-1)?.seq;
+            let next = after === undefined ? await api.messages(topic) : await api.messages(topic, {after});
             if (!live()) return;
-            setFeed(value);
-            const seq = value.messages.at(-1)?.seq ?? 0;
+            let append = after !== undefined && sameFeed(previous, next);
+            if (after !== undefined && !append) {
+                lastFeed.current = {messages: [], streaming: []};
+                setFeed(lastFeed.current); setOutgoing(undefined); setLoading(true);
+                next = await api.messages(topic);
+                if (!live()) return;
+            }
+            let rows = append ? [...lastFeed.current.messages.filter(m => m.seq <= after!), ...next.messages] : next.messages;
+            while (next.hasMore && next.messages.length) {
+                const page = await api.messages(topic, {after: next.messages.at(-1)!.seq});
+                if (!live()) return;
+                if (!sameFeed(next, page)) {
+                    next = await api.messages(topic);
+                    if (!live()) return;
+                    rows = next.messages; append = false; break;
+                }
+                rows.push(...page.messages); next = page;
+            }
+            if (!append) setOlder(rows.length >= 200);
+            const value = {...next, messages: rows};
+            lastFeed.current = value;
+            if (!append || next.messages.length || rows.length !== previous.messages.length ||
+                next.streaming.length !== previous.streaming.length ||
+                next.streaming.some((item, index) => item.taskId !== previous.streaming[index]?.taskId || item.text !== previous.streaming[index]?.text))
+                setFeed(value);
+            setLoading(false);
+            setOutgoing(old => old?.topic === topic && old.messageId && rows.some(m => m.id === old.messageId) ? undefined : old);
+            const seq = rows.at(-1)?.seq ?? 0;
             if (seq > (read.current.get(topic) ?? 0) && document.hasFocus()) {
                 await api.action('read', { conversationId: topic, seq });
                 read.current.set(topic, seq);
             }
-        }).catch(report) : undefined;
-        const history = topic ? api.tasks(topic).then(value => { if (live()) setTasks(value); }).catch(report) : undefined;
-        const promise = Promise.all([list, catalog, messages, history]).then(() => {
-            if (version === epoch.current) pending.current = null;
-        });
-        pending.current = { topic, promise };
-        return promise;
+        };
+        pending.current = work().catch(failure => {
+            if (live()) { setLoading(false); setError(getParsedApiError(failure).message); refreshList(); }
+        }).finally(() => { if (live()) pending.current = null; });
     }
+    async function loadOlder() {
+        const topic = current.current, before = lastFeed.current.messages[0]?.seq;
+        if (!topic || !before || paging.current) return;
+        const first = lastFeed.current;
+        paging.current = true;
+        try {
+            const page = await api.messages(topic, {before});
+            if (current.current !== topic || lastFeed.current.messages[0]?.seq !== before) return;
+            if (!sameFeed(first, page) || !sameFeed(lastFeed.current, page)) { refresh(true); return; }
+            const el = transcript.current;
+            if (el) anchor.current = {height: el.scrollHeight, top: el.scrollTop};
+            const value = {...lastFeed.current, messages: [...page.messages, ...lastFeed.current.messages]};
+            lastFeed.current = value; setFeed(value); setOlder(page.messages.length === 200);
+        } catch (failure) { if (topic === current.current) setError(getParsedApiError(failure).message); }
+        finally { paging.current = false; }
+    }
+    useLayoutEffect(() => {
+        const el = transcript.current;
+        if (!el) return;
+        if (anchor.current) {
+            el.scrollTop = anchor.current.top + el.scrollHeight - anchor.current.height; anchor.current = null;
+        } else if (follow.current) el.scrollTop = el.scrollHeight;
+    }, [feed, outgoing, selected]);
+    const pollMessages = useEffectEvent(() => refresh());
+    const pollList = useEffectEvent(() => refreshList());
+    const pollModels = useEffectEvent(() => { void loadModels(); });
+    const invalidateRequests = useEffectEvent(() => {
+        ++epoch.current; ++listVersion.current; ++catalogVersion.current; busyList.current = false; pending.current = null;
+    });
     useEffect(() => {
-        let stopped = false, timer: ReturnType<typeof setTimeout>;
-        async function poll() {
-            await refresh();
-            if (!stopped) timer = setTimeout(() => void poll(), 2000);
-        }
-        void poll();
-        return () => { stopped = true; clearTimeout(timer); epoch.current += 1; pending.current = null; };
+        const visible = () => document.visibilityState !== 'hidden';
+        const resume = () => { if (visible()) { pollList(); pollMessages(); pollModels(); } };
+        pollList(); pollModels();
+        const messages = setInterval(() => { if (visible()) pollMessages(); }, 2000);
+        const list = setInterval(() => { if (visible()) pollList(); }, 12000);
+        document.addEventListener('visibilitychange', resume);
+        return () => {
+            clearInterval(messages); clearInterval(list); document.removeEventListener('visibilitychange', resume);
+            invalidateRequests();
+        };
     }, []);
-    function open(topic: string | null, isDraft = false) { drafts.current.set(selected ?? 'new', draft); ++epoch.current; current.current = topic; setSelected(topic); setDrafting(isDraft); setDraft(drafts.current.get(topic ?? 'new') ?? ''); setFeed({ messages: [], streaming: [] }); setTasks([]); setEditing(undefined); request.current = null; setError(''); void refresh(true); }
+    function resetTranscript(topic: string | null) {
+        ++epoch.current; pending.current = null; follow.current = true; anchor.current = null;
+        lastFeed.current = {messages: [], streaming: []};
+        setFeed(lastFeed.current); setLoading(Boolean(topic)); setOlder(false); setOutgoing(undefined);
+    }
+    function open(topic: string | null, isDraft = false) {
+        if (topic === current.current && topic !== null) return;
+        drafts.current.set(current.current ?? 'new', draft);
+        current.current = topic; resetTranscript(topic);
+        setSelected(topic); setDrafting(isDraft); setDraft(drafts.current.get(topic ?? 'new') ?? '');
+        setEditing(undefined); request.current = null; setError('');
+        refresh(true);
+    }
     async function send() {
-        const text = draft.trim(), topic = selected;
-        if (!text || sending || (!topic && !drafting))
-            return;
+        const text = draft.trim(), topic = selected, key = topic ?? 'new';
+        if (!text || sending || (!topic && !drafting)) return;
         if (request.current?.text !== text || request.current.topic !== topic || request.current.edit !== editing)
             request.current = { text, topic, edit: editing, id: crypto.randomUUID() };
-        setSending(true);
-        setError('');
+        const input = request.current;
+        setSending(true); setError(''); setDraft(''); follow.current = true;
+        setOutgoing({topic, text, clientId: input.id});
         try {
-            const result = await api.action<{
-                conversationId: string;
-            }>(editing ? 'edit' : 'input', { text, clientId: request.current.id, ...(editing ? { messageId: editing } : {}), ...(topic ? { conversationId: topic } : { newConversation: true, ...(source ? { sourceContext: source } : {}) }) });
-            request.current = null;
-            drafts.current.delete(topic ?? 'new');
+            const result = await api.action<{conversationId: string; messageId?: string}>(editing ? 'edit' : 'input', {
+                text, clientId: input.id, ...(editing ? {messageId: editing} : {}),
+                ...(topic ? {conversationId: topic} : {newConversation: true, ...(source ? {sourceContext: source} : {})}),
+            });
+            if (request.current === input) request.current = null;
             if (current.current === topic) {
-                current.current = result.conversationId;
-                setSelected(result.conversationId);
-                setDrafting(false);
-                setDraft('');
-                setEditing(undefined);
-                await refresh(true);
+                current.current = result.conversationId; setSelected(result.conversationId); setDrafting(false); setEditing(undefined);
+                setOutgoing(result.messageId ? {topic: result.conversationId, text, clientId: input.id, messageId: result.messageId} : undefined);
+                refresh(true);
             }
-        }
-        catch (failure) {
-            setError(getParsedApiError(failure).message);
-        }
-        finally {
-            setSending(false);
-        }
+            refreshList(true);
+        } catch (failure) {
+            if (current.current === topic) { setOutgoing(undefined); setDraft(value => value || text); setError(getParsedApiError(failure).message); }
+            else if (!drafts.current.get(key)) drafts.current.set(key, text);
+        } finally { setSending(false); }
     }
     async function model(connectionId: string, name: string, reasoning?: string) {
         if (savingModel) return;
@@ -124,7 +205,7 @@ function ManagedFinanceAssistant({ source, compact = false }: {
         try {
             await api.action('model', { connectionId, model: name, version: selection?.model_selection_version ?? 0, reasoning });
             // Invalidate any catalog read that started before this write.
-            await refresh(true);
+            await loadModels();
         } catch (failure) {
             setError(getParsedApiError(failure).message);
         } finally { setSavingModel(false); }
@@ -134,12 +215,10 @@ function ManagedFinanceAssistant({ source, compact = false }: {
     function discardRemovedSession(id: string) {
         drafts.current.delete(id);
         if (current.current !== id) return;
-        ++epoch.current;
         current.current = null;
-        pending.current = null;
         request.current = null;
         setSelected(null); setDrafting(true); setDraft(drafts.current.get('new') ?? '');
-        setFeed({ messages: [], streaming: [] }); setTasks([]); setEditing(undefined); setError('');
+        resetTranscript(null); setEditing(undefined); setError('');
     }
     async function removeSession(id: string) {
         if (removing) return;
@@ -149,7 +228,7 @@ function ManagedFinanceAssistant({ source, compact = false }: {
             setConfirmDelete(undefined);
             setTopics(list => list.filter(item => item.conversationId !== id));
             discardRemovedSession(id);
-            void refresh(true);
+            refreshList(true);
         } catch (failure) { setError(getParsedApiError(failure).message); }
         finally { setRemoving(undefined); }
     }
@@ -163,12 +242,12 @@ function ManagedFinanceAssistant({ source, compact = false }: {
         <button type="button" className="btn sm" onClick={() => selectSession(null)}>＋ 新对话</button>
         {topicState === 'loading' && <small role="status">正在加载会话…</small>}
         {topicState === 'ready' && !topics.length && <small>暂无历史会话</small>}
-        {topicState === 'failed' && <div role="alert">会话加载失败：{topicError}<button type="button" onClick={() => void refresh(true)}>重试</button></div>}
+        {topicState === 'failed' && <div role="alert">会话加载失败：{topicError}<button type="button" onClick={() => refreshList(true)}>重试</button></div>}
         {topics.map(topic => <div className="finance-session-row" key={topic.conversationId}>
           <button type="button" aria-current={selected === topic.conversationId ? 'page' : undefined} onClick={() => selectSession(topic.conversationId)}>
             <strong>{topic.title}</strong><small>{topic.audience === 'public' ? '飞书话题' : '私人会话'}{topic.unread_count ? ' · ' + topic.unread_count + ' 未读' : ''}</small>
           </button>
-          <button type="button" className="finance-remove" title="删除会话" aria-label={'删除会话 ' + topic.title} onClick={() => setConfirmDelete(topic.conversationId)}>×</button>
+          <SessionActions title={topic.title} onDelete={() => setConfirmDelete(topic.conversationId)}/>
           {confirmDelete === topic.conversationId && <div className="finance-remove-confirm">
             <small>从 Stock 和 NexBot 删除此会话{topic.activeTask ? '，并停止进行中的任务' : ''}？</small>
             <button type="button" disabled={Boolean(removing)} onClick={() => void removeSession(topic.conversationId)}>确认删除</button>
@@ -177,9 +256,57 @@ function ManagedFinanceAssistant({ source, compact = false }: {
         </div>)}
       </nav>
       <div className="finance-chat">{error ? <div role="alert">{error}<button type="button" aria-label="关闭错误" onClick={()=>setError('')}>关闭</button></div> : null}
- <div className="finance-transcript"><h3>{active?.title ?? '新对话'}</h3><small>{drafting ? '私人草稿' : active?.audience === 'public' ? `回复到飞书话题${typeof active.sourceContext.chatName === 'string' ? ' · ' + active.sourceContext.chatName : ''}` : '私人话题'}</small>{drafting && source ? <p>来源：{source.name ?? source.code ?? source.id}{source.tradeDate ? ' · ' + source.tradeDate : ''}</p> : null}{feed.messages.map(m => <article key={m.id} className={'finance-message ' + m.role}><strong>{m.role === 'user' ? '我' : '金融助手'}</strong><Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>{m.input_status === 'pending' ? <button type="button" onClick={() => { setEditing(m.id); setDraft(m.content); request.current = null; }}>编辑排队消息</button> : null}</article>)}{feed.streaming.map(item => <article key={item.taskId} role="status"><Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown></article>)}{active?.activeTask && !feed.streaming.length ? <p role="status">正在研究…</p> : null}</div>{tasks.length > 0 && <details className="finance-task-list"><summary>任务记录 · {tasks.length}</summary>{tasks.map(task => <div key={task.id}><strong>{task.status}</strong> {task.objective.slice(0, 100)}{task.effects.map(effect => <small key={effect.id}>{effect.tool_name} · {effect.status}</small>)}{['failed', 'cancelled'].includes(task.status) ? <button type="button" onClick={() => { const id = retryIds.current.get(task.id) ?? crypto.randomUUID(); retryIds.current.set(task.id, id); void api.action('retry', { conversationId: selected, taskId: task.id, clientId: id }).then(() => { retryIds.current.delete(task.id); return refresh(); }).catch(e => setError(getParsedApiError(e).message)); }}>重试任务</button> : null}</div>)}</details>}<form className="finance-composer" onSubmit={e => { e.preventDefault(); void send(); }}><textarea aria-label="金融助手消息" value={draft} onChange={e => setDraft(e.target.value)} placeholder={editing ? '编辑排队消息…' : '继续研究…'} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+ <header className="finance-chat-header"><h3>{active?.title ?? '新对话'}</h3><small>{drafting ? '私人草稿' : active?.audience === 'public' ? `回复到飞书话题${typeof active.sourceContext.chatName === 'string' ? ' · ' + active.sourceContext.chatName : ''}` : '私人话题'}</small></header>
+        <div className="finance-transcript" ref={transcript} onScroll={event => {
+            const el = event.currentTarget; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        }}>
+        {drafting && source && <p>来源：{source.name ?? source.code ?? source.id}{source.tradeDate ? ' · ' + source.tradeDate : ''}</p>}
+        {loading && <small role="status">正在加载聊天记录…</small>}
+        {older && <button type="button" className="btn sm finance-older" onClick={() => void loadOlder()}>查看更早消息</button>}
+        {feed.messages.map(m => <ChatMessage key={m.id} message={m} onEdit={() => {setEditing(m.id); setDraft(m.content); request.current = null;}}/>)}
+        {outgoing && outgoing.topic === selected && !feed.messages.some(m => m.id === outgoing.messageId || m.source_key?.endsWith(':' + outgoing.clientId)) &&
+          <article className="finance-message user"><div>{outgoing.text}</div></article>}
+        {feed.streaming.filter(item => item.text).map(item => <article className="finance-message assistant" key={item.taskId} role="status"><ChatMarkdown text={item.text}/></article>)}
+        {active?.activeTask && !feed.streaming.some(item => item.text) && <p role="status">正在研究…</p>}
+        </div><form className="finance-composer" onSubmit={e => { e.preventDefault(); void send(); }}><textarea aria-label="金融助手消息" value={draft} onChange={e => setDraft(e.target.value)} placeholder={editing ? '编辑排队消息…' : '继续研究…'} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
         void send();
-    } }}/><div className="finance-composer-actions"><FinanceModelControls catalog={models} busy={savingModel} onModel={model}/><button className="btn" disabled={sending || !draft.trim()}>{sending ? '发送中…' : '发送'}</button>{selected && active?.activeTask ? <button type="button" className="btn" onClick={() => void api.action('cancel', { conversationId: selected }).then(() => refresh(true)).catch(e => setError(getParsedApiError(e).message))}>停止本话题</button> : null}</div></form></div>
+    } }}/><div className="finance-composer-actions"><FinanceModelControls catalog={models} busy={savingModel} onModel={model}/><button className="finance-send" aria-label="发送" title="发送" disabled={sending || !draft.trim()}>{sending ? '…' : '↑'}</button>{selected && active?.activeTask ? <button type="button" className="finance-stop" aria-label="停止本话题" title="停止本话题" onClick={() => void api.action('cancel', { conversationId: selected }).then(() => { refresh(true); refreshList(true); }).catch(e => setError(getParsedApiError(e).message))}>■</button> : null}</div></form></div>
  </section>;
+}
+
+function sameFeed(left: Feed, right: Feed) {
+    return left.sync?.bootId === right.sync?.bootId && left.sync?.privacyEpoch === right.sync?.privacyEpoch;
+}
+const ChatMarkdown = memo(function ChatMarkdown({text}: {text: string}) {
+    return <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>;
+});
+function ChatMessage({message, onEdit}: {message: Message; onEdit: () => void}) {
+    return <article className={'finance-message ' + message.role}>
+        <ChatMarkdown text={message.content}/>
+        {message.input_status === 'pending' && <button type="button" onClick={onEdit}>编辑排队消息</button>}
+    </article>;
+}
+function SessionActions({title, onDelete}: {title: string; onDelete: () => void}) {
+    const [open, setOpen] = useState(false);
+    const wrap = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), item = useRef<HTMLButtonElement>(null);
+    useEffect(() => {
+        if (!open) return;
+        item.current?.focus();
+        function dismiss(event: PointerEvent) {
+            if (event.target instanceof Node && !wrap.current?.contains(event.target)) setOpen(false);
+        }
+        document.addEventListener('pointerdown', dismiss);
+        return () => document.removeEventListener('pointerdown', dismiss);
+    }, [open]);
+    return <div className="finance-session-actions" ref={wrap}
+        onBlur={event => {if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);}}
+        onKeyDown={event => {if (event.key === 'Escape') {setOpen(false); trigger.current?.focus();}}}>
+        <button type="button" ref={trigger} title="会话操作" aria-label={'会话操作 ' + title} aria-expanded={open}
+            aria-haspopup="menu" onClick={() => setOpen(!open)} onKeyDown={event => {
+                if (event.key === 'ArrowDown') {event.preventDefault(); setOpen(true);}
+            }}>⋯</button>
+        {open && <div role="menu" aria-label="会话操作"><button type="button" ref={item} role="menuitem"
+            onClick={() => {setOpen(false); onDelete();}}>删除会话</button></div>}
+    </div>;
 }

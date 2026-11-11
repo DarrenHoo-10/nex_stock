@@ -1,4 +1,4 @@
-.managed-finance{display:flex;flex-direction:column;min-height:0;flex:1;gap:16px;padding:20px;overflow:hidden;color:var(--t1)}.finance-transcript{overflow:auto;flex:1;min-height:100px}.finance-transcript>small{color:var(--t2)}.finance-message{padding:14px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.finance-message.user{padding-left:18px}.finance-message p{margin:8px 0}.finance-task-list{max-height:150px;overflow:auto}.finance-task-list small{display:block;color:var(--t2)}.finance-connect{padding:28px}@media(max-width:600px){.managed-finance{padding:14px}}
+.managed-finance{display:flex;flex-direction:column;min-height:0;flex:1;gap:16px;padding:20px;overflow:hidden;color:var(--t1)}.finance-transcript{overflow:auto;flex:1;min-height:100px}.finance-transcript>small{color:var(--t2)}.finance-message{padding:14px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.finance-message.user{padding-left:18px}.finance-message p{margin:8px 0}.finance-connect{padding:28px}@media(max-width:600px){.managed-finance{padding:14px}}
 
 .managed-finance{display:grid;grid-template-columns:minmax(150px,225px) minmax(0,1fr);height:100%;align-items:stretch}
 .finance-sessions,.finance-chat{display:flex;flex-direction:column;min-width:0;min-height:0;gap:10px}
@@ -40,6 +40,24 @@
 .finance-sessions>small{padding:8px;color:var(--t2)}
 
 .finance-session-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
-.finance-session-row .finance-remove{font-size:18px;color:var(--t2);padding:4px 8px}
+.finance-session-actions{position:relative}
+.finance-session-actions>button{display:grid;place-items:center;width:32px;height:30px;padding:0;border-radius:8px;font-size:20px;line-height:1}
+.finance-session-actions [role=menu]{position:absolute;z-index:3;right:0;top:100%;min-width:7rem;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--surface,#343e69);box-shadow:0 6px 18px #171d4433}
+.finance-session-actions [role=menuitem]{width:100%}
+.finance-session-row:last-child .finance-session-actions [role=menu]{top:auto;bottom:100%}
+.finance-chat-header h3{margin:0;font-size:1.05rem}
+.finance-chat-header small{color:var(--t2)}
+.finance-transcript{display:flex;flex-direction:column;gap:12px;overflow-anchor:none;padding:6px 4px}
+.finance-message{align-self:flex-start;max-width:min(88%,76ch);flex:none;padding:10px 16px;line-height:1.75;border:0;border-radius:20px 20px 20px 6px;background:var(--fill2);min-width:0}
+.finance-message.user{align-self:flex-end;max-width:78%;padding:9px 16px;border-radius:20px 20px 6px 20px;color:white;background:linear-gradient(160deg,#547bd1,#3f60a7);white-space:pre-wrap}
+.finance-message>*:first-child{margin-top:0}.finance-message>*:last-child{margin-bottom:0}
+.finance-older{align-self:center}
 .finance-remove-confirm{grid-column:1/-1;display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding:6px}
 .finance-remove-confirm small{flex-basis:100%}
+
+.finance-composer textarea{field-sizing:content;min-height:48px;max-height:min(30vh,220px);resize:none}
+.finance-composer textarea:focus-visible{outline:0}
+.finance-composer:focus-within{box-shadow:0 0 0 1px var(--accent)}
+.finance-send,.finance-stop{display:grid;place-items:center;width:34px;height:34px;flex:none;border-radius:50%;color:#fff;background:#4163a7;line-height:1}
+.finance-send{font-size:22px}.finance-stop{font-size:13px}.finance-send:disabled{opacity:.5}
+.finance-session-actions>button:hover,.finance-session-actions>button[aria-expanded=true]{background:var(--fill2)}
