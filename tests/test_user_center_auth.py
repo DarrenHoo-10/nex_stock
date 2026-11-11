@@ -149,6 +149,28 @@ def test_valid_admin_session_reaches_the_route(client, uc_http):
     assert timeout == uc.REQUEST_TIMEOUT_SEC == 3.0
 
 
+def test_private_route_verifies_original_hostname_and_sends_original_host(uc_env, tmp_path, monkeypatch):
+    from tests.test_multi_user_p3a_hardening import TlsServer, _make_certificate
+
+    host = "identity.example.test"
+    cert, key = _make_certificate(tmp_path, [host])
+    server = TlsServer(cert, key, bind="127.0.0.1")
+    server.start()
+    try:
+        monkeypatch.setenv("USER_CENTER_CONNECT_IP", "127.0.0.1")
+        for name in (host, "wrong.example.test"):
+            monkeypatch.setattr(uc._get_http_session(name), "verify", cert)
+        response = uc._http_get(f"https://{host}:{server.port}/v1/session", {}, 3)
+        assert response.status_code == 200
+        assert server.sni == [host]
+        assert f"Host: {host}:{server.port}" in server.requests[0]
+        with pytest.raises(requests.exceptions.SSLError):
+            uc._http_get(f"https://wrong.example.test:{server.port}/v1/session", {}, 3)
+        assert len(server.requests) == 1
+    finally:
+        server.close()
+
+
 def test_only_the_session_cookie_is_forwarded_to_the_user_center(client, uc_http):
     resp = client.get(
         "/api/v1/_probe",

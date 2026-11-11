@@ -72,6 +72,7 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 
 WEB_SETTINGS_HIDDEN_FROM_UI = {
+    "USER_CENTER_CONNECT_IP",  # Private route configured by the deployment operator.
     # Multi-user foundation: the primary user id and the optional root-key override
     # are deployment-level values edited in .env, never through the settings form.
     "PRIMARY_USER_ID",
