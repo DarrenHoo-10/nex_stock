@@ -45,6 +45,22 @@ describe('managed finance assistant', () => {
         fireEvent.click(screen.getByRole('button', { name: '发送' }));
         await waitFor(() => expect(api.action).toHaveBeenCalledWith('input', expect.objectContaining({ newConversation: true, sourceContext: { kind: 'holding', code: '600000', name: '合成持仓', tradeDate: '2026-11-09' }, text: '跨标的研究' })));
     });
+    it('keeps both sessions in the sidebar while switching the transcript', async () => {
+        const other = { ...topic, conversationId: 'second', title: '第二个会话' };
+        api.topics.mockResolvedValue([topic, other]);
+        render(<FinanceAssistantBoundary legacy={null}/>);
+        const sidebar = await screen.findByRole('navigation', { name: '金融助手会话' });
+        const first = await screen.findByRole('button', { name: /群里的复盘/ });
+        const second = screen.getByRole('button', { name: /第二个会话/ });
+        expect(sidebar).toContainElement(first);
+        fireEvent.click(first);
+        await waitFor(() => expect(first).toHaveAttribute('aria-current', 'page'));
+        fireEvent.click(second);
+        await waitFor(() => expect(api.messages).toHaveBeenCalledWith('second'));
+        expect(sidebar).toContainElement(first);
+        expect(second).toHaveAttribute('aria-current', 'page');
+        expect(screen.getByLabelText('金融助手消息')).toBeVisible();
+    });
     it('preserves board identifiers and the displayed trade date', () => { expect(financeSource({ kind: 'board', boardId: 'BK1', boardName: '寒潮', tradeDate: '2026-11-09' })).toEqual({ kind: 'board', id: 'BK1', name: '寒潮', tradeDate: '2026-11-09' }); });
 });
 
