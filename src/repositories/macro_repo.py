@@ -50,7 +50,7 @@ class MacroRepository:
                 .order_by(desc(MacroSeries.period)).limit(max(1, int(limit)))
             ).scalars().all()
             return [{"period": r.period, "value": json.loads(r.value or "{}"),
-                     "fetched_at": r.fetched_at} for r in rows]
+                     "fetched_at": r.fetched_at, "source": r.source} for r in rows]
 
     def last_fetched(self, series: str) -> Optional[datetime]:
         """Latest fetch of ``series`` or of its per-key series (``series:<key>``)."""

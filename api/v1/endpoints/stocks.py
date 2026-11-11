@@ -41,6 +41,7 @@ from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
 from api.v1.schemas.common import ErrorResponse
 from src.services.intraday_snapshot_service import (
     IntradayDataUnavailable,
+    IntradayIdentityUnsupported,
     get_intraday_snapshot_service,
 )
 from src.services.image_stock_extractor import (
@@ -369,7 +370,7 @@ def add_to_watchlist(
             raise HTTPException(status_code=400, detail={"error": "legacy_bse_code", "message": str(exc)})
         if renamed != validated:
             # Old 北交所 codes return frozen quotes in some sources: store the new code.
-            entered = renamed
+            validated, entered = renamed, renamed
         codes, _ = WatchlistService(config_service=service).add(user.user_id, entered)
         note = f"（{request.stock_code.strip()} 是北交所旧代码，已换成新代码）" if entered != request.stock_code.strip() else ""
         return WatchlistResponse(stock_codes=codes, message=f"已加入 {entered}{note}")
@@ -503,7 +504,11 @@ def get_stock_quote(stock_code: str) -> StockQuote:
             amount=result.get("amount"),
             turnover_rate=result.get("turnover_rate"),
             float_shares=result.get("float_shares"),
-            update_time=result.get("update_time")
+            update_time=result.get("update_time"),
+            source=result.get("source"), provider_timestamp=result.get("provider_timestamp"),
+            fetched_at=result.get("fetched_at"), is_stale=result.get("is_stale"),
+            market=result.get("market"), currency=result.get("currency"),
+            canonical_id=result.get("canonical_id"), asset_type=result.get("asset_type"), exchange=result.get("exchange"),
         )
         
     except HTTPException:
@@ -577,7 +582,8 @@ def get_stock_history(
             stock_code=stock_code,
             stock_name=result.get("stock_name"),
             period=period,
-            data=data
+            data=data,
+            source=result.get("source"),
         )
     
     except ValueError as e:
@@ -898,6 +904,8 @@ def get_stock_intraday(
         result = get_intraday_snapshot_service().get_session_bars(stock_code, date, **_on_demand_kwargs(user))
     except OnDemandFetchLimited as exc:
         raise _on_demand_limited(exc)
+    except IntradayIdentityUnsupported as e:
+        raise HTTPException(status_code=422, detail={"error": "intraday_identity_unsupported", "message": str(e)}) from e
     except ValueError as e:
         raise HTTPException(
             status_code=422,

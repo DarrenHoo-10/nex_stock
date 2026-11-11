@@ -34,6 +34,9 @@ const REASON_TEXT: Record<string, string> = {
  */
 export const RunPushStatus: React.FC<{ push: RunPush }> = ({ push }) => {
   if (push.channel !== 'personal') {
+    if (push.reason === 'managed_feishu') {
+      return <p className="pref-push-line" data-testid="push-status">飞书推送：由 NexBot 按订阅投递</p>;
+    }
     return (
       <p className="pref-push-line" data-testid="push-status">
         飞书推送：{push.configured ? PUSH_STATUS_LABEL[push.status] : '未配置，没有发送'}

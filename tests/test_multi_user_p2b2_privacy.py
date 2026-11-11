@@ -148,6 +148,37 @@ def test_agent_run_that_read_the_portfolio_snapshot_makes_the_report_private(app
     assert shared["is_private"] is False  # user-scoped search tools read no personal data
 
 
+@pytest.mark.parametrize("method,path,private", [
+    ("GET", "/api/v1/portfolio/accounts", True),
+    ("GET", "/stocks/watchlist", True),
+    ("GET", "/api/v1/history/1", True),
+    ("POST", "/api/v1/screening/screen", True),
+    ("GET", "/api/v1/unknown/data", True),
+    ("GET", "/api/v1/stocks/AAPL/quote", False),
+    ("GET", "/api/v1/stocks/600519/history?limit=5", False),
+])
+def test_call_api_classification_persists_report_owner_and_visibility(app, method, path, private):
+    pipeline = _ownership_pipeline(USER_A)
+    result = _result("600519", "API evidence")
+    run = SimpleNamespace(tool_calls_log=[{"tool": "call_api", "arguments": {"method": method, "path": path}}])
+    ownership = pipeline._history_ownership_kwargs(result, code="600519", agent_result=run)
+    assert ownership["is_private"] is private
+    report_id = app.db.save_analysis_history(result, query_id="api-evidence", report_type="simple",
+                                             news_content=None, **ownership)
+    assert report_id > 0
+    with app.db.get_session() as session:
+        row = session.get(AnalysisHistory, report_id)
+        assert row.requester_user_id == USER_A and row.is_private is private
+    assert (app.db.get_analysis_history_by_id(report_id, viewer_user_id=USER_B) is None) is private
+
+
+@pytest.mark.parametrize("arguments", [None, {}, "not-json", {"method":"GET"},
+                                        {"method":"GET","path":"http://[broken"}])
+def test_ambiguous_call_api_trace_is_private(arguments):
+    from src.agent.tools.registry import tool_calls_read_personal_data
+    assert tool_calls_read_personal_data([{"tool":"call_api", "arguments_summary":arguments}])
+
+
 def test_personal_data_tool_names_are_real_user_scoped_tools():
     from src.agent.tools.data_tools import get_portfolio_snapshot_tool
     from src.agent.tools.registry import PERSONAL_DATA_TOOL_NAMES
@@ -429,6 +460,11 @@ def test_lazy_backfill_of_a_private_report_creates_a_signal_owned_by_its_request
         source_type="analysis", source_report_id=reports.primary_private, viewer_user_id=PRIMARY_ID,
     )
     assert owner["total"] == 1
+    with app.db.get_session() as session:
+        created = session.query(DecisionSignalRecord).filter_by(source_report_id=reports.primary_private).all()
+        assert [row.owner_user_id for row in created] == [PRIMARY_ID]
+    assert service.list_signals(source_type="analysis", source_report_id=reports.primary_private,
+                                viewer_user_id=USER_B)["total"] == 0
 
 
 def test_agent_memory_decision_review_reads_only_visible_signals(app, signals):

@@ -29,8 +29,6 @@ try:
 except ModuleNotFoundError:
     sys.modules["litellm"] = MagicMock()
 
-from fastapi.routing import APIRoute
-
 from src.analyzer import AnalysisResult
 from src.enums import ReportType
 from tests.multi_user_helpers import (
@@ -38,6 +36,7 @@ from tests.multi_user_helpers import (
     USER_A,
     USER_B,
     build_multi_user_app,
+    effective_api_routes,
     give_user_model,
     stub_dns,
     teardown_multi_user_env,
@@ -283,17 +282,14 @@ KEPT_PREFIXES = ("/api/v1/stocks/watchlist",)
 
 
 def _read_routes(app):
-    routes = []
-    for route in app.client.app.routes:
-        if not isinstance(route, APIRoute) or "GET" not in route.methods:
+    for path, methods, _ in effective_api_routes(app.client.app):
+        if "GET" not in methods:
             continue
-        path = route.path
         if path in SKIPPED_PATHS:
             continue
         if path.startswith(SKIPPED_PREFIXES) and not path.startswith(KEPT_PREFIXES):
             continue
-        routes.append(route)
-    return routes
+        yield path
 
 
 def _param_candidates(world):
@@ -353,10 +349,10 @@ def _all_reads(world):
     """(label, path, params) for every read API call the sweep makes."""
     candidates = _param_candidates(world)
     calls = []
-    for route in _read_routes(world):
-        for url in _fill(route.path, candidates):
-            for params in EXTRA_QUERY.get(route.path, [{}]):
-                calls.append((route.path, url, params))
+    for path in _read_routes(world):
+        for url in _fill(path, candidates):
+            for params in EXTRA_QUERY.get(path, [{}]):
+                calls.append((path, url, params))
     return calls
 
 
@@ -374,8 +370,14 @@ def _leaks(text: str):
 
 
 @pytest.mark.parametrize("viewer", [USER_B, PRIMARY_ID], ids=["other-user", "primary-user"])
-def test_no_read_api_returns_a_holding_value_of_another_user(world, viewer):
+def test_no_read_api_returns_a_holding_value_of_another_user(world, viewer, monkeypatch):
     """The sweep: every GET route of the application, as B and as the primary user (A is neither)."""
+    # Configure an offline pairing so protected finance routes exercise authorization in this sweep.
+    monkeypatch.setenv("FINANCE_SERVICE_TOKEN", "test-only-holdings-sweep" * 2)
+    monkeypatch.setenv("FINANCE_INSTANCE_ID", "holdings-test-stock")
+    monkeypatch.setenv("FINANCE_CORE_ID", "holdings-test-core")
+    monkeypatch.setenv("FINANCE_LOCAL_ISSUER", "local:holdings-test")
+    monkeypatch.setenv("FINANCE_LOCAL_SUBJECT", viewer)
     calls = _all_reads(world)
     assert len(calls) > 40, "the route sweep must cover the application"
     client = world.as_user(viewer)

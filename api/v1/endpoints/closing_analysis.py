@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from api.deps import CurrentUser, get_current_user, get_database_manager
 from src.config import get_primary_user_id
 from src.repositories.daily_plan_repo import DailyPlanRepository
+from src.services.closing_report_visibility import read_public_market_review
 from src.storage import DatabaseManager
 
 router = APIRouter()
@@ -43,7 +44,9 @@ def list_report_dates(
             if not is_primary and path.name.startswith("report_"):
                 continue  # the primary user's stock summary
             try:
-                days.add(date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:])))
+                day = date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:]))
+                if is_primary or read_public_market_review(_REPORTS_DIR, day) is not None:
+                    days.add(day)
             except ValueError:
                 continue
     return sorted(days, reverse=True)
@@ -59,6 +62,14 @@ def _read_daily_report(filename: str) -> str | None:
         return None
 
 
+@router.get("/public/{report_date}")
+def public_closing_review(report_date: date):
+    content = read_public_market_review(_REPORTS_DIR, report_date)
+    if content is None:
+        raise HTTPException(status_code=404, detail="No public review for this date")
+    return {"market_review": content, "report_date": report_date, "visibility": "public"}
+
+
 @router.get("/{report_date}")
 def get_closing_analysis(
     report_date: date,
@@ -66,8 +77,8 @@ def get_closing_analysis(
     user: CurrentUser = Depends(get_current_user),
 ) -> ClosingAnalysis:
     stamp = report_date.strftime("%Y%m%d")
-    market = _read_daily_report(f"market_review_{stamp}.md")
     is_primary = user.user_id == get_primary_user_id()
+    market = _read_daily_report(f"market_review_{stamp}.md") if is_primary else read_public_market_review(_REPORTS_DIR, report_date)
     stocks = _read_daily_report(f"report_{stamp}.md") if is_primary else None
     plan = DailyPlanRepository(db).closing_report(user.user_id, report_date)
     if plan is None and market is None and stocks is None:

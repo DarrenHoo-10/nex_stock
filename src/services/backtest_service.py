@@ -710,7 +710,13 @@ class BacktestService:
         )
         if summary is None:
             return None
-        return self._summary_to_dict(summary)
+        # A cached summary can predate privacy migration or source deletion.
+        shared = self.repo.list_results(code=code, eval_window_days=summary.eval_window_days,
+                                        engine_version=engine_version, **identity_kwargs)
+        if not shared:
+            return None
+        return self._build_dynamic_summary(rows=shared, scope=scope, code=summary.code,
+                                           eval_window_days=summary.eval_window_days, engine_version=engine_version)
 
     def get_global_summary(self, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Return overall backtest metrics normalized for Agent memory consumers."""

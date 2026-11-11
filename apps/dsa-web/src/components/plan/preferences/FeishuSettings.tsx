@@ -2,6 +2,7 @@ import type React from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { systemConfigApi } from '../../../api/systemConfig';
+import { feishuOwnershipApi, type FeishuOwnership } from '../../../api/feishuOwnership';
 import { getParsedApiError } from '../../../api/error';
 import { showPlanToast } from '../../../stores/planToastStore';
 import { SaveProblem } from './shared';
@@ -45,7 +46,7 @@ const SCAN_FAILURE: Record<string, string> = {
  * Scan-to-create flow: the backend asks Feishu for a QR link, polls until the scan is authorised and saves the new
  * bot's credentials itself (they never reach the browser).
  */
-function useFeishuScan(onConnected: () => void) {
+function useFeishuScan(onConnected: () => void, beforeWrite: () => Promise<void>) {
   const [scan, setScan] = useState<ScanState>({ phase: 'idle' });
   const runRef = useRef(0);
 
@@ -58,6 +59,8 @@ function useFeishuScan(onConnected: () => void) {
     const run = ++runRef.current;
     setScan({ phase: 'starting' });
     try {
+      await beforeWrite();
+      if (run !== runRef.current) return;
       const session = await systemConfigApi.startFeishuRegistration();
       if (run !== runRef.current) return;
       setScan({ phase: 'waiting', url: session.verificationUrl });
@@ -85,7 +88,7 @@ function useFeishuScan(onConnected: () => void) {
         setScan({ phase: 'failed', message: getParsedApiError(error).message });
       }
     }
-  }, [onConnected]);
+  }, [onConnected, beforeWrite]);
 
   const reset = useCallback(() => {
     cancel();
@@ -105,7 +108,59 @@ interface FeishuSettingsProps {
  * Feishu delivery on the 运行和推送 tab: the app bot (App ID / Secret + long connection, recommended; the target chat is
  * bound by sending /bind to the bot) and the group webhook fallback. Saved straight into the config.
  */
-export const FeishuSettings: React.FC<FeishuSettingsProps> = ({ config, onSave, onReload }) => {
+export const FeishuSettings: React.FC<FeishuSettingsProps> = (props) => {
+  const [state, setState] = useState<FeishuOwnership | null>(null);
+  const [error, setError] = useState('');
+  const mounted = useRef(false);
+  const request = useRef(0);
+  const refresh = useCallback(async () => {
+    const sequence = ++request.current;
+    try {
+      const next = await feishuOwnershipApi.status();
+      if (mounted.current && sequence === request.current) { setState(next); setError(''); }
+      return next;
+    } catch (failure) {
+      if (mounted.current && sequence === request.current) setError(getParsedApiError(failure).message);
+      throw failure;
+    }
+  }, []);
+  useEffect(() => {
+    mounted.current = true;
+    const reload = () => { void refresh().catch(() => {}); };
+    reload();
+    window.addEventListener('focus', reload);
+    const timer = window.setInterval(reload, 30_000);
+    return () => { mounted.current = false; window.removeEventListener('focus', reload); window.clearInterval(timer); };
+  }, [refresh, props.config.version]);
+  const beforeWrite = useCallback(async () => {
+    const current = await refresh();
+    if (current.managed && current.appliesToCurrentApp && current.owner !== 'stock') {
+      throw new Error('飞书管理归属已变化，请在 NexBot 设置中管理此应用。');
+    }
+  }, [refresh]);
+
+  if (error || !state) return <div className="feishu-group">
+    <p className="note" role={error ? 'alert' : 'status'}>{error || '正在读取飞书管理状态…'}</p>
+    {error && <button type="button" className="btn quiet" onClick={() => void refresh().catch(() => {})}>重新读取</button>}
+  </div>;
+  const controlled = state.managed && state.appliesToCurrentApp;
+  const blocked = controlled && state.owner !== 'stock';
+  const ownerLabel = blocked ? state.owner === 'core' ? 'NexBot 承接' : '已暂停' : 'Stock 本地管理';
+  return <div className="feishu-settings">
+    <div className="feishu-group" data-testid="feishu-ownership">
+      <div className="sec-head"><h4>飞书管理归属</h4><span className={`tag ${state.owner === 'paused' && controlled ? 'warn' : 'ok'}`}>{ownerLabel}</span></div>
+      {state.currentAppId && <p className="note">当前应用：{state.currentAppId}</p>}
+      {blocked ? <>
+        <p className="note">{state.owner === 'core' ? '此应用的消息接收、账户绑定和推送订阅由 NexBot 管理。' : '此应用已暂停收发，恢复接管后才会继续。'}请前往 NexBot 的设置 → 连接器 → 飞书，查看绑定和订阅。</p>
+        {state.settingsUrl ? <a className="btn primary" href={state.settingsUrl} target="_blank" rel="noopener noreferrer">打开 NexBot 飞书设置</a>
+          : <p className="note">尚未提供网页入口。请打开你平时使用的 NexBot，进入设置 → 连接器 → 飞书；如需网页链接，请联系管理员配置公开设置地址。</p>}
+      </> : <p className="note">{state.managed && !state.appliesToCurrentApp ? '被接管的是另一个飞书应用，当前应用仍使用 Stock 的连接和推送设置。' : '当前飞书连接和推送由 Stock 管理。'}</p>}
+    </div>
+    {!blocked && <LocalFeishuSettings {...props} beforeWrite={beforeWrite} />}
+  </div>;
+};
+
+const LocalFeishuSettings: React.FC<FeishuSettingsProps & { beforeWrite: () => Promise<void> }> = ({ config, onSave, onReload, beforeWrite }) => {
   const idPrefix = useId();
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [streamEdit, setStreamEdit] = useState<boolean | null>(null);
@@ -117,7 +172,7 @@ export const FeishuSettings: React.FC<FeishuSettingsProps> = ({ config, onSave, 
   const appReady = config.isSet('FEISHU_APP_ID') && config.isSet('FEISHU_APP_SECRET');
   const webhookReady = config.isSet('FEISHU_WEBHOOK_URL');
 
-  const { scan, start: startScan, reset: resetScan } = useFeishuScan(onReload);
+  const { scan, start: startScan, reset: resetScan } = useFeishuScan(onReload, beforeWrite);
   const scanning = scan.phase === 'starting' || scan.phase === 'waiting';
 
   const valueOf = (key: string) => edits[key] ?? (SECRET_KEYS.has(key) ? '' : config.value(key));
@@ -146,7 +201,9 @@ export const FeishuSettings: React.FC<FeishuSettingsProps> = ({ config, onSave, 
       return;
     }
     setSaving(true);
-    const outcome = await onSave(changes);
+    let outcome: SaveOutcome;
+    try { await beforeWrite(); outcome = await onSave(changes); }
+    catch (failure) { outcome = { ok: false, kind: 'error', message: getParsedApiError(failure).message }; }
     setSaving(false);
     if (outcome.ok) {
       discard();

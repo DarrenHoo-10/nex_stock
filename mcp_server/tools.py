@@ -19,9 +19,11 @@ from mcp.types import ToolAnnotations
 
 from . import api_client, config, service
 
-MCP_LIST_VERSION = "1.1.0"
+MCP_LIST_VERSION = "1.2.0"
 
 mcp = FastMCP(name="nex-stock")
+from .finance import install as install_finance_tools
+install_finance_tools(mcp)
 
 
 def _tool_error(message: str) -> ToolError:
@@ -59,6 +61,27 @@ def _mcp_list_document() -> Dict[str, Any]:
         "version": MCP_LIST_VERSION,
         "rulesVersion": "v1",
         "interfaces": [
+            {
+                "name": "financial_discover", "summary": "Discover finance.v1 delegated business tools",
+                "description": "Requires paired finance service and delegated-user HTTP headers; never uses manager identity.",
+                "readOnly": True, "params": [], "inputExample": {},
+                "output": {"fields": [{"name": "version", "type": "string", "description": "Finance contract version"},
+                                      {"name": "tools", "type": "array", "description": "Permitted finance tool schemas"}],
+                           "example": {"version": "finance.v1", "tools": []},
+                           "description": "Business schemas and OpenAPI filtered by audience; credentials are transport-only."},
+            },
+            {
+                "name": "financial_call", "summary": "Call a discovered finance business tool",
+                "description": "Executes with the verified user's current authority; legacy manager tools are unavailable to this identity.",
+                "readOnly": False,
+                "params": [{"name": "name", "type": "string", "required": True, "description": "Discovered tool name"},
+                           {"name": "arguments", "type": "object", "required": True, "description": "Tool arguments without identity/credentials"},
+                           {"name": "operation_id", "type": "string", "required": False, "description": "Stable idempotency key required for writes"}],
+                "inputExample": {"name": "read_api_doc", "arguments": {}},
+                "output": {"fields": [{"name": "version", "type": "string", "description": "Finance contract version"}],
+                           "example": {"version": "finance.v1", "tools": []},
+                           "description": "Exact selected tool result; HTTP identity and authorization failures remain errors."},
+            },
             {
                 "name": "mcp_list",
                 "summary": "列出本服务全部 MCP 接口的自描述文档",
@@ -476,6 +499,10 @@ def create_asgi_app():
         )
     mcp_app = mcp.http_app(path="/mcp", stateless_http=True)
     token_header = f"Bearer {config.MCP_BEARER_TOKEN}".encode()
+    from src.services.finance_identity import setting
+    finance_token = setting("FINANCE_SERVICE_TOKEN")
+    if finance_token and finance_token == config.MCP_BEARER_TOKEN:
+        raise RuntimeError("Finance and legacy manager service credentials must be distinct")
 
     async def asgi_app(scope, receive, send):
         if scope["type"] != "http":
@@ -495,11 +522,34 @@ def create_asgi_app():
             await send({"type": "http.response.body", "body": body})
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        if setting("FINANCE_SERVICE_TOKEN") == config.MCP_BEARER_TOKEN:
+            body = b'{"error":"credential_scope_collision"}'
+            await send({"type": "http.response.start", "status": 503,
+                        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+            await send({"type": "http.response.body", "body": body})
+            return
         if headers.get("authorization") != token_header.decode("latin-1"):
+            from fastapi import HTTPException
+            from src.services.finance_identity import service_auth
+            from .finance import finance_request
+            rejection_status = 401
+            try:
+                service_auth(headers)
+                finance_request("POST", "/delegations/verify", headers, {})
+            except HTTPException as exc:
+                rejection_status = exc.status_code
+            except ToolError as exc:
+                try:
+                    rejection_status = json.loads(str(exc)).get("status_code", 503)
+                except (TypeError, ValueError):
+                    rejection_status = 503
+            else:
+                await mcp_app(scope, receive, send)
+                return
             body = b'{"error":"unauthorized"}'
             await send({
                 "type": "http.response.start",
-                "status": 401,
+                "status": rejection_status,
                 "headers": [
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(body)).encode()),

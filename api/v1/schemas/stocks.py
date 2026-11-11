@@ -40,6 +40,15 @@ class StockQuote(BaseModel):
         description="流通股本（股），由 流通市值/现价 或 成交量/换手率 推算；数据源缺字段时为空",
     )
     update_time: Optional[str] = Field(None, description="更新时间")
+    source: Optional[str] = Field(None, description="实际行情来源")
+    provider_timestamp: Optional[str] = Field(None, description="来源观测时间；缺失时不能推断为当前市场时间")
+    fetched_at: Optional[str] = Field(None, description="取数时间；不是市场观测时间")
+    is_stale: Optional[bool] = Field(None, description="来源观测是否过期；未知时为空")
+    market: Optional[str] = Field(None, description="源行情市场 cn/hk/us/jp/kr/tw")
+    currency: Optional[str] = Field(None, description="源报价币种")
+    canonical_id: Optional[str] = Field(None, description="解析后证券身份；指数保留交易所")
+    asset_type: Optional[str] = Field(None, description="stock 或 index；未知不猜测")
+    exchange: Optional[str] = Field(None, description="证券交易所")
     
     model_config = ConfigDict(json_schema_extra={
         "example": {
@@ -108,6 +117,7 @@ class StockHistoryResponse(BaseModel):
     stock_name: Optional[str] = Field(None, description="股票名称")
     period: str = Field(..., description="K 线周期")
     data: List[KLineData] = Field(default_factory=list, description="K 线数据列表")
+    source: Optional[str] = Field(None, description="实际日线数据来源")
     
     model_config = ConfigDict(json_schema_extra={
         "example": {

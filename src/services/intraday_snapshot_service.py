@@ -59,6 +59,18 @@ class IntradayDataUnavailable(RuntimeError):
         self.reason = reason
 
 
+class IntradayIdentityUnsupported(ValueError):
+    """The equity-only intraday sources cannot prove this security identity."""
+
+
+def _intraday_stock_code(stock_code: str) -> str:
+    from src.services.stock_code_guard import require_stock_code
+    try:
+        return require_stock_code(stock_code)
+    except ValueError as exc:
+        raise IntradayIdentityUnsupported(str(exc)) from exc
+
+
 # ---------------------------------------------------------------------------
 # result types
 # ---------------------------------------------------------------------------
@@ -407,9 +419,7 @@ class IntradaySnapshotService:
     # -- single stock ------------------------------------------------------
 
     def get_quote(self, stock_code: str) -> QuoteResult:
-        from data_provider.base import normalize_stock_code
-
-        code = normalize_stock_code(stock_code)
+        code = _intraday_stock_code(stock_code)
         fresh_market = self._cache.peek_fresh("market", self.ttl_seconds)
         if fresh_market is not None and code in fresh_market.quotes:
             return self._quote_result(fresh_market.quotes[code], fresh_market.source, False)
@@ -435,9 +445,7 @@ class IntradaySnapshotService:
     # -- 5-minute bars -----------------------------------------------------
 
     def get_intraday_bars(self, stock_code: str) -> BarsResult:
-        from data_provider.base import normalize_stock_code
-
-        code = normalize_stock_code(stock_code)
+        code = _intraday_stock_code(stock_code)
         (bars, source), served_stale = self._cache.get(
             ("bars", code, "5MIN"), lambda: self._load_bars(stock_code, code), self.ttl_seconds
         )
@@ -513,8 +521,6 @@ class IntradaySnapshotService:
         history only. A finished session never changes, so past dates are cached for
         ``PAST_SESSION_TTL_SECONDS``. Raises ``ValueError`` for a malformed or future date.
         """
-        from data_provider.base import normalize_stock_code
-
         try:
             day = datetime.strptime(trade_date, "%Y-%m-%d").date()
         except ValueError:
@@ -523,7 +529,7 @@ class IntradaySnapshotService:
         if day > now.date():
             raise ValueError(f"date {trade_date} is in the future")
 
-        code = normalize_stock_code(stock_code)
+        code = _intraday_stock_code(stock_code)
         is_today = day == now.date()
         ttl = self.ttl_seconds if is_today else PAST_SESSION_TTL_SECONDS
         if self._cache.peek_fresh(("bars", code, "5MIN", trade_date), ttl) is None:

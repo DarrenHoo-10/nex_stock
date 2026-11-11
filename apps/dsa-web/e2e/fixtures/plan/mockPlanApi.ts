@@ -95,6 +95,8 @@ export async function mockPlanApi(page: Page, options: MockPlanApiOptions = {}):
         await route.continue();
         return;
       }
+      if(path === '/api/v1/finance/assistant/status') {await json(route,{managed:false,bound:false});return;}
+      if(path === '/api/v1/finance/assistant/feishu-settings') {await json(route,{managed:false,owner:'stock',version:0,appliesToCurrentApp:false});return;}
       if (path === '/api/v1/auth/status') {
         await json(route, { authEnabled: false, loggedIn: true, passwordSet: true, setupState: 'enabled' });
         return;

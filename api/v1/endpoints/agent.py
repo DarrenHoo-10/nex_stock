@@ -10,7 +10,7 @@ import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Request, APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -29,6 +29,7 @@ from src.services.agent_model_service import (
     list_agent_model_deployments,
     resolve_model_context_window,
 )
+from src.services.finance_legacy_chat import maybe_managed
 from src.storage import ChatSessionNotFound, ChatSessionStateConflict
 
 # Tool name -> Chinese display name mapping
@@ -394,6 +395,7 @@ async def agent_chat(
     request: ChatRequest,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
     user: CurrentUser = Depends(get_current_user),
+    http_request: Request = None,
 ):
     """
     Chat with the AI Agent without progress events.
@@ -402,6 +404,9 @@ async def agent_chat(
     events and request cancellation. The default LiteLLM Agent keeps this
     endpoint's existing behavior.
     """
+    managed = await maybe_managed(http_request, "send", payload=request)
+    if managed is not None:
+        return managed
     config = _config_for(user, need_model=True)
     backend_id = _select_agent_chat_backend(config)
     if backend_id == "codex_app_server":
@@ -469,6 +474,7 @@ async def list_chat_sessions(
     user_id: Optional[str] = None,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
     user: CurrentUser = Depends(get_current_user),
+    http_request: Request = None,
 ):
     """获取当前用户的聊天会话列表（只返回本人创建的会话）
 
@@ -478,6 +484,9 @@ async def list_chat_sessions(
             compatibility): narrows the caller's OWN sessions to those whose session_id starts with
             this prefix, e.g. ``telegram_12345``.  It never selects another user's sessions.
     """
+    managed = await maybe_managed(http_request, "sessions", limit=limit)
+    if managed is not None:
+        return managed
     sessions = session_service.list_sessions(limit, user_id, user_id=user.user_id)
     return SessionsResponse(sessions=sessions)
 
@@ -488,8 +497,12 @@ async def get_chat_session_messages(
     limit: int = 100,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
     user: CurrentUser = Depends(get_current_user),
+    http_request: Request = None,
 ):
     """获取单个会话的完整消息（别人的会话与不存在的会话响应完全相同：空消息）"""
+    managed = await maybe_managed(http_request, "messages", session_id=session_id, limit=limit)
+    if managed is not None:
+        return managed
     detail = session_service.get_session_detail(
         _read_session_id(session_service, session_id, user.user_id),
         limit,
@@ -512,8 +525,12 @@ async def delete_chat_session(
     session_id: str,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
     user: CurrentUser = Depends(get_current_user),
+    http_request: Request = None,
 ):
     """删除指定会话（别人的会话与不存在的会话响应完全相同：deleted 为 0，且不会删除别人的会话）"""
+    managed = await maybe_managed(http_request, "delete", session_id=session_id)
+    if managed is not None:
+        return managed
     try:
         session_service.require_session_access(session_id, user.user_id)
     except ChatSessionNotFound:
@@ -577,11 +594,15 @@ async def get_chat_session_context(
     model: Optional[str] = None,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
     user: CurrentUser = Depends(get_current_user),
+    http_request: Request = None,
 ):
     """Conversation context of a session: history tokens, compression state and the model's context window.
 
     Read-only; calls no model. ``model`` (optional) only selects which model's context window is reported.
     """
+    managed = await maybe_managed(http_request, "context", session_id=session_id)
+    if managed is not None:
+        return managed
     read_session_id = _read_session_id(session_service, session_id, user.user_id)
     config = _config_for(user)
     return await asyncio.to_thread(_context_info_response, session_id, config, model, read_session_id)
@@ -597,12 +618,16 @@ async def compact_chat_session(
     request: Optional[ChatCompactRequest] = None,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
     user: CurrentUser = Depends(get_current_user),
+    http_request: Request = None,
 ):
     """Manually fold the session's older messages into its rolling summary (the last protected turns stay verbatim).
 
     Uses the same summary prompt as automatic compression and works even when
     ``AGENT_CONTEXT_COMPRESSION_ENABLED`` is off; later turns then carry the summary plus newer messages.
     """
+    managed = await maybe_managed(http_request, "compact", session_id=session_id)
+    if managed is not None:
+        return managed
     read_session_id = _read_session_id(session_service, session_id, user.user_id)
     config = _config_for(user, need_model=True)
     backend_id = _select_agent_chat_backend(config)
@@ -811,6 +836,7 @@ async def agent_chat_stream(
     request: ChatRequest,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
     user: CurrentUser = Depends(get_current_user),
+    http_request: Request = None,
 ):
     """
     Chat with the AI Agent, streaming progress via SSE.
@@ -827,6 +853,9 @@ async def agent_chat_stream(
       - done: analysis complete, contains 'content' and 'success'
       - error: error occurred, contains 'message'
     """
+    managed = await maybe_managed(http_request, "stream", payload=request)
+    if managed is not None:
+        return managed
     config = _config_for(user, need_model=True)
     backend_id = _select_agent_chat_backend(config)
     config = _apply_request_overrides(request, config, backend_id)
@@ -938,7 +967,9 @@ async def agent_chat_stream(
                          "backend": backend_id, "request_id": request_id, "error_code": None}
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                 return
-            fut = loop.run_in_executor(None, run_sync, executor, turn)
+            import contextvars
+            execution_context = contextvars.copy_context()
+            fut = loop.run_in_executor(None, execution_context.run, run_sync, executor, turn)
             idle_seconds = 0.0
             while True:
                 try:
@@ -1002,8 +1033,11 @@ async def agent_chat_stream(
 
 
 @router.post("/chat/stream/{request_id}/cancel")
-async def cancel_agent_chat_stream(request_id: str, user: CurrentUser = Depends(get_current_user)):
+async def cancel_agent_chat_stream(request_id: str, user: CurrentUser = Depends(get_current_user), http_request: Request = None):
     """Signal cancellation while the original Codex SSE remains open (own streams only)."""
+    managed = await maybe_managed(http_request, "cancel", request_id=request_id)
+    if managed is not None:
+        return managed
     with _ACTIVE_CODEX_STREAMS_LOCK:
         cancel_event = _ACTIVE_CODEX_STREAMS.get((user.user_id, request_id))
     if cancel_event is None:

@@ -8,7 +8,6 @@ import os
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -22,6 +21,7 @@ from src.config import Config, get_primary_user_id
 from src.core.config_registry import SCOPE_USER, get_config_scope
 from src.repositories.user_repo import UserRepository
 from src.storage import AppUser, DatabaseManager
+from tests.multi_user_helpers import effective_api_routes
 
 SESSION_ID = "b2" * 32
 PUBLIC_ORIGIN = "https://stock.example.test"
@@ -142,9 +142,9 @@ def test_admin_guard_is_declared_on_every_listed_endpoint(tmp_path, monkeypatch)
     try:
         app = create_app(static_dir=tmp_path / "static")
         routes = {
-            (method, route.path): route
-            for route in app.routes if isinstance(route, APIRoute)
-            for method in route.methods
+            (method, path): dependant
+            for path, methods, dependant in effective_api_routes(app)
+            for method in methods
         }
         missing = []
         for method, path in ADMIN_ONLY_ENDPOINTS:
@@ -154,7 +154,7 @@ def test_admin_guard_is_declared_on_every_listed_endpoint(tmp_path, monkeypatch)
                 None,
             )
             assert route is not None, (method, path)
-            if require_admin not in _dependency_calls(route.dependant):
+            if require_admin not in _dependency_calls(route):
                 missing.append((method, path))
         assert missing == []
     finally:

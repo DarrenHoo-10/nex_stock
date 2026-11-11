@@ -42,6 +42,7 @@ EXCLUDED_ROUTES: Dict[Tuple[str, str], str] = {
 # process settings, global usage, authentication, personal secrets and push channels (a prompt-injected
 # assistant must not read or rewrite credentials).
 BLOCKED_PREFIXES: Dict[str, str] = {
+    "/api/v1/finance": "金融认证、委托与助手适配入口不能由助手递归调用",
     "/api/v1/system": "系统设置不开放给助手，请在设置页修改",
     "/api/v1/usage": "全站用量不开放给助手",
     "/api/v1/auth": "登录与认证接口不开放给助手",
@@ -121,8 +122,15 @@ def acting_user(user_id: Optional[str]) -> Any:
     from api.deps import CurrentUser
     from src.auth import is_user_center_mode
     from src.config import get_primary_user_id
+    from src.services.finance_identity import acting_session
 
     uid = str(user_id or "").strip()
+    session = acting_session.get()
+    if session is not None:
+        if not session.user_id or (uid and uid != session.user_id):
+            raise ActingUserRequired("The acting user does not match the verified session")
+        return CurrentUser(user_id=session.user_id, handle=session.handle, display_name=session.display_name,
+                           role=session.role, is_admin=session.role == "admin")
     if not uid:
         raise ActingUserRequired("call_api / read_api_doc need the acting user; none was provided")
     is_primary = uid == get_primary_user_id()
@@ -156,8 +164,10 @@ def get_internal_app() -> Any:
 
             from api.middlewares.error_handler import add_error_handlers
             from api.v1.router import router as api_v1_router
+            from src.services.finance_identity import InternalIdentityMiddleware
 
             app = FastAPI(title="Daily Stock Analysis API (assistant)", version="1.0.0")
+            app.add_middleware(InternalIdentityMiddleware)
             app.include_router(api_v1_router, prefix=API_PREFIX)
             add_error_handlers(app)
             _internal_app = app
@@ -172,13 +182,20 @@ def get_openapi_spec() -> Dict[str, Any]:
     return get_internal_app().openapi()
 
 
+def _effective_routes(app):
+    from fastapi import routing
+
+    # Newer FastAPI retains included routers and exposes their mounted paths through RouteContext.
+    return getattr(routing, "iter_route_contexts", iter)(app.routes)
+
+
 def _routes_by_template() -> Dict[Tuple[str, str], Any]:
     """(METHOD, path template) -> route, in registration order (the first one is the one that executes)."""
     global _route_index
     app = get_internal_app()
     if _route_index is None or _route_index[0] is not app:
         index: Dict[Tuple[str, str], Any] = {}
-        for route in app.routes:
+        for route in _effective_routes(app):
             template = getattr(route, "path_format", None)
             for method in getattr(route, "methods", None) or ():
                 index.setdefault((method.upper(), template), route)
@@ -192,7 +209,7 @@ def _route_for(method: str, path: str) -> Optional[Any]:
         "type": "http", "method": method.upper(), "path": unquote(path), "root_path": "",
         "headers": [], "query_string": b"", "path_params": {},
     }
-    for route in get_internal_app().routes:
+    for route in _effective_routes(get_internal_app()):
         match, _child = route.matches(scope)
         if match == Match.FULL:
             return route

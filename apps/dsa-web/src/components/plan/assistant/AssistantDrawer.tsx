@@ -1,3 +1,4 @@
+import { FinanceAssistantBoundary } from './FinanceAssistant';
 import type React from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
@@ -29,7 +30,7 @@ function shortDate(tradeDate: string | null | undefined): string | null {
  * `/agent/chat/stream` API; every question carries `context.daily_plan` for the current board / stock.
  * Mounted once by PlanShell (lazily, on first open); open it with `usePlanUiStore().openAssistant(context)`.
  */
-export const AssistantDrawer: React.FC = () => {
+export const LegacyAssistantDrawer: React.FC = () => {
   const open = usePlanUiStore((state) => state.assistantOpen);
   const storedContext = usePlanUiStore((state) => state.assistantContext);
   const sessionKey = usePlanUiStore((state) => state.assistantSessionKey);
@@ -213,4 +214,9 @@ export const AssistantDrawer: React.FC = () => {
       </p>
     </GlassDrawer>
   );
+};
+
+export const AssistantDrawer: React.FC = () => {
+ const context=usePlanUiStore(state=>state.assistantContext);
+ return <FinanceAssistantBoundary legacy={<LegacyAssistantDrawer/>} context={context} drawer/>;
 };

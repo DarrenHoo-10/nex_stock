@@ -747,6 +747,8 @@ class DailyPlanService:
         duration = round((finished - started).total_seconds(), 1) if finished and started else None
         push = dict(row["push"] or {})
         push.setdefault("channel", "feishu")
+        if push["channel"] == "feishu" and push.get("status") == "managed":
+            push.update(status="skipped", reason="managed_feishu")
         push.setdefault("status", "pending")
         push.setdefault("sent_at", None)
         push.setdefault("error", None)
@@ -1009,6 +1011,8 @@ class DailyPlanService:
         label_name = "飞书" if channel_name == "feishu" else "个人渠道"
         push: Dict[str, Any] = {"channel": channel_name, "status": "skipped", "sent_at": None, "error": None,
                                 "configured": configured}
+        from src.services.finance_channel_ownership import stock_allowed
+
         no_model_scheduled = llm is None and not self._is_primary_user() and trigger == "schedule"
         if not codes:
             mark("push", "skipped", "没有内容可推送")
@@ -1018,6 +1022,9 @@ class DailyPlanService:
             push["reason"] = "no_model"
             run_gaps.append("未配置模型：这份计划按规则生成，不推送；配置自己的模型后恢复推送")
             mark("push", "skipped", "未配置模型，不推送" + ("（已提醒一次）" if reminder == "sent" else ""))
+        elif channel_name == "feishu" and not stock_allowed(self.config):
+            push["reason"] = "managed_feishu"
+            mark("push", "skipped", "已交由金融助手按本人订阅投递，Stock 不直接发送")
         elif not configured:
             mark("push", "skipped",
                  "没有配置飞书推送，计划只在网页里查看" if self._is_primary_user()

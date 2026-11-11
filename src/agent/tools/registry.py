@@ -25,10 +25,17 @@ PERSONAL_DATA_TOOL_NAMES = frozenset({"get_portfolio_snapshot"})
 
 
 def tool_calls_read_personal_data(tool_calls_log: Any) -> bool:
-    """Whether an agent run's tool-call log shows a personal-data tool was called."""
-    for entry in tool_calls_log or []:
-        if isinstance(entry, dict) and entry.get("tool") in PERSONAL_DATA_TOOL_NAMES:
+    """Whether tool-call evidence includes personal data or an unverified generic API view."""
+    entries = [tool_calls_log] if isinstance(tool_calls_log, dict) else tool_calls_log or []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("tool") in PERSONAL_DATA_TOOL_NAMES:
             return True
+        if entry.get("tool") == "call_api":
+            from src.services.finance_data_visibility import api_tool_call_is_private
+            if api_tool_call_is_private(entry):
+                return True
     return False
 
 

@@ -276,7 +276,7 @@ class PushInfo(BaseModel):
     sent_at: Optional[str] = None
     error: Optional[str] = None
     configured: bool = False
-    # Additive (personal channels only): why nothing was pushed ("no_model") and what each channel type returned.
+    # "no_model" for a personal schedule, "managed_feishu" when NexBot owns the system route.
     reason: Optional[str] = None
     channels: List[PushChannelOutcome] = Field(default_factory=list)
 

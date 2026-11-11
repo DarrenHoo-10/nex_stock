@@ -5,7 +5,7 @@ import { UiLanguageProvider } from '../../../../contexts/UiLanguageContext';
 import { useAgentChatStore } from '../../../../stores/agentChatStore';
 import { ASSISTANT_NO_CONTEXT, usePlanUiStore } from '../../../../stores/planUiStore';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../../utils/uiLanguage';
-import { AssistantDrawer } from '../AssistantDrawer';
+import { LegacyAssistantDrawer as AssistantDrawer } from '../AssistantDrawer';
 
 const { getLatestRun } = vi.hoisted(() => ({ getLatestRun: vi.fn() }));
 vi.mock('../../../../api/dailyPlan', () => ({ getLatestRun, isPlanServiceUnavailable: () => false }));

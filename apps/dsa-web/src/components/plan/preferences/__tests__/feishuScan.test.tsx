@@ -3,16 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildConfigView } from '../usePreferencesConfig';
 import { FeishuSettings } from '../FeishuSettings';
 
-const { startFeishuRegistration, pollFeishuRegistration, toast } = vi.hoisted(() => ({
+const { startFeishuRegistration, pollFeishuRegistration, toast, ownership } = vi.hoisted(() => ({
   startFeishuRegistration: vi.fn(),
   pollFeishuRegistration: vi.fn(),
   toast: vi.fn(),
+  ownership: vi.fn(),
 }));
 
 vi.mock('../../../../api/systemConfig', () => ({
   systemConfigApi: { startFeishuRegistration, pollFeishuRegistration },
 }));
 vi.mock('../../../../stores/planToastStore', () => ({ showPlanToast: toast }));
+vi.mock('../../../../api/feishuOwnership', () => ({ feishuOwnershipApi: { status: ownership } }));
 
 const flush = async (ms: number) => {
   await act(async () => {
@@ -26,6 +28,7 @@ describe('FeishuSettings scan-to-connect', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    ownership.mockResolvedValue({ owner: 'stock', managed: false, version: 0, appliesToCurrentApp: false });
     startFeishuRegistration.mockResolvedValue({
       sessionId: 's1',
       verificationUrl: 'https://open.feishu.cn/page/launcher?user_code=AB',
@@ -38,13 +41,16 @@ describe('FeishuSettings scan-to-connect', () => {
     vi.clearAllMocks();
   });
 
-  const renderIt = () => render(<FeishuSettings config={view} onSave={vi.fn()} onReload={onReload} />);
+  const renderIt = async () => {
+    render(<FeishuSettings config={view} onSave={vi.fn()} onReload={onReload} />);
+    await flush(0);
+  };
 
   it('shows the QR code, polls until authorised, then reloads the config', async () => {
     pollFeishuRegistration
       .mockResolvedValueOnce({ status: 'pending', interval: 2, restartRequired: false })
       .mockResolvedValueOnce({ status: 'success', restartRequired: false });
-    renderIt();
+    await renderIt();
     fireEvent.click(screen.getByTestId('feishu-scan-start'));
     await flush(0);
     expect(screen.getByTestId('feishu-qr').querySelector('svg')).not.toBeNull();
@@ -59,7 +65,7 @@ describe('FeishuSettings scan-to-connect', () => {
 
   it('tells the user to restart when the long connection could not start', async () => {
     pollFeishuRegistration.mockResolvedValue({ status: 'success', restartRequired: true });
-    renderIt();
+    await renderIt();
     fireEvent.click(screen.getByTestId('feishu-scan-start'));
     await flush(2000);
     expect(screen.getByTestId('feishu-scan-done').textContent).toContain('重启服务');
@@ -67,7 +73,7 @@ describe('FeishuSettings scan-to-connect', () => {
 
   it('reports a denied scan and allows retrying', async () => {
     pollFeishuRegistration.mockResolvedValue({ status: 'denied', restartRequired: false });
-    renderIt();
+    await renderIt();
     fireEvent.click(screen.getByTestId('feishu-scan-start'));
     await flush(2000);
     expect(screen.getByTestId('feishu-scan-error').textContent).toContain('取消了授权');
@@ -77,7 +83,7 @@ describe('FeishuSettings scan-to-connect', () => {
 
   it('stops polling when the scan is cancelled', async () => {
     pollFeishuRegistration.mockResolvedValue({ status: 'pending', interval: 2, restartRequired: false });
-    renderIt();
+    await renderIt();
     fireEvent.click(screen.getByTestId('feishu-scan-start'));
     await flush(0);
     fireEvent.click(screen.getByText('取消扫码'));

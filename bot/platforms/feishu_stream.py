@@ -27,6 +27,7 @@ import threading
 from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
+from src.services.finance_channel_ownership import stock_send, stock_receiver, stock_allowed
 from typing import Optional, Callable
 import time
 
@@ -127,6 +128,7 @@ class FeishuReplyClient:
         # 获取配置的最大字节数
         self._max_bytes = getattr(config, 'feishu_max_bytes', 20000)
 
+    @stock_send
     def _send_interactive_card(self, content: str, message_id: Optional[str] = None,
                                chat_id: Optional[str] = None,
                                receive_id_type: str = "chat_id",
@@ -260,6 +262,7 @@ class FeishuReplyClient:
             logger.error(f"[Feishu Stream] 回复卡片异常: {e}")
             return None
 
+    @stock_send
     def patch_card(self, message_id: str, content: str) -> bool:
         """Update an earlier updatable card in place (``im.v1.message.patch``)."""
         card_json = self.build_card_json(content, updatable=True)
@@ -344,6 +347,7 @@ class FeishuReplyClient:
         open_id = (self.get_bot_info() or {}).get("open_id")
         return open_id if isinstance(open_id, str) and open_id else None
 
+    @stock_send
     def reply_text(self, message_id: str, text: str, at_user: bool = False,
                    user_id: Optional[str] = None) -> bool:
         """
@@ -382,6 +386,7 @@ class FeishuReplyClient:
             formatted_text, message_id=message_id, at_user=at_user, user_id=user_id
         )
 
+    @stock_send
     def send_to_chat(self, chat_id: str, text: str,
                      receive_id_type: str = "chat_id") -> bool:
         """
@@ -631,6 +636,8 @@ class FeishuStreamHandler:
             self._logger.warning("[Feishu Stream] 记录消息与会话关联失败: %s", exc)
 
     def _process_message(self, bot_message: BotMessage) -> None:
+        if not stock_allowed(self):
+            return
         """Execute command / assistant handling off the SDK callback thread."""
         if self._goes_to_assistant(bot_message):
             try:
@@ -678,6 +685,8 @@ class FeishuStreamHandler:
         )
 
     def handle_message(self, event: 'P2ImMessageReceiveV1') -> None:
+        if not stock_allowed(self):
+            return
         """
         处理接收到的消息事件
 
@@ -959,6 +968,7 @@ class FeishuStreamClient:
 
         return event_handler
 
+    @stock_receiver
     def start(self) -> None:
         """
         启动 Stream 客户端（阻塞）

@@ -83,3 +83,4 @@ fxmacrodata-public-client @ https://github.com/fxmacrodata/fxmacrodata-public-cl
 
 # MCP server (nex-stock MCP 管家；python -m mcp_server)
 fastmcp>=4.0.0              # Streamable HTTP MCP server framework
+cryptography>=43.0.0       # Encrypt delegated upstream session cookies at rest

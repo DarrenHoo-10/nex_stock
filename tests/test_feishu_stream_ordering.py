@@ -34,6 +34,7 @@ def _make_message(
     user_id: str = "u1",
     chat_id: str = "c1",
     chat_type: ChatType = ChatType.PRIVATE,
+    root_id: str = "",
 ) -> BotMessage:
     return BotMessage(
         platform="feishu",
@@ -46,10 +47,33 @@ def _make_message(
         raw_content="/chat hello",
         mentioned=True,
         timestamp=datetime.now(),
+        raw_data={"event": {"root_id": root_id}} if root_id else {},
     )
 
 
 class FeishuStreamOrderingTestCase(unittest.TestCase):
+    def test_different_p2p_roots_can_run_concurrently(self):
+        reply_client = _DummyReplyClient()
+        first_started, second_finished, release_first = threading.Event(), threading.Event(), threading.Event()
+
+        def on_message(message: BotMessage) -> BotResponse:
+            if message.message_id == "m1":
+                first_started.set()
+                release_first.wait(2)
+            else:
+                second_finished.set()
+            return BotResponse.text_response(message.message_id)
+
+        handler = FeishuStreamHandler(on_message, reply_client)
+        try:
+            handler._enqueue_message(_make_message("m1", root_id="first-topic"))
+            self.assertTrue(first_started.wait(1))
+            handler._enqueue_message(_make_message("m2", root_id="second-topic"))
+            self.assertTrue(second_finished.wait(1))
+        finally:
+            release_first.set()
+            handler.shutdown(wait=True)
+
     def test_same_conversation_is_processed_fifo(self):
         reply_client = _DummyReplyClient()
         processed = []
@@ -62,8 +86,10 @@ class FeishuStreamOrderingTestCase(unittest.TestCase):
 
         handler = FeishuStreamHandler(on_message, reply_client)
         try:
-            handler._enqueue_message(_make_message("m1"))
-            handler._enqueue_message(_make_message("m2"))
+            # Distinct p2p roots are independent topics on the current baseline.
+            # FIFO applies to two messages explicitly belonging to the same root.
+            handler._enqueue_message(_make_message("m1", root_id="topic-root"))
+            handler._enqueue_message(_make_message("m2", root_id="topic-root"))
 
             deadline = time.time() + 1.0
             while len(reply_client.calls) < 2 and time.time() < deadline:

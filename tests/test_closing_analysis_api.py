@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient as ApiClient
 from api.deps import get_current_user, get_database_manager
 from api.v1.endpoints import closing_analysis
 from src.repositories.daily_plan_repo import DailyPlanRepository
+from src.services.closing_report_visibility import record_public_market_review
 from src.storage import DatabaseManager
 from tests.multi_user_helpers import PRIMARY_ID, USER_A, USER_B, UserSwitch
 
@@ -75,7 +76,9 @@ def test_plan_previews_and_the_stock_summary_are_private(tmp_path, monkeypatch, 
     directory = tmp_path / "reports"
     directory.mkdir()
     (directory / "report_20261102.md").write_text("# Primary stocks", encoding="utf-8")
-    (directory / "market_review_20261102.md").write_text("# Market", encoding="utf-8")
+    market_file = directory / "market_review_20261102.md"
+    market_file.write_text("# Market", encoding="utf-8")
+    record_public_market_review(market_file, date(2026, 11, 2), "# Market")
     monkeypatch.setattr(closing_analysis, "_REPORTS_DIR", directory)
     repo = DailyPlanRepository(db)
     repo.create_run(USER_A, "a-run", date(2026, 11, 4), "schedule", [], {})

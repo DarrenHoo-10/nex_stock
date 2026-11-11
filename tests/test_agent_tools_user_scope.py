@@ -261,6 +261,7 @@ _PERSONAL_DATA_MARKERS = (
 )
 # file -> markers it is allowed to contain, and why
 _AUDITED_ALLOWANCES = {
+    "src/agent/tools/api_tools.py": {"DailyPlan"},  # OpenAPI tag examples only; actual calls retain verified identity and visibility classification
     "src/agent/tools/data_tools.py": {"PortfolioService", "PortfolioRiskService"},  # get_portfolio_snapshot: user_scoped
     "src/agent/assistant_memory.py": {"AssistantNote", "assistant_note"},  # takes the session owner's user_id
     "src/agent/events.py": {"alert_rules"},  # in-memory EventMonitor rules, not the per-user alert_rules table

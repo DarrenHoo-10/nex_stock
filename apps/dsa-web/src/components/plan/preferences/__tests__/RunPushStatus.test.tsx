@@ -26,6 +26,11 @@ describe('RunPushStatus', () => {
       expect(status()).toHaveTextContent('飞书推送：已发送');
     });
 
+    it('identifies the subscription handoff even without a local webhook', () => {
+      render(<RunPushStatus push={push({ status: 'skipped', configured: false, sentAt: null, reason: 'managed_feishu' })} />);
+      expect(status()).toHaveTextContent('飞书推送：由 NexBot 按订阅投递');
+    });
+
     it('says nothing was sent when Feishu is not configured, and shows a failure reason', () => {
       const { rerender } = render(<RunPushStatus push={push({ configured: false, status: 'skipped', sentAt: null })} />);
       expect(status()).toHaveTextContent('飞书推送：未配置，没有发送');

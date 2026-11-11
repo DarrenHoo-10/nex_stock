@@ -88,6 +88,8 @@ class FeishuRegistrationService:
         self._lock = threading.Lock()
 
     def start(self, domain: str = "feishu") -> Dict[str, Any]:
+        from src.services.finance_channel_ownership import require_stock_registration
+        require_stock_registration()
         if domain not in ACCOUNTS_HOSTS:
             domain = "feishu"
         # `init` confirms the endpoint supports client_secret apps before we create a device code.
@@ -127,6 +129,8 @@ class FeishuRegistrationService:
         }
 
     def poll(self, session_id: str) -> Dict[str, Any]:
+        from src.services.finance_channel_ownership import require_stock_registration
+        require_stock_registration()
         """Return ``{status, ...}``; on ``success`` also ``app_id``, ``app_secret``, ``open_id``, ``domain``.
 
         The caller consumes the credentials exactly once (``finish`` drops the session).
@@ -215,6 +219,8 @@ def apply_registration(result: Dict[str, Any], config_service: Any) -> Dict[str,
     chat (chat ids belong to one app), so any existing binding is cleared; pushes go
     to the scanner's DM (``FEISHU_CHAT_ID`` = open_id) until a chat is bound again.
     """
+    from src.services.finance_channel_ownership import require_stock_registration
+    require_stock_registration(result.get("app_id"))
     from src.config import get_config
     from src.services.feishu_binding_service import unbind_chat
 

@@ -24,16 +24,16 @@ class SkillOpinionSampleRepository:
     @staticmethod
     def shared_sample_condition():
         """SQL predicate on ``SkillOpinionSampleRecord``: its source report is not private."""
-        private_source = (
+        shared_source = (
             select(AnalysisHistory.id)
             .where(
                 AnalysisHistory.id == SkillOpinionSampleRecord.analysis_history_id,
-                AnalysisHistory.is_private.is_(True),
+                or_(AnalysisHistory.is_private.is_(False), AnalysisHistory.is_private.is_(None)),
             )
             .correlate(SkillOpinionSampleRecord)
             .exists()
         )
-        return ~private_source
+        return shared_source
 
     def insert_missing(self, rows: Iterable[Dict[str, Any]]) -> int:
         values = list(rows)
@@ -84,7 +84,8 @@ class SkillOpinionSampleRepository:
         with self.db.get_session() as session:
             rows = session.execute(
                 select(SkillOpinionSampleRecord)
-                .where(SkillOpinionSampleRecord.analysis_history_id == analysis_history_id)
+                .where(SkillOpinionSampleRecord.analysis_history_id == analysis_history_id,
+                       self.shared_sample_condition())
                 .order_by(SkillOpinionSampleRecord.id)
             ).scalars().all()
             return list(rows)

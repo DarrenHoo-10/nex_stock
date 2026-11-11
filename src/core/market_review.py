@@ -15,11 +15,13 @@ import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional
 import uuid
 
 from src.config import get_config
 from src.notification import NotificationService
+from src.services.closing_report_visibility import record_public_market_review
 from src.market_analyzer import MarketAnalyzer
 from src.report_language import normalize_report_language
 from src.search_service import SearchService
@@ -322,6 +324,8 @@ def run_market_review(
                     markdown_report,
                     report_filename
                 )
+                if isinstance(filepath, (str, Path)):
+                    record_public_market_review(Path(filepath), datetime.strptime(date_str, '%Y%m%d').date(), markdown_report)
                 logger.info(
                     "[MarketReview] component=market_review action=save_report "
                     "trigger_source=%s query_id=%s region=%s path=%s",

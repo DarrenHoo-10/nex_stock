@@ -52,14 +52,14 @@ class BacktestRepository:
 
     @staticmethod
     def shared_result_condition():
-        """SQL predicate on ``BacktestResult``: its source report is not private (also true without a source)."""
-        private_source = (
+        """Only published source reports may contribute to a shared derived result."""
+        shared_source = (
             select(AnalysisHistory.id)
-            .where(AnalysisHistory.id == BacktestResult.analysis_history_id, AnalysisHistory.is_private.is_(True))
+            .where(AnalysisHistory.id == BacktestResult.analysis_history_id, BacktestRepository.shared_report_condition())
             .correlate(BacktestResult)
             .exists()
         )
-        return ~private_source
+        return shared_source
 
     def get_candidates(
         self,
@@ -357,6 +357,7 @@ class BacktestRepository:
         analysis_date_to: Optional[date] = None,
         days: Optional[int] = None,
         limit: Optional[int] = None,
+        code_candidates: Optional[Tuple[str, ...]] = None,
     ) -> List[BacktestResult]:
         with self.db.get_session() as session:
             conditions = self._build_result_conditions(
@@ -366,6 +367,7 @@ class BacktestRepository:
                 analysis_date_from=analysis_date_from,
                 analysis_date_to=analysis_date_to,
                 days=days,
+                code_candidates=code_candidates,
             )
             where_clause = and_(*conditions) if conditions else True
             query = (

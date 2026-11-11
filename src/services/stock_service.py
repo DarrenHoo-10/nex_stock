@@ -49,6 +49,8 @@ class StockService:
             if quote is None:
                 logger.warning(f"获取 {stock_code} 实时行情失败")
                 return None
+            from src.services.stock_list_parser import parse_analysis_target
+            identity = parse_analysis_target(stock_code)
             
             # UnifiedRealtimeQuote 是 dataclass，使用 getattr 安全访问字段
             # 字段映射: UnifiedRealtimeQuote -> API 响应
@@ -78,6 +80,15 @@ class StockService:
                 "turnover_rate": getattr(quote, "turnover_rate", None),
                 "float_shares": resolve_float_shares(quote),
                 "update_time": datetime.now().isoformat(),
+                "source": getattr(getattr(quote, "source", None), "value", getattr(quote, "source", None)),
+                "provider_timestamp": getattr(quote, "provider_timestamp", None),
+                "fetched_at": getattr(quote, "fetched_at", None),
+                "is_stale": getattr(quote, "is_stale", None),
+                "market": getattr(quote, "market", None),
+                "currency": getattr(quote, "currency", None),
+                "canonical_id": identity.canonical_id,
+                "asset_type": identity.asset_type,
+                "exchange": identity.exchange,
             }
             
         except ImportError:
@@ -153,6 +164,7 @@ class StockService:
                 "stock_name": stock_name,
                 "period": period,
                 "data": data,
+                "source": source,
             }
             
         except ImportError:

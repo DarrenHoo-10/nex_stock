@@ -204,13 +204,15 @@ class MacroService:
 
     # -- read -----------------------------------------------------------
     def overview(self, *, months: int = MONTHS_BACK) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
+        out: Dict[str, Any] = {"evidence": {}}
         for series in ("pmi", "money", "social_financing", "lpr"):
             rows = self.repo.latest(series, limit=months)
             out[series] = [{"period": r["period"], **r["value"]} for r in rows]
+            out["evidence"][series] = [_observation_evidence(r, "daily" if series == "lpr" else "monthly") for r in rows]
         valuation = self.repo.latest("index_valuation", limit=1)
         out["index_valuation"] = ({"trade_date": valuation[0]["period"], "indices": valuation[0]["value"]["indices"]}
                                   if valuation else None)
+        out["evidence"]["index_valuation"] = [_observation_evidence(r, "daily") for r in valuation]
         out["fetched_at"] = {s: (v.isoformat(timespec="seconds") if v else None)
                              for s, v in ((s, self.repo.last_fetched(s)) for s in SERIES_LABELS)}
         out["units"] = {
@@ -223,7 +225,14 @@ class MacroService:
         rows = self.repo.latest(f"index_weight:{index_code}", limit=1)
         if not rows:
             return None
-        return {"trade_date": rows[0]["period"], **rows[0]["value"]}
+        return {"trade_date": rows[0]["period"], **rows[0]["value"], "evidence": _observation_evidence(rows[0], "monthly_snapshot")}
+
+
+def _observation_evidence(row: Dict[str, Any], granularity: str) -> Dict[str, Any]:
+    fetched = row.get("fetched_at")
+    return {"source": row.get("source"), "period": row["period"], "granularity": granularity,
+            "marketTimezone": "Asia/Shanghai", "observedAt": None,
+            "fetchedAt": fetched.isoformat() if hasattr(fetched, "isoformat") else fetched}
 
 
 def _ymd(day: date) -> str:

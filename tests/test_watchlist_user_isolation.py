@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi.routing import APIRoute
 
 try:
     import litellm  # noqa: F401
@@ -23,6 +22,7 @@ from tests.multi_user_helpers import (  # noqa: E402
     USER_A,
     USER_B,
     build_multi_user_app,
+    effective_api_routes,
     teardown_multi_user_env,
 )
 from api.deps import get_current_user  # noqa: E402
@@ -107,12 +107,12 @@ def test_watchlist_routes_depend_on_current_user_and_take_no_user_id():
 
     app = create_app()
     checked = 0
-    for route in app.routes:
-        if isinstance(route, APIRoute) and route.path.startswith("/api/v1/stocks/watchlist"):
+    for path, _, dependant in effective_api_routes(app):
+        if path.startswith("/api/v1/stocks/watchlist"):
             checked += 1
-            dependencies = {dep.call for dep in route.dependant.dependencies}
-            assert get_current_user in dependencies, route.path
-            assert "user_id" not in {param.name for param in route.dependant.query_params}
+            dependencies = {dep.call for dep in dependant.dependencies}
+            assert get_current_user in dependencies, path
+            assert "user_id" not in {param.name for param in dependant.query_params}
     assert checked == 3
 
 

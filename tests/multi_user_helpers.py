@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 import pytest
+from fastapi import routing
 from fastapi.testclient import TestClient
 
 import src.auth as auth
@@ -25,6 +26,20 @@ from api.deps import CurrentUser, get_current_user
 from src.config import Config
 from src.core.config_registry import SCOPE_USER, get_config_scope
 from src.storage import DatabaseManager
+
+
+def effective_api_routes(app):
+    """Yield mounted paths and their dependency graphs for eager and lazy FastAPI routers."""
+    contexts = getattr(routing, "iter_route_contexts", None)
+    if contexts is None:
+        for route in app.routes:
+            if isinstance(route, routing.APIRoute):
+                yield route.path, route.methods, route.dependant
+        return
+    for context in contexts(app.routes):
+        if isinstance(context.original_route, routing.APIRoute):
+            effective = getattr(context, "_effective_route", context.original_route)
+            yield context.path, context.methods, effective.dependant
 
 PRIMARY_ID = "uid-primary"
 USER_A = "uid-user-a"

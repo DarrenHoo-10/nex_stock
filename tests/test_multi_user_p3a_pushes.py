@@ -148,6 +148,48 @@ def test_non_primary_user_without_a_channel_gets_no_push_and_never_the_system_ch
     assert app.http.calls == []
 
 
+def test_finance_handoff_keeps_separate_personal_channels_and_stops_the_shared_target(app, monkeypatch):
+    from src.services import finance_channel_ownership as channel
+    from tests.p3a_helpers import FEISHU
+
+    money_app = get_config().feishu_app_id
+    monkeypatch.setattr(channel, "setting", lambda key: {
+        "FINANCE_FEISHU_MANAGED": "true", "FINANCE_FEISHU_APP_ID": money_app,
+    }.get(key, ""))
+    for owner in ("paused", "core"):
+        channel.transition(channel.channel_state()["version"], owner)
+
+    _channel(app, USER_A)
+    assert create_channel(app.as_user(USER_A), "feishu", FEISHU).status_code == 201
+    personal = _plan_service(app, USER_A, model=True)
+    personal.set_holdings_snapshot(100_000.0, [_holding()])
+    assert personal.trigger_run(wait=True)["push"]["status"] == "sent"
+    assert set(app.http.hosts()) == {USER_HOST, "open.feishu.example.com"}
+
+    shared_url = get_config().feishu_webhook_url
+    assert create_channel(app.as_user(USER_B), "feishu", {"webhook_url": shared_url}).status_code == 201
+    other = _plan_service(app, USER_B, model=True)
+    other.set_holdings_snapshot(100_000.0, [_holding()])
+    app.http.reset()
+    assert other.trigger_run(wait=True)["push"]["status"] == "failed"
+    assert not app.http.calls
+
+    pushed = []
+    primary = _plan_service(app, PRIMARY_ID, model=True, pushed=pushed)
+    primary.set_holdings_snapshot(100_000.0, [_holding()])
+    run = primary.trigger_run(wait=True)
+    assert run["push"]["status"] == "skipped" and run["push"]["reason"] == "managed_feishu"
+    assert not pushed
+
+    client = app.as_user(PRIMARY_ID)
+    latest = client.get("/api/v1/plan/runs/latest")
+    assert latest.status_code == 200 and latest.json()["run"]["push"]["reason"] == "managed_feishu"
+    primary.repo.update_run(PRIMARY_ID, run["id"], push={"channel": "feishu", "status": "managed"})
+    legacy = client.get(f"/api/v1/plan/runs/{run['id']}")
+    assert legacy.status_code == 200
+    assert legacy.json()["push"]["status"] == "skipped" and legacy.json()["push"]["reason"] == "managed_feishu"
+
+
 def test_a_failing_personal_channel_never_fails_the_run_and_is_recorded_per_channel(app):
     _channel(app, USER_A, webhook_url="https://bad.example.org/in")
     _channel(app, USER_A, webhook_url="https://fine.example.org/in")

@@ -12,6 +12,7 @@ API v1 路由聚合
 from fastapi import APIRouter, Depends
 
 from api.deps import require_admin
+from api.v1.endpoints import finance, finance_assistant
 
 from api.v1.endpoints import (
     agent,
@@ -39,6 +40,8 @@ from api.v1.endpoints import (
 # 创建 v1 版本主路由。
 # /api/v1 前缀在 api.app 挂载，避免新版 FastAPI 误判子路由 "" 为 empty path。
 router = APIRouter()
+router.include_router(finance.router, prefix="/finance", tags=["Finance"])
+router.include_router(finance_assistant.router, prefix="/finance/assistant", tags=["Finance"])
 
 router.include_router(closing_analysis.router, prefix="/closing-analysis", tags=["ClosingAnalysis"])
 

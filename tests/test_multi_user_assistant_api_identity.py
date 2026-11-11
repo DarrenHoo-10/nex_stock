@@ -138,13 +138,13 @@ def test_a_regular_user_cannot_reach_any_admin_route(world):
 
 def test_admin_routes_are_derived_from_the_route_dependencies(world):
     from api.deps import require_admin
-    from fastapi.routing import APIRoute
+    from tests.multi_user_helpers import effective_api_routes
 
     declared = {
-        (method, route.path_format)
-        for route in internal.get_internal_app().routes if isinstance(route, APIRoute)
-        for method in route.methods
-        if any(dep.call is require_admin for dep in _walk(route.dependant))
+        (method, path)
+        for path, methods, dependant in effective_api_routes(internal.get_internal_app())
+        for method in methods
+        if any(dep.call is require_admin for dep in _walk(dependant))
     }
     assert declared and ("PUT", "/api/v1/boards/thresholds") in declared
     for method, template in declared:

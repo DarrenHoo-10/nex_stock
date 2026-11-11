@@ -282,7 +282,7 @@ export interface RunPush {
   error: string | null;
   /** Whether a route exists: the Feishu webhook, or at least one usable personal channel (nothing secret is returned). */
   configured: boolean;
-  /** Personal runs only: why nothing was pushed (`no_model`: the user has no model of their own). */
+  /** Why Stock skipped the push, e.g. `no_model` for a personal schedule or `managed_feishu` for the system route. */
   reason?: string | null;
   /** Personal runs only: what each channel type returned. */
   channels?: RunPushChannelOutcome[];

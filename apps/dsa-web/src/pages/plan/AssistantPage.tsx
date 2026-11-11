@@ -1,3 +1,4 @@
+import { FinanceAssistantBoundary } from '../../components/plan/assistant/FinanceAssistant';
 import type React from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
@@ -113,7 +114,7 @@ const ContextPanel: React.FC<ContextPanelProps> = ({ info, loading, compacting, 
  * /assistant: full-page personal assistant. History sessions on the left; chat with model / reasoning-effort
  * pickers, context usage and manual compaction on the right. Shares the agent chat store with the drawer.
  */
-const AssistantPage: React.FC = () => {
+export const LegacyAssistantPage: React.FC = () => {
   const { t } = useUiLanguage();
   const title = t('layout.nav.assistant');
 
@@ -502,4 +503,5 @@ const AssistantPage: React.FC = () => {
   );
 };
 
+const AssistantPage: React.FC = () => <FinanceAssistantBoundary legacy={<LegacyAssistantPage/>}/>;
 export default AssistantPage;

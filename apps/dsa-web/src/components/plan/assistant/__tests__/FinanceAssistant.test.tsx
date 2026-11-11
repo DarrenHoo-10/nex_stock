@@ -1,0 +1,62 @@
+import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FinanceAssistantBoundary } from '../FinanceAssistant';
+import { financeSource } from '../financeSource';
+import AssistantPage from '../../../../pages/plan/AssistantPage';
+import { AssistantDrawer } from '../AssistantDrawer';
+import { usePlanUiStore } from '../../../../stores/planUiStore';
+import { UiLanguageProvider } from '../../../../contexts/UiLanguageContext';
+const api = vi.hoisted(() => ({ status: vi.fn(), connect: vi.fn(), topics: vi.fn(), messages: vi.fn(), tasks: vi.fn(), models: vi.fn(), action: vi.fn() }));
+vi.mock('../../../../api/financeAssistant', () => ({ financeApi: api }));
+const topic = { conversationId: 'same-core-topic', title: '群里的复盘', audience: 'public', sourceContext: { chatName: '合成群' }, last_activity_at: 1, message_count: 2, unread_count: 1, messages: [{ id: 'answer', role: 'assistant', content: '公开答案', seq: 2 }], activeTask: { id: 'task', status: 'running' } };
+beforeEach(() => { vi.resetAllMocks(); api.status.mockResolvedValue({ managed: true, bound: true }); api.connect.mockResolvedValue({ managed: true, bound: true }); api.topics.mockResolvedValue([topic]); api.messages.mockResolvedValue({ messages: topic.messages, streaming: [] }); api.tasks.mockResolvedValue([]); api.models.mockResolvedValue({ selection: { selected_connection: 'conn', selected_model: 'chosen', selected_reasoning: 'high', model_selection_version: 3 }, connections: [{ id: 'conn', name: 'Provider', defaultModel: 'chosen', enabled: true, configured: true, models: ['chosen'], options: { chosen: { reasoning: ['low', 'high'] } } }] }); api.action.mockResolvedValue({ conversationId: topic.conversationId }); });
+afterEach(cleanup);
+describe('managed finance assistant', () => {
+    it('preserves legacy only when service explicitly says unconfigured', async () => { api.status.mockResolvedValue({ managed: false, bound: false }); render(<FinanceAssistantBoundary legacy={<div>legacy</div>}/>); expect(await screen.findByText('legacy')).toBeInTheDocument(); expect(api.topics).not.toHaveBeenCalled(); });
+    it('does not silently fall back after an identity/network failure', async () => { api.status.mockRejectedValue(Error('unauthorized')); render(<FinanceAssistantBoundary legacy={<div>legacy</div>}/>); expect(await screen.findByRole('alert')).toBeInTheDocument(); expect(screen.queryByText('legacy')).not.toBeInTheDocument(); });
+    it('requires explicit binding then enters the actual managed page', async () => { api.status.mockResolvedValue({ managed: true, bound: false }); render(<AssistantPage />); fireEvent.click(await screen.findByRole('button', { name: '连接金融助手' })); expect(await screen.findByText('群里的复盘')).toBeInTheDocument(); expect(api.connect).toHaveBeenCalledOnce(); });
+    it('continues the selected Core conversation, scopes stop, and preserves retry IDs', async () => {
+        render(<FinanceAssistantBoundary legacy={<div>legacy</div>}/>);
+        fireEvent.click(await screen.findByRole('button', { name: /群里的复盘/ }));
+        expect(await screen.findByText('回复到飞书话题 · 合成群')).toBeInTheDocument();
+        expect(api.messages).toHaveBeenCalledWith('same-core-topic');
+        fireEvent.change(screen.getByLabelText('金融助手消息'), { target: { value: '继续研究' } });
+        api.action.mockRejectedValueOnce(Error('response lost'));
+        fireEvent.click(screen.getByRole('button', { name: '发送' }));
+        await screen.findByText('response lost');
+        const first = api.action.mock.calls.find(call => call[0] === 'input')![1];
+        api.action.mockResolvedValue({ conversationId: topic.conversationId });
+        fireEvent.click(screen.getByRole('button', { name: '发送' }));
+        await waitFor(() => expect(api.action.mock.calls.filter(call => call[0] === 'input')).toHaveLength(2));
+        expect(api.action.mock.calls.filter(call => call[0] === 'input')[1][1]).toEqual(first);
+        expect(first).toMatchObject({ conversationId: 'same-core-topic', text: '继续研究' });
+        expect(first).not.toHaveProperty('audience');
+        fireEvent.click(await screen.findByRole('button', { name: '停止本话题' }));
+        await waitFor(() => expect(api.action).toHaveBeenCalledWith('cancel', { conversationId: 'same-core-topic' }));
+        fireEvent.change(screen.getByLabelText('金融思考强度'), { target: { value: 'low' } });
+        await waitFor(() => expect(api.action).toHaveBeenCalledWith('model', { connectionId: 'conn', model: 'chosen', version: 3, reasoning: 'low' }));
+    });
+    it('opens the actual drawer with holding context and keeps it on first input', async () => {
+        usePlanUiStore.setState({ assistantOpen: true, assistantContext: { kind: 'stock', stockCode: '600000', stockName: '合成持仓', held: true, tradeDate: '2026-11-09' } });
+        render(<UiLanguageProvider><AssistantDrawer /></UiLanguageProvider>);
+        expect(await screen.findByRole('dialog', { name: '金融助手' })).toBeInTheDocument();
+        expect(await screen.findByText(/来源：合成持仓/)).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText('金融助手消息'), { target: { value: '跨标的研究' } });
+        fireEvent.click(screen.getByRole('button', { name: '发送' }));
+        await waitFor(() => expect(api.action).toHaveBeenCalledWith('input', expect.objectContaining({ newConversation: true, sourceContext: { kind: 'holding', code: '600000', name: '合成持仓', tradeDate: '2026-11-09' }, text: '跨标的研究' })));
+    });
+    it('preserves board identifiers and the displayed trade date', () => { expect(financeSource({ kind: 'board', boardId: 'BK1', boardName: '寒潮', tradeDate: '2026-11-09' })).toEqual({ kind: 'board', id: 'BK1', name: '寒潮', tradeDate: '2026-11-09' }); });
+});
+
+it('scopes read/edit/retry and surfaces unknown business effects without starting another task',async()=>{
+ vi.spyOn(document,'hasFocus').mockReturnValue(true);
+ api.messages.mockResolvedValue({messages:[{id:'pending',role:'user',content:'pending question',seq:4,input_status:'pending'}],streaming:[]});
+ api.tasks.mockResolvedValue([{id:'failed-task',objective:'write action',status:'failed',effects:[{id:'unknown-call',tool_name:'connector.call',status:'unknown'}]}]);
+ render(<FinanceAssistantBoundary legacy={<div>legacy</div>}/>);fireEvent.click(await screen.findByRole('button',{name:/群里的复盘/}));
+ await waitFor(()=>expect(api.action).toHaveBeenCalledWith('read',{conversationId:'same-core-topic',seq:4}));
+ fireEvent.click(await screen.findByRole('button',{name:'编辑排队消息'}));fireEvent.change(screen.getByLabelText('金融助手消息'),{target:{value:'corrected question'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+ await waitFor(()=>expect(api.action).toHaveBeenCalledWith('edit',expect.objectContaining({conversationId:'same-core-topic',messageId:'pending',text:'corrected question'})));
+ fireEvent.click(screen.getByText('任务记录 · 1'));expect(screen.getByText('connector.call · unknown')).toBeInTheDocument();
+ api.action.mockRejectedValueOnce(Error('结果未知，请先核对'));fireEvent.click(screen.getByRole('button',{name:'重试任务'}));expect(await screen.findByText('结果未知，请先核对')).toBeInTheDocument();expect(api.action).toHaveBeenCalledWith('retry',expect.objectContaining({conversationId:'same-core-topic',taskId:'failed-task'}));
+ vi.restoreAllMocks();
+});

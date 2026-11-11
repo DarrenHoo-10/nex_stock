@@ -123,6 +123,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
     ):
         path = request.url.path
 
+        # These exact endpoints enforce paired-service credentials and delegated
+        # user identity themselves. A service Bearer never bypasses other routes.
+        from api.v1.endpoints.finance import SERVICE_PATHS
+        if path in SERVICE_PATHS:
+            return await call_next(request)
+
         if is_user_center_mode():
             # CORS preflights carry no cookies; CORSMiddleware answers them.
             if request.method == "OPTIONS" or not _user_center_requires_auth(path):
@@ -133,7 +139,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return auth_error_response(exc)
             request.state.user_center_session = session
             await _record_app_user(session)
-            return await call_next(request)
+            from src.services.finance_identity import session_scope
+            with session_scope(session):
+                return await call_next(request)
 
         if not is_auth_enabled():
             return await call_next(request)

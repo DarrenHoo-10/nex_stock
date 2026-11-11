@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from src.services.finance_channel_ownership import stock_send
 from src.config import Config
 from src.formatters import (
     MIN_MAX_BYTES,
@@ -327,6 +328,7 @@ class FeishuSender:
         text_payload = json.dumps({"text": content}, ensure_ascii=False)
         return self._app_send_raw(client, "text", text_payload, **target_kwargs)
 
+    @stock_send
     def _app_send_raw(
         self, client: Any, msg_type: str, content_json: str, *,
         chat_id: Optional[str] = None, receive_id_type: Optional[str] = None,
@@ -523,6 +525,7 @@ class FeishuSender:
             temp_file.write(sanitized_text)
         return Path(temp_file.name), display_name
 
+    @stock_send
     def _send_file_via_app_bot(
         self, path: Path, *, display_name: Optional[str] = None, target: Any = None,
     ) -> bool:
@@ -624,6 +627,7 @@ class FeishuSender:
     # Webhook path (legacy, unchanged)
     # ------------------------------------------------------------------
 
+    @stock_send
     def _send_via_webhook(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """Legacy webhook send path."""
         formatted_content = format_feishu_markdown(content)
@@ -678,6 +682,7 @@ class FeishuSender:
                 time.sleep(1)
         return success_count == total_chunks
 
+    @stock_send
     def _send_feishu_message(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """Send a single Feishu webhook message (interactive card, fallback text)."""
         prepared_content = self._apply_keyword_prefix(content)

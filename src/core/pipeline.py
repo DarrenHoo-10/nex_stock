@@ -422,7 +422,8 @@ class StockAnalysisPipeline:
         """Requester, privacy and reuse-key columns saved with every new report (docs/design/multi-user.md 7, 17).
 
         A report is private to its requester when it was produced with personal context: a position-aware
-        ``portfolio_context``, or an Agent run that called a personal-data tool (the portfolio snapshot).
+        ``portfolio_context``, a personal-data tool, or a generic ``call_api`` read whose
+        method/path is personal, mixed or unclassified.
         ``model_channel_fingerprint`` identifies the model that actually answered (provider + Base URL + model);
         ``skill_fingerprint`` the effective strategy set it ran with (request skills, else the config view's
         ``AGENT_SKILLS``, else the default skill; ``None`` = not resolvable, never reused directly).

@@ -7,7 +7,7 @@ import { useAgentChatStore } from '../../../stores/agentChatStore';
 import { useAssistantPrefsStore } from '../../../stores/assistantPrefsStore';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { formatTokens, relativeTime } from '../../../components/plan/assistant/assistantFormat';
-import AssistantPage from '../AssistantPage';
+import { LegacyAssistantPage as AssistantPage } from '../AssistantPage';
 
 const api = vi.hoisted(() => ({
   getModels: vi.fn(),
