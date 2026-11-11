@@ -1,4 +1,4 @@
-.managed-finance{display:flex;flex-direction:column;min-height:0;flex:1;gap:16px;padding:20px;overflow:hidden;color:var(--t1)}.finance-actions,.finance-models{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.finance-actions h2{margin:0 auto 0 0;font-size:20px}.finance-models select{flex:1;min-width:130px;border:1px solid var(--line);background:var(--fill2);color:inherit;padding:9px;border-radius:10px}.finance-transcript{overflow:auto;flex:1;min-height:100px}.finance-transcript>small{color:var(--t2)}.finance-message{padding:14px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.finance-message.user{padding-left:18px}.finance-message p{margin:8px 0}.finance-composer{display:flex;gap:10px;flex-wrap:wrap}.finance-composer textarea{flex-basis:100%;min-height:64px;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--fill2);color:inherit;resize:vertical}.finance-task-list{max-height:150px;overflow:auto}.finance-task-list small{display:block;color:var(--t2)}.finance-connect{padding:28px}@media(max-width:600px){.managed-finance{padding:14px}.finance-models select{width:100%}}
+.managed-finance{display:flex;flex-direction:column;min-height:0;flex:1;gap:16px;padding:20px;overflow:hidden;color:var(--t1)}.finance-transcript{overflow:auto;flex:1;min-height:100px}.finance-transcript>small{color:var(--t2)}.finance-message{padding:14px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.finance-message.user{padding-left:18px}.finance-message p{margin:8px 0}.finance-task-list{max-height:150px;overflow:auto}.finance-task-list small{display:block;color:var(--t2)}.finance-connect{padding:28px}@media(max-width:600px){.managed-finance{padding:14px}}
 
 .managed-finance{display:grid;grid-template-columns:minmax(150px,225px) minmax(0,1fr);height:100%;align-items:stretch}
 .finance-sessions,.finance-chat{display:flex;flex-direction:column;min-width:0;min-height:0;gap:10px}
@@ -20,3 +20,21 @@
   .finance-sessions[data-open=false]{display:none}
 }
 @media(max-width:860px){.managed-finance:not(.finance-compact){height:calc(100dvh - 118px)}}
+
+.finance-composer{position:relative;display:flex;flex-direction:column;gap:4px;padding:8px;border:1px solid var(--line);border-radius:16px;background:var(--fill2)}
+.finance-composer:focus-within{border-color:var(--t3)}
+.finance-composer textarea{width:100%;min-height:56px;padding:5px 7px;border:0;background:transparent;color:inherit;resize:vertical;font:inherit}
+.finance-composer-actions,.finance-model-controls{display:flex;align-items:center;justify-content:flex-end;gap:6px;min-width:0;flex-wrap:wrap}
+.finance-composer-actions .btn{padding:5px 12px}
+.finance-model-controls select,.finance-effort>button{max-width:min(27vw,19rem);padding:5px 8px;border-radius:10px;color:inherit;background:var(--fill2);font:inherit;font-size:12px;text-overflow:ellipsis}
+.finance-model-controls option,.finance-model-controls optgroup{background:#343e69;color:white}
+.finance-effort{position:relative}
+.finance-effort-panel{position:absolute;z-index:2;bottom:calc(100% + 10px);right:0;width:max-content;max-width:min(250px,68vw);display:grid;gap:6px;text-align:center;padding:14px;border-radius:16px;background:#353f69;color:white;box-shadow:0 8px 26px #171d4455}
+.finance-effort-panel small{overflow-wrap:anywhere}
+.finance-effort-steps{position:relative;display:flex;width:min(210px,58vw);margin-top:4px}
+.finance-effort-steps::before{content:"";position:absolute;inset:6px calc(50% / var(--steps)) auto;height:5px;border-radius:4px;background:linear-gradient(to right,#79a5ff var(--progress),#687197 var(--progress));pointer-events:none}
+.finance-effort-steps label{position:relative;flex:1;display:grid;justify-items:center;gap:5px;cursor:pointer;font-size:11px}
+.finance-effort-steps input{appearance:none;width:16px;height:16px;margin:0;border:3px solid #5a658e;border-radius:50%;background:#9ca7ca;cursor:pointer}
+.finance-effort-steps input:checked{border-color:#689aff;background:white}
+.finance-effort-steps input:focus-visible{outline:2px solid white;outline-offset:2px}
+.finance-sessions>small{padding:8px;color:var(--t2)}
