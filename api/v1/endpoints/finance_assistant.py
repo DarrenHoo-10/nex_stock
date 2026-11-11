@@ -135,12 +135,12 @@ def fetch_resource(resource: str, request: Request, conversation_id: str | None 
 @router.post("/{action}")
 def perform_action(action: str, request: Request, data: dict = Body(...)):
     routes = {"input": "agents/input", "read": "agents/read", "cancel": "agents/cancel", "edit": "agents/edit",
-              "retry": "agents/retry", "model": "bots/model"}
+              "retry": "agents/retry", "delete": "agents/delete-topic", "model": "bots/model"}
     if action not in routes:
         fail(404, "FINANCE_ACTION_NOT_FOUND")
     if action == "input" and not data.get("conversationId") and data.get("newConversation") is not True:
         fail(400, "FINANCE_TOPIC_REQUIRED")
-    if action in {"read", "cancel", "edit", "retry"} and not data.get("conversationId"):
+    if action in {"read", "cancel", "edit", "retry", "delete"} and not data.get("conversationId"):
         fail(400, "FINANCE_TOPIC_REQUIRED")
     bot_id, token = core_session(request, write=True)
     payload = {**data, "botId": bot_id}

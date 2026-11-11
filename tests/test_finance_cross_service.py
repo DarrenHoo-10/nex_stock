@@ -95,6 +95,9 @@ def services(tmp_path,monkeypatch):
         from src.storage import DatabaseManager
         Config.reset_instance();DatabaseManager.reset_instance()
         import src.auth as auth
+        # Restoring environment variables alone leaves user-center mode cached in later tests.
+        for attr in ("_auth_enabled", "_auth_mode", "_session_secret"):
+            monkeypatch.setattr(auth, attr, None)
         auth.refresh_auth_state()
         # Provider boundary only: service mapping and the actual quote route remain real.
         from data_provider.base import DataFetcherManager
@@ -175,6 +178,16 @@ def test_stock_core_real_http_identity_topics_and_revocation(services):
     assert feishu_topic["sourceContext"]["chatId"]=="synthetic-dm"
     assert "synthetic Feishu quote answer" in f.stock(prefix+"/messages?conversationId="+feishu_topic["conversationId"]).text
     assert any("123.45" in (row["result_json"] or "") for row in f.command("inspect",subject="synthetic-owner-uid"))
+    removed = feishu_topic["conversationId"]
+    assert f.stock(prefix+"/delete", "other", method="POST", body={"conversationId": removed}).status_code >= 400
+    for _ in range(2):
+        deleted = f.stock(prefix+"/delete", method="POST", body={"conversationId": removed})
+        assert deleted.status_code == 200 and deleted.json()["deleted"]
+    assert removed not in f.stock(prefix+"/topics").text
+    assert removed not in f.core("agents/topics?bot="+finance).text
+    assert removed not in f.core("agents/messages?bot="+finance).text
+    assert f.core("agents/messages?bot="+finance+"&conversationId="+removed).status_code >= 400
+    assert visible()
     grants=f.stock("/api/v1/finance/delegations").json()["delegations"]
     assert grants
     revoked=f.stock("/api/v1/finance/delegations/"+grants[0]["delegationId"],method="DELETE")

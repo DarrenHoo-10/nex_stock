@@ -53,7 +53,11 @@ function ManagedFinanceAssistant({ source, compact = false }: {
         const live = () => version === epoch.current && topic === current.current;
         const report = (failure: unknown) => { if (live()) setError(getParsedApiError(failure).message); };
         const list = api.topics().then(value => {
-            if (live()) { setTopics(value); setTopicState('ready'); setTopicError(''); }
+            if (!live()) return;
+            setTopics(value); setTopicState('ready'); setTopicError('');
+            if (topic && !value.some(item => item.conversationId === topic)) {
+                discardRemovedSession(topic);
+            }
         }).catch(failure => {
             if (live()) { setTopicState('failed'); setTopicError(getParsedApiError(failure).message); }
         });
@@ -126,6 +130,29 @@ function ManagedFinanceAssistant({ source, compact = false }: {
         } finally { setSavingModel(false); }
     }
     const [sessionsOpen, setSessionsOpen] = useState(false);
+    const [confirmDelete, setConfirmDelete] = useState<string>(), [removing, setRemoving] = useState<string>();
+    function discardRemovedSession(id: string) {
+        drafts.current.delete(id);
+        if (current.current !== id) return;
+        ++epoch.current;
+        current.current = null;
+        pending.current = null;
+        request.current = null;
+        setSelected(null); setDrafting(true); setDraft(drafts.current.get('new') ?? '');
+        setFeed({ messages: [], streaming: [] }); setTasks([]); setEditing(undefined); setError('');
+    }
+    async function removeSession(id: string) {
+        if (removing) return;
+        setRemoving(id);
+        try {
+            await api.action('delete', { conversationId: id });
+            setConfirmDelete(undefined);
+            setTopics(list => list.filter(item => item.conversationId !== id));
+            discardRemovedSession(id);
+            void refresh(true);
+        } catch (failure) { setError(getParsedApiError(failure).message); }
+        finally { setRemoving(undefined); }
+    }
     function selectSession(id: string | null) {
         open(id, id === null);
         setSessionsOpen(false);
@@ -137,12 +164,20 @@ function ManagedFinanceAssistant({ source, compact = false }: {
         {topicState === 'loading' && <small role="status">正在加载会话…</small>}
         {topicState === 'ready' && !topics.length && <small>暂无历史会话</small>}
         {topicState === 'failed' && <div role="alert">会话加载失败：{topicError}<button type="button" onClick={() => void refresh(true)}>重试</button></div>}
-        {topics.map(topic => <button key={topic.conversationId} type="button" aria-current={selected === topic.conversationId ? 'page' : undefined} onClick={() => selectSession(topic.conversationId)}>
-          <strong>{topic.title}</strong><small>{topic.audience === 'public' ? '飞书话题' : '私人会话'}{topic.unread_count ? ' · ' + topic.unread_count + ' 未读' : ''}</small>
-        </button>)}
+        {topics.map(topic => <div className="finance-session-row" key={topic.conversationId}>
+          <button type="button" aria-current={selected === topic.conversationId ? 'page' : undefined} onClick={() => selectSession(topic.conversationId)}>
+            <strong>{topic.title}</strong><small>{topic.audience === 'public' ? '飞书话题' : '私人会话'}{topic.unread_count ? ' · ' + topic.unread_count + ' 未读' : ''}</small>
+          </button>
+          <button type="button" className="finance-remove" title="删除会话" aria-label={'删除会话 ' + topic.title} onClick={() => setConfirmDelete(topic.conversationId)}>×</button>
+          {confirmDelete === topic.conversationId && <div className="finance-remove-confirm">
+            <small>从 Stock 和 NexBot 删除此会话{topic.activeTask ? '，并停止进行中的任务' : ''}？</small>
+            <button type="button" disabled={Boolean(removing)} onClick={() => void removeSession(topic.conversationId)}>确认删除</button>
+            <button type="button" disabled={Boolean(removing)} onClick={() => setConfirmDelete(undefined)}>取消</button>
+          </div>}
+        </div>)}
       </nav>
       <div className="finance-chat">{error ? <div role="alert">{error}<button type="button" aria-label="关闭错误" onClick={()=>setError('')}>关闭</button></div> : null}
- <div className="finance-transcript"><h3>{active?.title ?? '新对话'}</h3><small>{drafting ? '私人草稿' : active?.audience === 'public' ? `回复到飞书话题${typeof active.sourceContext.chatName === 'string' ? ' · ' + active.sourceContext.chatName : ''}` : '私人话题'}</small>{drafting && source ? <p>来源：{source.name ?? source.code ?? source.id}{source.tradeDate ? ' · ' + source.tradeDate : ''}</p> : null}{feed.messages.map(m => <article key={m.id} className={'finance-message ' + m.role}><strong>{m.role === 'user' ? '我' : '金融助手'}</strong><Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>{m.input_status === 'pending' ? <button type="button" onClick={() => { setEditing(m.id); setDraft(m.content); request.current = null; }}>编辑排队消息</button> : null}</article>)}{feed.streaming.map(item => <article key={item.taskId} role="status"><Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown></article>)}{active?.activeTask && !feed.streaming.length ? <p role="status">正在研究…</p> : null}</div><details className="finance-task-list"><summary>任务记录 · {tasks.length}</summary>{tasks.map(task => <div key={task.id}><strong>{task.status}</strong> {task.objective.slice(0, 100)}{task.effects.map(effect => <small key={effect.id}>{effect.tool_name} · {effect.status}</small>)}{['failed', 'cancelled'].includes(task.status) ? <button type="button" onClick={() => { const id = retryIds.current.get(task.id) ?? crypto.randomUUID(); retryIds.current.set(task.id, id); void api.action('retry', { conversationId: selected, taskId: task.id, clientId: id }).then(() => { retryIds.current.delete(task.id); return refresh(); }).catch(e => setError(getParsedApiError(e).message)); }}>重试任务</button> : null}</div>)}</details><form className="finance-composer" onSubmit={e => { e.preventDefault(); void send(); }}><textarea aria-label="金融助手消息" value={draft} onChange={e => setDraft(e.target.value)} placeholder={editing ? '编辑排队消息…' : '继续研究…'} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+ <div className="finance-transcript"><h3>{active?.title ?? '新对话'}</h3><small>{drafting ? '私人草稿' : active?.audience === 'public' ? `回复到飞书话题${typeof active.sourceContext.chatName === 'string' ? ' · ' + active.sourceContext.chatName : ''}` : '私人话题'}</small>{drafting && source ? <p>来源：{source.name ?? source.code ?? source.id}{source.tradeDate ? ' · ' + source.tradeDate : ''}</p> : null}{feed.messages.map(m => <article key={m.id} className={'finance-message ' + m.role}><strong>{m.role === 'user' ? '我' : '金融助手'}</strong><Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>{m.input_status === 'pending' ? <button type="button" onClick={() => { setEditing(m.id); setDraft(m.content); request.current = null; }}>编辑排队消息</button> : null}</article>)}{feed.streaming.map(item => <article key={item.taskId} role="status"><Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown></article>)}{active?.activeTask && !feed.streaming.length ? <p role="status">正在研究…</p> : null}</div>{tasks.length > 0 && <details className="finance-task-list"><summary>任务记录 · {tasks.length}</summary>{tasks.map(task => <div key={task.id}><strong>{task.status}</strong> {task.objective.slice(0, 100)}{task.effects.map(effect => <small key={effect.id}>{effect.tool_name} · {effect.status}</small>)}{['failed', 'cancelled'].includes(task.status) ? <button type="button" onClick={() => { const id = retryIds.current.get(task.id) ?? crypto.randomUUID(); retryIds.current.set(task.id, id); void api.action('retry', { conversationId: selected, taskId: task.id, clientId: id }).then(() => { retryIds.current.delete(task.id); return refresh(); }).catch(e => setError(getParsedApiError(e).message)); }}>重试任务</button> : null}</div>)}</details>}<form className="finance-composer" onSubmit={e => { e.preventDefault(); void send(); }}><textarea aria-label="金融助手消息" value={draft} onChange={e => setDraft(e.target.value)} placeholder={editing ? '编辑排队消息…' : '继续研究…'} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
         void send();
     } }}/><div className="finance-composer-actions"><FinanceModelControls catalog={models} busy={savingModel} onModel={model}/><button className="btn" disabled={sending || !draft.trim()}>{sending ? '发送中…' : '发送'}</button>{selected && active?.activeTask ? <button type="button" className="btn" onClick={() => void api.action('cancel', { conversationId: selected }).then(() => refresh(true)).catch(e => setError(getParsedApiError(e).message))}>停止本话题</button> : null}</div></form></div>

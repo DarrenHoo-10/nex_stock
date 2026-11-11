@@ -23,7 +23,7 @@ describe('managed finance assistant', () => {
             expect(api.topics).toHaveBeenCalledTimes(1);
             expect(screen.getByText('正在加载会话…')).toBeVisible();
             await act(async () => { resolveTopics([topic]); });
-            expect(screen.getByRole('button', { name: /群里的复盘/ })).toBeVisible();
+            expect(screen.getByRole('button', { name: /^群里的复盘/ })).toBeVisible();
             expect(screen.getByLabelText('金融模型').closest('form')).toContainElement(screen.getByLabelText('金融助手消息'));
         } finally { vi.useRealTimers(); }
     });
@@ -39,7 +39,7 @@ describe('managed finance assistant', () => {
     it('requires explicit binding then enters the actual managed page', async () => { api.status.mockResolvedValue({ managed: true, bound: false }); render(<AssistantPage />); fireEvent.click(await screen.findByRole('button', { name: '连接金融助手' })); expect(await screen.findByText('群里的复盘')).toBeInTheDocument(); expect(api.connect).toHaveBeenCalledOnce(); });
     it('continues the selected Core conversation, scopes stop, and preserves retry IDs', async () => {
         render(<FinanceAssistantBoundary legacy={<div>legacy</div>}/>);
-        fireEvent.click(await screen.findByRole('button', { name: /群里的复盘/ }));
+        fireEvent.click(await screen.findByRole('button', { name: /^群里的复盘/ }));
         expect(await screen.findByText('回复到飞书话题 · 合成群')).toBeInTheDocument();
         expect(api.messages).toHaveBeenCalledWith('same-core-topic');
         fireEvent.change(screen.getByLabelText('金融助手消息'), { target: { value: '继续研究' } });
@@ -73,8 +73,8 @@ describe('managed finance assistant', () => {
         api.topics.mockResolvedValue([topic, other]);
         render(<FinanceAssistantBoundary legacy={null}/>);
         const sidebar = await screen.findByRole('navigation', { name: '金融助手会话' });
-        const first = await screen.findByRole('button', { name: /群里的复盘/ });
-        const second = screen.getByRole('button', { name: /第二个会话/ });
+        const first = await screen.findByRole('button', { name: /^群里的复盘/ });
+        const second = screen.getByRole('button', { name: /^第二个会话/ });
         expect(sidebar).toContainElement(first);
         fireEvent.click(first);
         await waitFor(() => expect(first).toHaveAttribute('aria-current', 'page'));
@@ -84,6 +84,35 @@ describe('managed finance assistant', () => {
         expect(second).toHaveAttribute('aria-current', 'page');
         expect(screen.getByLabelText('金融助手消息')).toBeVisible();
     });
+    it('confirms shared deletion and keeps drafts for other conversations', async () => {
+        const other = { ...topic, conversationId: 'second', title: '第二个会话' };
+        let rows = [topic, other];
+        api.topics.mockImplementation(async () => [...rows]);
+        api.action.mockImplementation(async (op, body) => {
+            if (op === 'delete') rows = rows.filter(row => row.conversationId !== body.conversationId);
+        });
+        render(<FinanceAssistantBoundary legacy={null}/>);
+        fireEvent.change(await screen.findByLabelText('金融助手消息'), { target: { value: '新会话的草稿' } });
+        fireEvent.click(await screen.findByRole('button', { name: /^群里的复盘/ }));
+        fireEvent.change(screen.getByLabelText('金融助手消息'), { target: { value: '当前会话草稿' } });
+        expect(screen.queryByText(/任务记录/)).toBeNull();
+        const remove = await screen.findByLabelText('删除会话 第二个会话');
+        fireEvent.click(remove);
+        fireEvent.click(screen.getByRole('button', { name: '取消' }));
+        expect(api.action).not.toHaveBeenCalledWith('delete', expect.anything());
+        fireEvent.click(remove);
+        fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+        await waitFor(() => expect(screen.queryByLabelText('删除会话 第二个会话')).toBeNull());
+        expect(screen.getByLabelText('金融助手消息')).toHaveValue('当前会话草稿');
+        fireEvent.click(screen.getByLabelText('删除会话 群里的复盘'));
+        api.action.mockRejectedValueOnce(Error('delete failed'));
+        fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+        expect(await screen.findByText('delete failed')).toBeVisible();
+        expect(screen.getByLabelText('删除会话 群里的复盘')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+        expect(await screen.findByText('暂无历史会话')).toBeVisible();
+        expect(screen.getByLabelText('金融助手消息')).toHaveValue('新会话的草稿');
+    });
     it('preserves board identifiers and the displayed trade date', () => { expect(financeSource({ kind: 'board', boardId: 'BK1', boardName: '寒潮', tradeDate: '2026-11-09' })).toEqual({ kind: 'board', id: 'BK1', name: '寒潮', tradeDate: '2026-11-09' }); });
 });
 
@@ -91,7 +120,7 @@ it('scopes read/edit/retry and surfaces unknown business effects without startin
  vi.spyOn(document,'hasFocus').mockReturnValue(true);
  api.messages.mockResolvedValue({messages:[{id:'pending',role:'user',content:'pending question',seq:4,input_status:'pending'}],streaming:[]});
  api.tasks.mockResolvedValue([{id:'failed-task',objective:'write action',status:'failed',effects:[{id:'unknown-call',tool_name:'connector.call',status:'unknown'}]}]);
- render(<FinanceAssistantBoundary legacy={<div>legacy</div>}/>);fireEvent.click(await screen.findByRole('button',{name:/群里的复盘/}));
+ render(<FinanceAssistantBoundary legacy={<div>legacy</div>}/>);fireEvent.click(await screen.findByRole('button',{name:/^群里的复盘/}));
  await waitFor(()=>expect(api.action).toHaveBeenCalledWith('read',{conversationId:'same-core-topic',seq:4}));
  fireEvent.click(await screen.findByRole('button',{name:'编辑排队消息'}));fireEvent.change(screen.getByLabelText('金融助手消息'),{target:{value:'corrected question'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
  await waitFor(()=>expect(api.action).toHaveBeenCalledWith('edit',expect.objectContaining({conversationId:'same-core-topic',messageId:'pending',text:'corrected question'})));

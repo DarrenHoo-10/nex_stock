@@ -38,3 +38,8 @@
 .finance-effort-steps input:checked{border-color:#689aff;background:white}
 .finance-effort-steps input:focus-visible{outline:2px solid white;outline-offset:2px}
 .finance-sessions>small{padding:8px;color:var(--t2)}
+
+.finance-session-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.finance-session-row .finance-remove{font-size:18px;color:var(--t2);padding:4px 8px}
+.finance-remove-confirm{grid-column:1/-1;display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding:6px}
+.finance-remove-confirm small{flex-basis:100%}

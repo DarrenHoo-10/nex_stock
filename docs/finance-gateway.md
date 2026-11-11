@@ -148,3 +148,5 @@ P2 的工具执行日志同时识别 runner 的 `arguments` 与 Codex 的 `argum
 显式设置 `NEXBOT_TEST_CHECKOUT` 为包含 `server/personal-os/testing/cross-stock-fixture.ts` 的 NexBot 检出目录，运行 `python -m pytest tests/test_finance_cross_service.py -q`。夹具启动独立 Node Core、合成 nex_user、模型和飞书发送端，以及真实 loopback HTTP Stock 服务与临时 SQLite；只在行情提供方边界返回合成报价，保留认证中间件、业务服务、网关与 Core broker。未配置检出目录时明确跳过。P2 用户数据分支须在用户系统集成工作树实际运行，不能用主线缺少 P2 时的跳过作为通过证据。
 
 用例覆盖两主体原生 Core 登录与 Stock 话题一致、同键重放、跨人及伪造身份拒绝、CSRF、委托与上游会话撤销，以及飞书问答经 Core 金融工具读取 Stock 报价。P2 分支另外覆盖两用户由模型分别经 Core broker 写入并读取自己的自选、公共受众拒绝私域接口，且核对实际工具回执与持久化数据。所有凭据和内容均为合成值，禁止非 loopback DNS/HTTP，LiteLLM 价格表固定使用本地副本，不启动 Stock 调度任务。
+
+左侧会话的删除操作在 Core 按会话 ID 生效，Stock 和 NexBot 同步移除入口。删除会停止该话题的工作。任务记录展示当前会话的执行状态、工具操作和失败重试入口，有记录时才显示。
