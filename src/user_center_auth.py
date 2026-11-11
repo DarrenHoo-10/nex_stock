@@ -29,14 +29,12 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from functools import lru_cache
-from http.cookiejar import DefaultCookiePolicy
-from ipaddress import ip_address
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 from urllib.parse import quote, urlsplit
 
 import requests
 
+from src.core.backend_http import BackendRouteError, backend_request
 from src.auth import read_auth_setting
 
 logger = logging.getLogger(__name__)
@@ -158,52 +156,12 @@ def extract_session_cookie(cookie_headers: Sequence[str]) -> Optional[str]:
     return found[0] if _SESSION_COOKIE_RE.match(found[0]) else None
 
 
-class _UserCenterTLSAdapter(requests.adapters.HTTPAdapter):
-    """Dial the private address but authenticate the configured user-center hostname."""
-
-    def __init__(self, hostname: str):
-        self.hostname = hostname
-        super().__init__(pool_connections=1, pool_maxsize=MAX_CONCURRENT_REQUESTS)
-
-    def init_poolmanager(self, connections, maxsize, block=False, **kwargs):
-        super().init_poolmanager(connections, maxsize, block=block, server_hostname=self.hostname,
-                                 assert_hostname=self.hostname, **kwargs)
-
-
-@lru_cache(maxsize=4)
-def _get_http_session(hostname: str = "") -> requests.Session:
-    session = requests.Session()
-    session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
-    if hostname:
-        session.trust_env = False  # The backend must dial the configured address directly.
-        session.mount("https://", _UserCenterTLSAdapter(hostname))
-    else:
-        adapter = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=MAX_CONCURRENT_REQUESTS)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-    return session
-
-
 def _http_get(url: str, headers: Mapping[str, str], timeout: float) -> requests.Response:
-    """Verify via the optional backend-only route, keeping the public HTTPS identity."""
-    address = read_auth_setting("USER_CENTER_CONNECT_IP")
-    if not address:
-        return _get_http_session().get(url, headers=dict(headers), timeout=timeout, allow_redirects=False)
-
-    parts = urlsplit(url)
-    if parts.scheme != "https" or not parts.hostname:
-        raise _unavailable("Private user center routing requires HTTPS")
     try:
-        ip = ip_address(address)
-    except ValueError as exc:
-        raise _unavailable("Invalid user center connection IP") from exc
-    target = f"[{ip}]" if ip.version == 6 else str(ip)
-    if parts.port is not None:
-        target += f":{parts.port}"
-    return _get_http_session(parts.hostname).get(
-        parts._replace(netloc=target).geturl(), headers={**headers, "Host": parts.netloc},
-        timeout=timeout, allow_redirects=False,
-    )
+        return backend_request("GET", url, connect_ip=read_auth_setting("USER_CENTER_CONNECT_IP"),
+                               pool_size=MAX_CONCURRENT_REQUESTS, headers=dict(headers), timeout=timeout)
+    except BackendRouteError as exc:
+        raise _unavailable(str(exc)) from exc
 
 
 def _unavailable(message: str) -> UserCenterAuthError:

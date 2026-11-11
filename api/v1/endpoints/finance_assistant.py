@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse
 
 from api.v1.endpoints.finance import browser_identity, cookie
+from src.core.backend_http import BackendRouteError, backend_request
 from src.services.finance_identity import FinanceIdentityStore, configuration, fail, setting
 
 router = APIRouter()
@@ -33,9 +34,13 @@ def core_url():
 
 def core_call(method, path, token, *, data=None, params=None):
     try:
-        response = requests.request(method, core_url() + "/api/" + path,
-                                    headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
-                                    json=data, params=params, timeout=(5, 35), allow_redirects=False)
+        response = backend_request(
+            method, core_url() + "/api/" + path, connect_ip=setting("FINANCE_CORE_CONNECT_IP"),
+            pool_size=8, headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+            json=data, params=params, timeout=(5, 35),
+        )
+    except BackendRouteError:
+        fail(503, "FINANCE_CORE_ROUTE_INVALID")
     except requests.RequestException:
         fail(503, "FINANCE_CORE_UNAVAILABLE")
     if response.is_redirect:

@@ -150,6 +150,7 @@ def test_valid_admin_session_reaches_the_route(client, uc_http):
 
 
 def test_private_route_verifies_original_hostname_and_sends_original_host(uc_env, tmp_path, monkeypatch):
+    from src.core.backend_http import backend_session
     from tests.test_multi_user_p3a_hardening import TlsServer, _make_certificate
 
     host = "identity.example.test"
@@ -159,7 +160,7 @@ def test_private_route_verifies_original_hostname_and_sends_original_host(uc_env
     try:
         monkeypatch.setenv("USER_CENTER_CONNECT_IP", "127.0.0.1")
         for name in (host, "wrong.example.test"):
-            monkeypatch.setattr(uc._get_http_session(name), "verify", cert)
+            monkeypatch.setattr(backend_session(name, uc.MAX_CONCURRENT_REQUESTS), "verify", cert)
         response = uc._http_get(f"https://{host}:{server.port}/v1/session", {}, 3)
         assert response.status_code == 200
         assert server.sni == [host]

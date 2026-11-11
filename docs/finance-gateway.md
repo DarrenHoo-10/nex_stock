@@ -6,7 +6,7 @@ Stock 保存金融事实、策略、自选、账户和报告。NexBot Core 使�
 
 多账号部署使用 `AUTH_MODE=user_center`，将 `PRIMARY_USER_ID` 配成历史资产已核实的主人。允许普通用户登录时，按用户系统的部署配置设置 `USER_CENTER_REQUIRED_ROLE=user`；其默认值 `admin` 只接受管理员。用户登录后，具体业务接口仍执行各自的角色检查。
 
-Stock 的 `FINANCE_CORE_URL` 填 Core 根地址。Core 的 `NEX_CORE_STOCK_URL` 填 Stock 根地址，`NEX_CORE_STOCK_TOKEN`、`NEX_CORE_STOCK_INSTANCE`、`NEX_CORE_STOCK_CORE_ID` 分别对应下述三项配对设置。
+Stock 的 `FINANCE_CORE_URL` 填 Core 根地址。可选 `FINANCE_CORE_CONNECT_IP` 指向提供该域名 HTTPS 服务的内网入口；Stock 聊天代理复用连接，使用原域名进行 SNI 和证书校验。内网地址不可用时返回错误。Core 的 `NEX_CORE_STOCK_URL` 填 Stock 根地址，`NEX_CORE_STOCK_TOKEN`、`NEX_CORE_STOCK_INSTANCE`、`NEX_CORE_STOCK_CORE_ID` 分别对应下述三项配对设置。
 
 用户系统 P1 至 P3 已合入 Stock 主线。金融网关沿用已验证登录的用户与角色读取自选、账本、笔记和报告，工具目录也按同一角色显示。P3 由 Stock 按用户设置运行定时计划、使用本人配置的推送渠道。NexBot 的实现和跨仓验收索引见其 `docs/plans/2026-11-09-finance-assistant.md`。
 

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] Stock 金融助手访问 NexBot 可走指定内网 HTTPS 入口，并复用服务间连接以减少会话加载延迟。
+
 - [改进] 金融助手聊天按增量同步，发送后立即显示消息，输入栏上方移除任务记录。
 
 - [改进] 金融助手支持从会话栏删除并同步到 NexBot，通过会话操作菜单确认删除。
