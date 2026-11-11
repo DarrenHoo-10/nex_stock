@@ -4,6 +4,7 @@ import { getParsedApiError } from '../../../api/error';
 import { stocksApi } from '../../../api/stocks';
 import type { StockIntradayBar } from '../../../api/stocks';
 import { useUiLanguage } from '../../../contexts/UiLanguageContext';
+import { svgPointer } from './svgPointer';
 import { OpeningAuctionStrip } from './OpeningAuctionStrip';
 import { CHART_COLORS } from './chartTheme';
 import { SESSION_SLOTS, buildIntradaySeries, minuteSlot } from './intradayMath';
@@ -49,9 +50,8 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
   const { t } = useUiLanguage();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [reloadKey, setReloadKey] = useState(0);
-  const [hover, setHover] = useState<number | null>(null);
+  const [hover, setHover] = useState<{ index: number; x: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -94,18 +94,17 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
   };
 
   const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
-    const svg = svgRef.current;
-    if (!svg || series.points.length === 0) {
+    const point = svgPointer(event.currentTarget, event.clientX, event.clientY);
+    if (!point || point.y < TOP || point.y > VOL_TOP + VOL_H) {
+      setHover(null);
       return;
     }
-    const rect = svg.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * W;
-    const index = Math.floor(((x - LEFT) / PLOT_W) * slots);
-    const found = series.points.findIndex((point) => point.slot === index);
-    setHover(found >= 0 ? found : null);
+    const slot = Math.floor(((point.x - LEFT) / PLOT_W) * slots);
+    const index = series.points.findIndex((bar) => bar.slot === slot);
+    setHover(index >= 0 ? { index, x: point.x } : null);
   };
 
-  const activeIndex = hover ?? series.points.length - 1;
+  const activeIndex = hover?.index ?? series.points.length - 1;
   const active = activeIndex >= 0 ? series.points[activeIndex] : null;
 
   let body: React.ReactNode;
@@ -182,7 +181,6 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
           </div>
         </dl>
         <svg
-          ref={svgRef}
           className="qi-svg"
           viewBox={`0 0 ${W} ${H}`}
           role="img"
@@ -253,10 +251,10 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
             return <circle key={point.label} cx={xOf(point.slot)} cy={yOf(point.close)} r="1.6" fill={CHART_COLORS.ma[0]} />;
           })}
 
-          {hover !== null && series.points[hover] ? (
+          {hover && active ? (
             <g pointerEvents="none">
-              <line x1={xOf(series.points[hover].slot)} x2={xOf(series.points[hover].slot)} y1={TOP} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.crossLine} strokeDasharray="3 3" />
-              <circle cx={xOf(series.points[hover].slot)} cy={yOf(series.points[hover].close)} r="3.5" fill={CHART_COLORS.ma[0]} />
+              <line x1={hover.x} x2={hover.x} y1={TOP} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.crossLine} strokeDasharray="3 3" />
+              <circle cx={hover.x} cy={yOf(active.close)} r="3.5" fill={CHART_COLORS.ma[0]} />
             </g>
           ) : null}
         </svg>
@@ -280,8 +278,10 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
           {t('quote.intraday.back')}
         </button>
       </div>
-      <OpeningAuctionStrip key={`${code}/${date}/${reloadKey}`} code={code} date={date} digits={digits} />
-      {body}
+      <div className="qi-session">
+        <OpeningAuctionStrip key={`${code}/${date}/${reloadKey}`} code={code} date={date} digits={digits} />
+        <div className="qi-regular">{body}</div>
+      </div>
     </div>
   );
 };

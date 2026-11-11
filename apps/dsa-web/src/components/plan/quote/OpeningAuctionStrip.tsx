@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { stocksApi, type OpeningAuction } from '../../../api/stocks';
 import { useUiLanguage } from '../../../contexts/UiLanguageContext';
 import { formatVolume } from './klineMath';
+import { svgPointer } from './svgPointer';
 import { CHART_COLORS } from './chartTheme';
 
 const xOf = (time: string) => {
@@ -36,8 +37,9 @@ export function OpeningAuctionStrip({ code, date, digits }: { code: string; date
             <svg width="216" height="44" viewBox="0 0 206 44" role="img" aria-label={t('quote.auction.title')}
               onPointerLeave={() => setHover(null)}
               onPointerMove={(event) => {
-                const box = event.currentTarget.getBoundingClientRect();
-                const x = (event.clientX - box.left) / box.width * 206;
+                const point = svgPointer(event.currentTarget, event.clientX, event.clientY);
+                if (!point) return;
+                const { x } = point;
                 const nearest = points.reduce((best, p, i) =>
                   Math.abs(xOf(p.time) - x) < Math.abs(xOf(points[best].time) - x) ? i : best, 0);
                 setHover(nearest);

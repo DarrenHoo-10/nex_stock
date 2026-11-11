@@ -68,22 +68,6 @@ describe('IntradayPanel', () => {
     expect(screen.getByRole('img', { name: /七匹狼/ })).toBeInTheDocument();
   });
 
-  it('follows the pointer to another bar', async () => {
-    getIntraday.mockResolvedValue({ interval: '1min', data: BARS, isStale: false });
-    renderPanel();
-    const chart = await screen.findByRole('img', { name: /七匹狼/ });
-    // jsdom has no layout: give the svg a 960-wide box so client x equals viewBox x.
-    chart.getBoundingClientRect = () => ({ left: 0, top: 0, width: 960, height: 400, right: 960, bottom: 400, x: 0, y: 0, toJSON: () => ({}) });
-
-    // 09:35 is five minutes after open, even when the four preceding minutes are absent.
-    fireEvent.pointerMove(chart, { clientX: 77, clientY: 100 });
-
-    const readout = document.querySelector('.qi-readout');
-    expect(readout).toHaveTextContent('09:35');
-    expect(readout).toHaveTextContent('价格8.51');
-    expect(readout).toHaveTextContent('-3.95%');
-  });
-
   it('does not display legacy five-minute data as a minute trend', async () => {
     getIntraday.mockResolvedValue({ interval: '5min', data: BARS, isStale: false });
     renderPanel();

@@ -122,11 +122,17 @@
 }
 .plan-shell .qi-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .plan-shell .qi-top h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--t1); }
+.plan-shell .qi-session {
+  display: grid; grid-template-columns: clamp(76px, 17%, 168px) minmax(0, 1fr);
+  flex: 1; min-height: 0; gap: clamp(5px, 1vw, 14px);
+}
+.plan-shell .qi-regular { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
 .plan-shell .qi-auction {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px;
+  display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 6px;
+  min-width: 0; padding-right: 6px; border-right: 1px solid var(--line);
   color: var(--t2); font-size: 12px; font-variant-numeric: tabular-nums;
 }
-.plan-shell .qi-auction svg { max-width: 45%; cursor: crosshair; }
+.plan-shell .qi-auction svg { width: 100%; height: auto; cursor: crosshair; }
 .plan-shell .qi-readout {
   display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; font-size: 12.5px; font-variant-numeric: tabular-nums;
 }
