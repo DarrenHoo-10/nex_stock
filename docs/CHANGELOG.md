@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 首尔网关按私有路由清单连接 Stock 与 NexBot 的 ZeroTier 源站，内部服务可通过专用 DNS 解析。
+
 - [改进] Stock 金融助手访问 NexBot 可走指定内网 HTTPS 入口，并复用服务间连接以减少会话加载延迟。
 
 - [改进] 金融助手聊天按增量同步，发送后立即显示消息，输入栏上方移除任务记录。

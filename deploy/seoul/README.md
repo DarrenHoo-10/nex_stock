@@ -55,9 +55,9 @@ sudo nginx -t && sudo systemctl reload nginx
 # (b) 签发证书
 sudo certbot certonly --webroot -w /opt/nex_stock_frontend/acme -d stock.nexorai.com.cn
 
-# (c) 换成完整配置，并把占位符替换为后端主机的 ZeroTier 内网 IP（当前是 Mac）
+# (c) 按私有路由清单发布 origin 名称，并核对输出为 Stock 的 ZeroTier 地址。
 sudo cp deploy/seoul/stock.nexorai.com.cn.conf $F
-sudo sed -i 's/__BACKEND_ZEROTIER_IP__/<后端 ZeroTier IP>/' $F
+getent ahostsv4 nexstock-origin.nex.internal
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -79,19 +79,7 @@ curl -sI https://stock.nexorai.com.cn/api/login | grep -i '^location'    # 指�
 
 ## 5. 切换后端（迁移 / 回滚）
 
-后端换主机时，只需要改 upstream 里那一行 `server <IP>:8000;`。改之前，新后端要先在首尔主机上通过 `curl -fsS http://<新 IP>:8000/api/health` 检查，并且旧后端已经停掉：同一时间只能有一个后端在运行。
-
-```bash
-F=/etc/nginx/sites-available/stock.nexorai.com.cn
-B=$F.bak-$(date +%Y%m%d-%H%M%S)
-sudo cp -p $F $B                                                              # 先备份（备份留在 sites-available，不会被加载）
-sudo sed -i -E 's/^(\s*server )<旧 IP>:8000;/\1<新 IP>:8000;/' $F
-sudo diff $B $F                                                               # 确认只改了这一行
-sudo nginx -t && sudo systemctl reload nginx                                 # 只 reload，不要 restart
-curl -s https://stock.nexorai.com.cn/api/health
-```
-
-回滚：`sudo cp -p $B $F && sudo nginx -t && sudo systemctl reload nginx`。
+后端迁移先按原有流程交接数据和调度，确保仅一个实例执行生产任务。在首尔用新后端组网地址请求 `/api/health`，然后修改私有清单中的 `nexstock-origin.nex.internal` 地址并发布解析记录。执行 `getent ahostsv4 nexstock-origin.nex.internal`、`sudo nginx -t && sudo systemctl reload nginx`，从公网入口再次检查健康状态。Nginx 在加载配置时解析 upstream，更换记录后必须重载。回滚时恢复原记录并重复验证。具体部署见[内部服务路由](../../docs/internal-service-routing.md)。
 
 ## nginx 配置说明
 

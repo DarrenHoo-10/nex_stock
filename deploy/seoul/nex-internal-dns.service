@@ -1,0 +1,17 @@
+[Unit]
+Description=Nex private service DNS on ZeroTier
+After=network-online.target zerotier-one.service
+Wants=network-online.target
+
+[Service]
+ExecStartPre=/usr/sbin/dnsmasq --test --conf-file=/etc/nex-internal-gateway/dnsmasq.conf
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --pid-file= --conf-file=/etc/nex-internal-gateway/dnsmasq.conf
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
