@@ -2,15 +2,13 @@ import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getParsedApiError } from '../../../api/error';
 import { stocksApi } from '../../../api/stocks';
-import type { StockIntradayBar } from '../../../api/stocks';
+import type { OpeningAuction, StockIntradayBar } from '../../../api/stocks';
 import { useUiLanguage } from '../../../contexts/UiLanguageContext';
 import { svgPointer } from './svgPointer';
-import { OpeningAuctionStrip } from './OpeningAuctionStrip';
 import { CHART_COLORS } from './chartTheme';
 import { SESSION_SLOTS, buildIntradaySeries, minuteSlot } from './intradayMath';
 import { formatVolume } from './klineMath';
 
-const W = 960;
 const H = 400;
 const LEFT = 58;
 const RIGHT = 58;
@@ -19,7 +17,11 @@ const PRICE_H = 244;
 const VOL_TOP = TOP + PRICE_H + 16;
 const VOL_H = 96;
 const AXIS_Y = VOL_TOP + VOL_H + 16;
-const PLOT_W = W - LEFT - RIGHT;
+const NO_AUCTION: OpeningAuction['points'] = [];
+const auctionFraction = (time: string) => {
+  const [, minute, second] = time.split(':').map(Number);
+  return ((minute - 15) * 60 + (second || 0)) / (15 * 60);
+};
 const AXIS_TIMES = ['09:30', '10:30', '11:30', '14:00', '15:00'];
 
 type LoadState =
@@ -50,7 +52,8 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
   const { t } = useUiLanguage();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [reloadKey, setReloadKey] = useState(0);
-  const [hover, setHover] = useState<{ index: number; x: number } | null>(null);
+  const [auction, setAuction] = useState<OpeningAuction | null>(null);
+  const [hover, setHover] = useState<{ session: 'auction' | 'regular'; index: number; x: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -74,16 +77,36 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
   }, [code, date, reloadKey, t]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    stocksApi.getOpeningAuction(code, date, controller.signal)
+      .then((result) => { if (!controller.signal.aborted) setAuction(result); })
+      .catch(() => { if (!controller.signal.aborted) setAuction({ source: null, points: [] }); });
+    return () => controller.abort();
+  }, [code, date]);
+
+  useEffect(() => {
     rootRef.current?.focus();
   }, []);
 
+  const [width, setWidth] = useState(960);
+  useEffect(() => {
+    if (!rootRef.current || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(360, Math.min(960, entry.contentRect.width))));
+    observer.observe(rootRef.current);
+    return () => observer.disconnect();
+  }, []);
+  const openX = LEFT + (width - LEFT - RIGHT) * 0.22;
+  const regularW = width - RIGHT - openX;
+  const auctionX = (time: string) => LEFT + auctionFraction(time) * (openX - LEFT);
+
   const bars = useMemo(() => (state.status === 'ready' ? state.bars : []), [state]);
-  const series = useMemo(() => buildIntradaySeries(bars, prevClose), [bars, prevClose]);
+  const auctionPoints = auction?.points ?? NO_AUCTION;
+  const series = useMemo(() => buildIntradaySeries(bars, prevClose, auctionPoints), [bars, prevClose, auctionPoints]);
   const slots = SESSION_SLOTS;
 
-  const xOf = (index: number) => LEFT + ((index + 0.5) / slots) * PLOT_W;
+  const xOf = (index: number) => openX + ((index + 0.5) / slots) * regularW;
   const yOf = (price: number) => TOP + ((series.max - price) / (series.max - series.min)) * PRICE_H;
-  const barWidth = Math.max(1.5, (PLOT_W / slots) * 0.62);
+  const barWidth = Math.max(1.5, (regularW / slots) * 0.62);
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'Escape') {
@@ -99,23 +122,35 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
       setHover(null);
       return;
     }
-    const slot = Math.floor(((point.x - LEFT) / PLOT_W) * slots);
+    if (point.x >= LEFT && point.x < openX) {
+      const nearest = auctionPoints.reduce((best, p, i) =>
+        Math.abs(auctionX(p.time) - point.x) < Math.abs(auctionX(auctionPoints[best].time) - point.x) ? i : best, 0);
+      setHover(auctionPoints.length ? { session: 'auction', index: nearest, x: point.x } : null);
+      return;
+    }
+    const slot = Math.floor(((point.x - openX) / regularW) * slots);
     const index = series.points.findIndex((bar) => bar.slot === slot);
-    setHover(index >= 0 ? { index, x: point.x } : null);
+    setHover(index >= 0 ? { session: 'regular', index, x: point.x } : null);
   };
 
-  const activeIndex = hover?.index ?? series.points.length - 1;
-  const active = activeIndex >= 0 ? series.points[activeIndex] : null;
+  const selectedAuction = hover?.session === 'auction' ? auctionPoints[hover.index]
+    : !series.points.length ? auctionPoints[auctionPoints.length - 1] : undefined;
+  const active = selectedAuction ? {
+    label: selectedAuction.time, close: selectedAuction.price,
+    changePercent: prevClose > 0 ? (selectedAuction.price / prevClose - 1) * 100 : 0,
+    volume: selectedAuction.volume, avg: null,
+  } : series.points[hover?.index ?? series.points.length - 1];
+  const match = selectedAuction?.time.startsWith('09:25:') && auction?.source !== 'ashareapi';
 
-  let body: React.ReactNode;
+  let notice: React.ReactNode;
   if (state.status === 'loading') {
-    body = (
+    notice = (
       <div className="qi-state" aria-busy="true">
         <p>{t('quote.intraday.loading')}</p>
       </div>
     );
   } else if (state.status === 'error') {
-    body = (
+    notice = (
       <div className="qi-state" role="alert">
         <p>
           {t('quote.intraday.error')}：{state.message}
@@ -132,13 +167,15 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
         </button>
       </div>
     );
-  } else if (!active) {
-    body = (
+  } else if (!series.points.length) {
+    notice = (
       <div className="qi-state" role="status">
         <p>{t('quote.intraday.empty')}</p>
       </div>
     );
-  } else {
+  }
+  let body: React.ReactNode;
+  if (active) {
     const half = (series.max - series.min) / 2;
     const gridPrices = [series.max, prevClose + half / 2, prevClose, prevClose - half / 2, series.min];
     const pathFor = (field: 'close' | 'avg') => series.points.map((point, i) => {
@@ -157,7 +194,7 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
             <dd>{active.label}</dd>
           </div>
           <div>
-            <dt>{t('quote.intraday.price')}</dt>
+            <dt>{t(match ? 'quote.auction.match' : 'quote.intraday.price')}</dt>
             <dd className={signClass(active.changePercent)}>{active.close.toFixed(digits)}</dd>
           </div>
           <div>
@@ -173,7 +210,7 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
           </div>
           <div>
             <dt>{t('quote.volume')}</dt>
-            <dd>{formatVolume(active.volume)}</dd>
+            <dd>{active.volume == null ? '--' : formatVolume(active.volume)}</dd>
           </div>
           <div>
             <dt>{t('quote.intraday.prevClose')}</dt>
@@ -182,12 +219,14 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
         </dl>
         <svg
           className="qi-svg"
-          viewBox={`0 0 ${W} ${H}`}
+          viewBox={`0 0 ${width} ${H}`}
           role="img"
           aria-label={t('quote.intraday.chartLabel', { name, date })}
           onPointerMove={handlePointerMove}
           onPointerLeave={() => setHover(null)}
         >
+          <rect className="qi-auction-band" x={LEFT} y={TOP} width={openX - LEFT} height={VOL_TOP + VOL_H - TOP} />
+          <line x1={openX} x2={openX} y1={TOP} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.grid} />
           {gridPrices.map((price, i) => {
             const isBase = i === 2;
             const percent = ((price - prevClose) / prevClose) * 100;
@@ -195,7 +234,7 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
               <g key={i}>
                 <line
                   x1={LEFT}
-                  x2={W - RIGHT}
+                  x2={width - RIGHT}
                   y1={yOf(price)}
                   y2={yOf(price)}
                   stroke={isBase ? CHART_COLORS.cross : CHART_COLORS.grid}
@@ -205,7 +244,7 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
                   {price.toFixed(digits)}
                 </text>
                 <text
-                  x={W - RIGHT + 6}
+                  x={width - RIGHT + 6}
                   y={yOf(price)}
                   dominantBaseline="middle"
                   fill={isBase ? CHART_COLORS.text : percent > 0 ? CHART_COLORS.up : CHART_COLORS.down}
@@ -218,11 +257,36 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
             );
           })}
 
+          <g aria-label={t('quote.auction.title')}>
+            <text x={LEFT + 6} y={TOP + 15} fill={CHART_COLORS.text} fontSize="11">{t('quote.auction.title')}</text>
+            {!auctionPoints.length && (
+              <text x={LEFT + 6} y={TOP + 32} fill={CHART_COLORS.faint} fontSize="11">
+                {t(auction ? 'quote.auction.empty' : 'quote.intraday.loading')}
+              </text>
+            )}
+            {auctionPoints.length > 1 && (
+              <polyline points={auctionPoints.map(p => [auctionX(p.time), yOf(p.price)].join(',')).join(' ')}
+                fill="none" stroke={CHART_COLORS.ma[3]} strokeWidth="1.6" />
+            )}
+            {auctionPoints.map((p, i) => (
+              <g key={p.time}>
+                <circle cx={auctionX(p.time)} cy={yOf(p.price)} r={auctionPoints.length === 1 ? 2.8 : 1.4} fill={CHART_COLORS.ma[3]} />
+                {p.volume != null && p.volume > 0 && (
+                  <rect x={auctionX(p.time) - barWidth / 2} y={VOL_TOP + VOL_H - p.volume * volumeScale}
+                    width={barWidth} height={p.volume * volumeScale}
+                    fill={p.price >= (auctionPoints[i - 1]?.price ?? prevClose) ? CHART_COLORS.up : CHART_COLORS.down} />
+                )}
+              </g>
+            ))}
+          </g>
+          <text x={LEFT} y={AXIS_Y} textAnchor="middle" fill={CHART_COLORS.faint} fontSize="11">09:15</text>
+
           {series.points.map((point, i) => {
             const before = i === 0 ? prevClose : series.points[i - 1].close;
             const height = point.volume * volumeScale;
             return (
               <rect
+                className="qi-minute-volume"
                 key={point.label}
                 x={xOf(point.slot) - barWidth / 2}
                 y={VOL_TOP + VOL_H - height}
@@ -233,9 +297,9 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
               />
             );
           })}
-          <line x1={LEFT} x2={W - RIGHT} y1={VOL_TOP + VOL_H} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.grid} />
+          <line x1={LEFT} x2={width - RIGHT} y1={VOL_TOP + VOL_H} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.grid} />
 
-          {AXIS_TIMES.map((label) => {
+          {AXIS_TIMES.filter(label => width >= 560 || (label !== '10:30' && label !== '14:00')).map((label) => {
             const index = minuteSlot(label);
             return (
               <text key={label} x={xOf(index)} y={AXIS_Y} textAnchor="middle" fill={CHART_COLORS.faint} fontSize="11">
@@ -244,17 +308,17 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
             );
           })}
 
-          <path d={pathFor('close')} fill="none" stroke={CHART_COLORS.ma[0]} strokeWidth="1.6" strokeLinejoin="round" />
+          <path d={pathFor('close')} fill="none" stroke={CHART_COLORS.ma[3]} strokeWidth="1.6" strokeLinejoin="round" />
           <path d={pathFor('avg')} fill="none" stroke={CHART_COLORS.avgCost} strokeWidth="1.3" />
           {series.points.map((point, i) => {
             if (series.points[i - 1]?.slot === point.slot - 1 || series.points[i + 1]?.slot === point.slot + 1) return null;
-            return <circle key={point.label} cx={xOf(point.slot)} cy={yOf(point.close)} r="1.6" fill={CHART_COLORS.ma[0]} />;
+            return <circle key={point.label} cx={xOf(point.slot)} cy={yOf(point.close)} r="1.6" fill={CHART_COLORS.ma[3]} />;
           })}
 
           {hover && active ? (
             <g pointerEvents="none">
               <line x1={hover.x} x2={hover.x} y1={TOP} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.crossLine} strokeDasharray="3 3" />
-              <circle cx={hover.x} cy={yOf(active.close)} r="3.5" fill={CHART_COLORS.ma[0]} />
+              <circle cx={hover.x} cy={yOf(active.close)} r="3.5" fill={CHART_COLORS.ma[3]} />
             </g>
           ) : null}
         </svg>
@@ -278,10 +342,8 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
           {t('quote.intraday.back')}
         </button>
       </div>
-      <div className="qi-session">
-        <OpeningAuctionStrip key={`${code}/${date}/${reloadKey}`} code={code} date={date} digits={digits} />
-        <div className="qi-regular">{body}</div>
-      </div>
+      {body}
+      {notice}
     </div>
   );
 };

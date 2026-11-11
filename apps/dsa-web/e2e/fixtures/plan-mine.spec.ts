@@ -429,20 +429,32 @@ test.describe('我的股票 page', () => {
       source: 'biying', points: [{ time: '09:15:00', price: 41.4 }, { time: '09:25:00', price: 41.2, volume: 1000 }],
     } }));
     await page.setViewportSize({ width: 1840, height: 900 });
-    await page.goto('/mine');
+    await page.goto('/mine?code=002475');
     await page.getByRole('img', { name: /K 线图/ }).dblclick();
     const panel = page.getByRole('group', { name: /分时走势/ });
     await expect(panel.locator('.qi-readout')).toContainText('15:00');
-    await expect(panel.locator('svg rect')).toHaveCount(240);
     const chart = panel.locator('.qi-svg');
-    const auction = await panel.locator('.qi-auction').boundingBox();
-    const plot = await chart.boundingBox();
-    expect(auction!.x + auction!.width).toBeLessThanOrEqual(plot!.x);
-    expect(auction!.y + auction!.height).toBeGreaterThan(plot!.y);
+    await expect(chart.locator('.qi-minute-volume')).toHaveCount(240);
     await chart.scrollIntoViewIfNeeded();
+    const auction = chart.locator('g[aria-label="开盘集合竞价"]');
+    await expect(auction.locator('rect')).toHaveCount(1);
+    const match = (await auction.locator('circle').last().boundingBox())!;
+    const band = (await chart.locator('.qi-auction-band').boundingBox())!;
+    const firstBar = (await chart.locator('.qi-minute-volume').first().boundingBox())!;
+    const baseline = (await chart.locator('line[stroke-dasharray="5 4"]').boundingBox())!;
+    expect(Math.abs(match.y + match.height / 2 - baseline.y)).toBeLessThan(1);
+    expect(match.x).toBeGreaterThan(band.x);
+    expect(match.x + match.width).toBeLessThan(band.x + band.width);
+    expect(band.x + band.width).toBeLessThan(firstBar.x);
+    expect(Math.abs(band.y + band.height - firstBar.y - firstBar.height)).toBeLessThan(1);
+    const matchX = Math.round(match.x + match.width / 2);
+    await page.mouse.move(matchX, Math.round(match.y + match.height / 2));
+    await expect(panel.locator('.qi-readout')).toContainText('09:25:00');
+    await expect(panel.locator('.qi-readout')).toContainText('撮合价');
+    expect(Math.abs((await chart.locator('g[pointer-events="none"] line').boundingBox())!.x - matchX)).toBeLessThan(1);
     // Use rendered volume bars as targets so the assertions also cover SVG letterboxing.
     for (const [index, time] of [[9, '09:40'], [200, '14:21']] as const) {
-      const bar = (await chart.locator('rect').nth(index).boundingBox())!;
+      const bar = (await chart.locator('.qi-minute-volume').nth(index).boundingBox())!;
       const x = Math.round(bar.x + bar.width / 2);
       await page.mouse.move(x, Math.round(bar.y + bar.height / 2));
       await expect(panel.locator('.qi-readout')).toContainText(time);
@@ -450,6 +462,10 @@ test.describe('我的股票 page', () => {
       expect(Math.abs(guide!.x - x)).toBeLessThan(1);
     }
     await panel.screenshot({ path: testInfo.outputPath('intraday.png'), animations: 'disabled' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(chart).toBeVisible();
+    await expect.poll(() => chart.evaluate(el => el.getBoundingClientRect().width)).toBeLessThan(390);
+    await panel.screenshot({ path: testInfo.outputPath('intraday-mobile.png'), animations: 'disabled' });
   });
 
   test('问助手 opens the assistant on the selected stock', async ({ page }) => {

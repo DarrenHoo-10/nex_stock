@@ -45,8 +45,10 @@ describe('IntradayPanel', () => {
       { time: '09:15:00', price: 8.3 }, { time: '09:25:00', price: 8.52 },
     ] });
     renderPanel();
-    expect(await screen.findByRole('img', { name: '开盘集合竞价' })).toBeInTheDocument();
-    expect(screen.getByText('09:25:00 · 价格 8.52')).toBeInTheDocument();
+    await screen.findByText('09:25:00');
+    expect(document.querySelector('.qi-readout')).toHaveTextContent('价格8.52');
+    expect(document.querySelector('.qi-svg polyline')).toBeInTheDocument();
+    expect(document.querySelector('.qi-svg g[aria-label] rect')).toBeNull();
   });
 
   it('displays a match as a single result without adding it to the minute bars', async () => {
@@ -55,8 +57,12 @@ describe('IntradayPanel', () => {
       { time: '09:25:00', price: 8.48, volume: 500 },
     ] });
     renderPanel();
-    expect(await screen.findByText('09:25:00 · 撮合价 8.48')).toBeInTheDocument();
-    expect(screen.getByText('成交量 500')).toBeInTheDocument();
+    await screen.findByText('15:00', { selector: 'dd' });
+    const auction = document.querySelector('.qi-svg g[aria-label]');
+    expect(auction?.querySelectorAll('circle')).toHaveLength(1);
+    expect(auction?.querySelectorAll('rect')).toHaveLength(1);
+    expect(auction?.querySelector('polyline')).toBeNull();
+    expect(document.querySelectorAll('.qi-minute-volume')).toHaveLength(BARS.length);
     expect(document.querySelector('.qi-readout')).toHaveTextContent('15:00');
   });
 

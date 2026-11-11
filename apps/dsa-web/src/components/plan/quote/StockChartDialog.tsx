@@ -295,7 +295,7 @@ export const StockChartBody: React.FC<StockChartBodyProps> = ({ target, onAddWat
         />
         {intradayDay ? (
           <IntradayPanel
-            key={intradayDay.date}
+            key={`${target.code}/${intradayDay.date}`}
             code={target.code}
             name={name}
             date={intradayDay.date}

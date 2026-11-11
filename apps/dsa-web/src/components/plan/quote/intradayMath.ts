@@ -1,4 +1,4 @@
-import type { StockIntradayBar } from '../../../api/stocks';
+import type { OpeningAuction, StockIntradayBar } from '../../../api/stocks';
 
 /** Minutes on the trading clock, including both sessions' opening and closing timestamps. */
 export const SESSION_SLOTS = 242;
@@ -37,7 +37,7 @@ export function barLabel(time: string): string {
 }
 
 /** Builds the price / average / volume series; the average is cumulative amount over cumulative volume. */
-export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number): IntradaySeries {
+export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number, auction: OpeningAuction['points'] = []): IntradaySeries {
   let totalAmount = 0;
   let totalVolume = 0;
   let lastAvg: number | null = null;
@@ -59,7 +59,7 @@ export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number)
     };
   });
 
-  let reach = 0;
+  let reach = auction.reduce((peak, p) => Math.max(peak, Math.abs(p.price - prevClose)), 0);
   for (const bar of regularBars) {
     reach = Math.max(reach, Math.abs(bar.close - prevClose));
     if (bar.high != null) {
@@ -75,6 +75,7 @@ export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number)
     points,
     min: prevClose - half,
     max: prevClose + half,
-    maxVolume: points.reduce((peak, point) => Math.max(peak, point.volume), 0),
+    maxVolume: points.reduce((peak, point) => Math.max(peak, point.volume),
+      auction.reduce((peak, p) => Math.max(peak, p.volume ?? 0), 0)),
   };
 }
