@@ -62,7 +62,30 @@
 .plan-shell .win::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;transition:opacity .4s;background:radial-gradient(520px circle at var(--mx,50%) var(--my,0%),rgba(255,255,255,.07),transparent 60%)}
 .plan-shell .win:hover::before{opacity:1}
 /* 悬浮导航（visionOS 侧边装饰条） */
-.plan-shell .ornament{position:fixed;left:22px;top:50%;transform:translateY(-50%);z-index:var(--z-orn);display:flex;flex-direction:column;gap:4px;padding:8px;border-radius:40px;width:78px}
+.plan-shell .orn-rail {
+  position: fixed;
+  inset: max(16px, env(safe-area-inset-top)) auto max(16px, env(safe-area-inset-bottom)) max(22px, env(safe-area-inset-left));
+  z-index: var(--z-orn);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 78px;
+  pointer-events: none;
+}
+.plan-shell .ornament {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  margin-block: auto;
+  padding: 8px;
+  border-radius: 40px;
+  overflow-y: auto;
+  pointer-events: auto;
+}
+@media (min-width: 861px) {
+  .plan-shell .ornament > * { flex-shrink: 0; }
+}
 .plan-shell .orn-btn{position:relative;isolation:isolate;border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:2px;padding:11px 0 9px;border-radius:26px;color:var(--t3);font-size:11px;transition:color .25s}
 .plan-shell .orn-btn:hover{color:#fff}
 .plan-shell .orn-btn[aria-current=page]{color:#fff;font-weight:600}
@@ -362,7 +385,8 @@
 }
 @media (max-width:860px){
   .plan-shell .app{padding:18px 16px 120px}
-  .plan-shell .ornament{left:50%;top:auto;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);flex-direction:row;width:max-content;max-width:calc(100vw - 16px);padding:6px;border-radius:999px}
+  .plan-shell .orn-rail{display:contents}
+  .plan-shell .ornament{position:fixed;z-index:var(--z-orn);left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);flex-direction:row;width:max-content;max-width:calc(100vw - 16px);margin:0;padding:6px;border-radius:999px;overflow:visible}
   .plan-shell .orn-btn{width:66px;padding:7px 0 5px;border-radius:999px}
   .plan-shell .orn-sep{width:1px;height:auto;margin:8px 2px}
   .plan-shell .head h1{font-size:28px}
@@ -517,9 +541,20 @@
   .plan-shell .toast, .plan-shell .more-pop { background: #3B4474; }
 }
 
-/* Signed-in user label at the top of the ornament nav (AUTH_MODE=user_center only). */
-.plan-shell .orn-user{display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 2px 4px;font-size:10px;color:var(--t3);max-width:100%}
-.plan-shell .orn-user b{max-width:62px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:#fff}
+.plan-shell .orn-user {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 6px;
+  border-radius: 16px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--t3);
+  pointer-events: auto;
+}
+.plan-shell .orn-user b{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600;color:var(--t1)}
 @media (max-width:860px){.plan-shell .orn-user{display:none}}
 .plan-shell .notice.model-key-notice{margin:0 0 14px;justify-content:space-between;align-items:center}
 .plan-shell .notice.model-key-notice b{display:block;margin-bottom:2px}

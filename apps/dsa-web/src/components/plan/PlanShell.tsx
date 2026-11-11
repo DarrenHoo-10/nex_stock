@@ -130,28 +130,30 @@ export const PlanShell: React.FC = () => {
           {t('plan.skipToMain')}
         </a>
 
-        <LayoutGroup id="plan-nav">
-          <nav className="ornament glass" aria-label={t('layout.mainNav')}>
-            {user && isMultiUser ? (
-              <span className="orn-user" data-testid="current-user-badge" aria-label={t('me.userLabel', { name: displayName })}>
-                <b>{displayName}</b>
-                <span>{isAdmin ? t('me.role.admin') : t('me.role.user')}</span>
-              </span>
-            ) : null}
-            {MAIN_ITEMS.filter((item) => isAdmin || !ADMIN_ONLY_PATHS.has(item.to)).map((item) => (
-              <OrnamentLink key={item.to} item={item} reduced={reduced} />
-            ))}
-            <span className="orn-sep" aria-hidden="true" />
-            {/* Regular users have no system preferences (they read /system/config); their settings are personal. */}
-            <OrnamentLink item={isAdmin ? SETTINGS_ITEM : PERSONAL_SETTINGS_ITEM} reduced={reduced} />
-            {logoutUrl ? (
-              <a className="orn-btn" href={logoutUrl} aria-label={t('layout.logout')}>
-                <PlanIcon name="logout" />
-                <span aria-hidden="true">{t('layout.logout')}</span>
-              </a>
-            ) : null}
-          </nav>
-        </LayoutGroup>
+        <aside className="orn-rail">
+          <LayoutGroup id="plan-nav">
+            <nav className="ornament glass" aria-label={t('layout.mainNav')}>
+              {MAIN_ITEMS.filter((item) => isAdmin || !ADMIN_ONLY_PATHS.has(item.to)).map((item) => (
+                <OrnamentLink key={item.to} item={item} reduced={reduced} />
+              ))}
+              <span className="orn-sep" aria-hidden="true" />
+              {/* Regular users have no system preferences (they read /system/config); their settings are personal. */}
+              <OrnamentLink item={isAdmin ? SETTINGS_ITEM : PERSONAL_SETTINGS_ITEM} reduced={reduced} />
+              {logoutUrl ? (
+                <a className="orn-btn" href={logoutUrl} aria-label={t('layout.logout')}>
+                  <PlanIcon name="logout" />
+                  <span aria-hidden="true">{t('layout.logout')}</span>
+                </a>
+              ) : null}
+            </nav>
+          </LayoutGroup>
+          {user && isMultiUser ? (
+            <div className="orn-user glass" role="group" data-testid="current-user-badge" aria-label={t('me.userLabel', { name: displayName })}>
+              <b title={displayName}>{displayName}</b>
+              <span>{isAdmin ? t('me.role.admin') : t('me.role.user')}</span>
+            </div>
+          ) : null}
+        </aside>
 
         <div className="app">
           <main id="main" ref={mainRef} tabIndex={-1}>

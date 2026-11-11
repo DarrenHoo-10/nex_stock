@@ -313,6 +313,38 @@ async function mockMultiUserApi(page: Page, options: MockOptions = {}) {
 }
 
 test.describe('multi-user web UI', () => {
+  test('keeps the account in the lower-left corner clear of the navigation', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await mockMultiUserApi(page, { role: 'admin' });
+    await mockPlanApi(page, { includeBaseApi: false });
+    await page.goto('/mine');
+    await expect(page.getByRole('heading', { level: 1, name: '我的股票' })).toBeVisible();
+    const account = page.getByTestId('current-user-badge');
+    const nav = page.getByRole('navigation', { name: '主导航' });
+    await expect(account).toContainText('管理员');
+    await expect(nav.getByTestId('current-user-badge')).toHaveCount(0);
+
+    for (const height of [800, 440]) {
+      await page.setViewportSize({ width: 1280, height });
+      const footer = await account.boundingBox();
+      const links = await nav.boundingBox();
+      expect(footer).not.toBeNull();
+      expect(links).not.toBeNull();
+      expect(footer!.x).toBeLessThan(40);
+      expect(height - footer!.y - footer!.height).toBeCloseTo(16, 0);
+      expect(links!.y + links!.height).toBeLessThan(footer!.y);
+      const logout = nav.getByRole('link', { name: '退出' });
+      await logout.scrollIntoViewIfNeeded();
+      await expect(logout).toBeInViewport();
+      if (height === 800) {
+        await page.screenshot({ path: testInfo.outputPath('plan-account-position.png') });
+      }
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(account).toBeHidden();
+    await expect(nav.getByRole('link', { name: '退出' })).toBeInViewport();
+  });
+
   test('personal settings: groups, source badges, masked secret, test-model category', async ({ page }, testInfo) => {
     await mockMultiUserApi(page, { role: 'user' });
     await page.goto('/settings/personal');
