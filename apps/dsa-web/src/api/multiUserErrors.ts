@@ -10,6 +10,7 @@ export const MODEL_KEY_REQUIRED_CODE = 'model_key_required';
 
 export const MULTI_USER_ERROR_CODES = [
   ADMIN_REQUIRED_CODE,
+  'USER_CENTER_UNAVAILABLE',
   MODEL_KEY_REQUIRED_CODE,
   'model_route_not_allowed',
   'unsafe_url',
@@ -25,6 +26,7 @@ export type MultiUserErrorCode = (typeof MULTI_USER_ERROR_CODES)[number];
 export type MultiUserErrorText = { title: UiTextKey; message: UiTextKey };
 
 export const MULTI_USER_ERROR_TEXT: Record<MultiUserErrorCode, MultiUserErrorText> = {
+  USER_CENTER_UNAVAILABLE: { title: 'me.error.userCenter.title', message: 'me.error.userCenter.message' },
   ADMIN_REQUIRED: { title: 'me.error.adminRequired.title', message: 'me.error.adminRequired.message' },
   model_key_required: { title: 'me.error.modelKeyRequired.title', message: 'me.error.modelKeyRequired.message' },
   model_route_not_allowed: {

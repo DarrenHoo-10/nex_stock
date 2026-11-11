@@ -487,18 +487,20 @@ test.describe('我的股票 page', () => {
     await expect(page.getByRole('heading', { level: 1, name: '我的股票' })).toBeVisible();
   });
 
-  test('a list error shows a retry that recovers', async ({ page }) => {
+  test('a user center outage shows a retry that recovers', async ({ page }, testInfo) => {
     await mockPlanApi(page);
     let fail = true;
     await page.route('**/api/v1/plan/stocks', async (route) => {
       if (fail) {
-        await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'internal_error', message: '读取失败了' }) });
+        await route.fulfill({ status: 503, json: { error: 'USER_CENTER_UNAVAILABLE', message: 'User center is unreachable' } });
         return;
       }
       await route.fallback();
     });
     await page.goto('/mine');
     await expect(page.getByRole('heading', { level: 2, name: '计划读取失败' })).toBeVisible();
+    await expect(page.getByText('用户中心暂时无法验证你的登录状态，请稍后重试。')).toBeVisible();
+    await page.getByRole('alert').filter({ hasText: '计划读取失败' }).screenshot({ path: testInfo.outputPath('session-unavailable.png') });
     fail = false;
     await page.getByRole('button', { name: '重试' }).click();
     await expect(page.locator('.row[data-code="002475"]')).toBeVisible();

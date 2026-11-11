@@ -219,6 +219,22 @@ def test_user_center_failure_is_503(client, uc_http, failure):
     assert resp.json()["error"] == "USER_CENTER_UNAVAILABLE"
 
 
+@pytest.mark.parametrize("status", [200, 401])
+def test_initial_read_timeout_retries_verification_and_obeys_result(client, uc_http, status):
+    response = session_response() if status == 200 else FakeResponse(401, {})
+    uc_http.side_effect = [requests.ReadTimeout(), response]
+    assert get(client, "/api/v1/_probe").status_code == status
+    assert uc_http.call_count == 2
+
+
+def test_persistent_timeout_fails_closed_after_one_retry(client, uc_http):
+    uc_http.side_effect = requests.ReadTimeout()
+    response = get(client, "/api/v1/_probe")
+    assert response.status_code == 503
+    assert response.json()["error"] == "USER_CENTER_UNAVAILABLE"
+    assert uc_http.call_count == 2
+
+
 def test_429_is_retried_then_succeeds(client, uc_http):
     uc_http.side_effect = [
         FakeResponse(429, {}, headers={"Retry-After": "1"}),

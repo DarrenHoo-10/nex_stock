@@ -13,7 +13,7 @@ this service; every protected request is verified by forwarding that cookie to
 Behaviour (mirrors the nex_asset reference implementation):
 
 * exactly one ``user_session=<64 hex>`` cookie is accepted, anything else is "no session";
-* 3 s timeout, at most 2 concurrent user-center calls, bounded retry on 429;
+* 3 s timeout, at most 2 concurrent user-center calls, bounded retry on 429 and one retry after an initial timeout;
 * a completed verification result is never cached, so logout and role changes
   apply on the very next request;
 * 401 AUTH_REQUIRED / 403 ADMIN_REQUIRED / 503 USER_CENTER_UNAVAILABLE;
@@ -218,6 +218,12 @@ def fetch_session(session_id: str, settings: UserCenterSettings) -> Optional[Use
             raise _unavailable("User center verification is saturated; retry shortly")
         try:
             response = _http_get(url, headers, REQUEST_TIMEOUT_SEC)
+        except requests.Timeout as exc:
+            # Only the read-only session lookup is repeated, before the protected handler runs.
+            if attempt == 0:
+                continue
+            logger.warning("User center session check failed: %s", type(exc).__name__)
+            raise _unavailable("User center verification timed out") from exc
         except requests.RequestException as exc:
             logger.warning("User center session check failed: %s", type(exc).__name__)
             raise _unavailable("User center is unreachable") from exc
