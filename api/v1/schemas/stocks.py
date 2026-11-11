@@ -130,7 +130,7 @@ class StockHistoryResponse(BaseModel):
 
 
 class IntradayBar(BaseModel):
-    """分时（5 分钟）K 线数据点"""
+    """分时（1 或 5 分钟）K 线数据点"""
 
     time: str = Field(..., description="K 线结束时间（北京时间，YYYY-MM-DD HH:MM:SS）")
     open: Optional[float] = Field(None, description="开盘价")
@@ -153,7 +153,7 @@ class OpeningAuctionResponse(BaseModel):
 
 
 class StockIntradayResponse(BaseModel):
-    """某个交易日的分时（5 分钟）行情响应"""
+    """某个交易日的分时（1 或 5 分钟）行情响应"""
 
     stock_code: str = Field(..., description="股票代码")
     trade_date: str = Field(..., description="交易日 YYYY-MM-DD")

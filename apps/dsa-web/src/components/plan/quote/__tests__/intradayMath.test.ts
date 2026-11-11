@@ -19,6 +19,12 @@ describe('barLabel', () => {
 });
 
 describe('buildIntradaySeries', () => {
+  it('keeps missing minutes in place and excludes the lunch break', () => {
+    const timestamps = ['09:31', '09:33', '11:30', '12:15', '13:00', '15:00'];
+    const series = buildIntradaySeries(timestamps.map((time) => bar(`2026-11-06T${time}:00+08:00`, 10, 100, 1000)), 10);
+    expect(series.points.map((point) => point.slot)).toEqual([1, 3, 120, 121, 241]);
+  });
+
   it('averages cumulative amount over cumulative volume', () => {
     const series = buildIntradaySeries(
       [

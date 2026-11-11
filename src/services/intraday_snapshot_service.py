@@ -111,7 +111,7 @@ class QuoteResult:
 
 @dataclass
 class BarsResult:
-    """5-minute bars of the latest session, oldest first (volume in shares)."""
+    """Minute bars of one session, oldest first (volume in shares)."""
 
     code: str
     bars: List[Dict[str, Any]]
@@ -476,11 +476,11 @@ class IntradaySnapshotService:
                   else "no_bars" if "no_bars" in reasons else "not_configured")
         raise IntradayDataUnavailable("5-minute bars unavailable (" + "; ".join(errors) + ")", reason=reason)
 
-    def _bars_from_tushare(self, stock_code: str, code: str) -> List[Dict[str, Any]]:
+    def _bars_from_tushare(self, stock_code: str, code: str, freq: str = "5MIN") -> List[Dict[str, Any]]:
         fetcher = self._fetcher("TushareFetcher")
         if fetcher is None or not hasattr(fetcher, "fetch_rt_min_daily"):
             raise IntradayDataUnavailable("Tushare is not configured", reason="not_configured")
-        df = fetcher.fetch_rt_min_daily(fetcher._convert_stock_code(stock_code), "5MIN")
+        df = fetcher.fetch_rt_min_daily(fetcher._convert_stock_code(stock_code), freq)
         if df is None or df.empty:
             return []
         time_col = "time" if "time" in df.columns else "trade_time"
@@ -508,17 +508,19 @@ class IntradaySnapshotService:
             raise IntradayDataUnavailable("Biying is not configured", reason="not_configured")
         return self._latest_session(fetcher.get_intraday_bars(stock_code, limit=48))
 
-    # -- 5-minute bars of one given session --------------------------------
+    # -- minute bars of one given session --------------------------------
 
-    def get_session_bars(self, stock_code: str, trade_date: str, *, user_id: Optional[str] = None) -> BarsResult:
-        """5-minute bars of ``trade_date`` (``YYYY-MM-DD``), oldest first.
+    def get_session_bars(
+        self, stock_code: str, trade_date: str, *, user_id: Optional[str] = None, minutes: int = 5
+    ) -> BarsResult:
+        """One- or five-minute bars of ``trade_date`` (``YYYY-MM-DD``), oldest first.
 
         ``user_id`` (a non-primary user) takes one on-demand fetch permit when the answer is not cached
         (``OnDemandFetchLimited`` when over the limit); ``None`` = primary user / system, not limited.
 
-        Today's session reuses the live chain (Tushare ``rt_min_daily`` then Biying
-        ``latest``) and falls back to Biying history; any other date comes from Biying
-        history only. A finished session never changes, so past dates are cached for
+        Today's session uses Tushare first (and Biying ``latest`` for five-minute requests),
+        then Biying. Its one-minute chart uses regular-session ticks from the annual plan;
+        five-minute requests use the history bars endpoint. A finished session never changes, so past dates are cached for
         ``PAST_SESSION_TTL_SECONDS``. Raises ``ValueError`` for a malformed or future date.
         """
         try:
@@ -532,13 +534,16 @@ class IntradaySnapshotService:
         code = _intraday_stock_code(stock_code)
         is_today = day == now.date()
         ttl = self.ttl_seconds if is_today else PAST_SESSION_TTL_SECONDS
-        if self._cache.peek_fresh(("bars", code, "5MIN", trade_date), ttl) is None:
+        if minutes not in (1, 5):
+            raise ValueError("unsupported minute interval")
+        key = ("bars", code, f"{minutes}MIN", trade_date)
+        if self._cache.peek_fresh(key, ttl) is None:
             from src.services.on_demand_fetch import require_on_demand_permit
 
             require_on_demand_permit(user_id)
         (bars, source), served_stale = self._cache.get(
-            ("bars", code, "5MIN", trade_date),
-            lambda: self._load_session_bars(stock_code, code, trade_date, is_today),
+            key,
+            lambda: self._load_session_bars(stock_code, code, trade_date, is_today, minutes),
             ttl,
         )
         if is_today:
@@ -579,13 +584,24 @@ class IntradaySnapshotService:
         )
         return result
 
+    def _biying_tick_session(self, fetcher: Any, code: str, day: str, is_today: bool):
+        session, stale = self._cache.get(
+            ("biying_ticks", code, day, is_today),
+            lambda: fetcher.get_tick_session(code, day, is_today),
+            self.ttl_seconds if is_today else PAST_SESSION_TTL_SECONDS,
+        )
+        if stale:
+            # Let the caller's cache mark its own stale response rather than caching it as fresh.
+            raise IntradayDataUnavailable("tick refresh failed")
+        return session
+
     def _load_opening_auction(self, code: str, day: str, is_today: bool, paid_key_allowed: bool = True) -> dict:
         from data_provider.auction_quotes import fetch_auction_quotes
         from src.config import get_config
 
         try:
             fetcher = self._fetcher("BiyingFetcher")
-            points = fetcher.get_opening_auction(code, day, is_today) if fetcher else []
+            points = self._biying_tick_session(fetcher, code, day, is_today).auction if fetcher else []
             if points:
                 return {"points": points, "source": "biying"}
         except Exception as exc:
@@ -608,13 +624,16 @@ class IntradaySnapshotService:
         return {"points": [], "source": None}
 
     def _load_session_bars(
-        self, stock_code: str, code: str, trade_date: str, is_today: bool
+        self, stock_code: str, code: str, trade_date: str, is_today: bool, minutes: int
     ) -> Tuple[List[Dict[str, Any]], str]:
         errors: List[str] = []
         live_reason: Optional[str] = None  # today only: why the live chain gave nothing
         if is_today:
             try:
-                live, source = self._load_bars(stock_code, code)
+                if minutes == 1:
+                    live, source = self._bars_from_tushare(stock_code, code, "1MIN"), "tushare"
+                else:
+                    live, source = self._load_bars(stock_code, code)
                 bars = [bar for bar in live if bar["time"][:10] == trade_date]
                 if bars:
                     return bars, source
@@ -623,9 +642,17 @@ class IntradaySnapshotService:
             except IntradayDataUnavailable as exc:
                 errors.append(str(exc))
                 live_reason = exc.reason
+            except Exception as exc:
+                logger.info("[intraday] live bars failed for %s: %s", code, type(exc).__name__)
+                live_reason = "source_failed"
         try:
             fetcher = self._fetcher("BiyingFetcher")
-            bars = None if fetcher is None else fetcher.get_history_bars(stock_code, trade_date)
+            if fetcher is None:
+                bars = None
+            elif minutes == 1:
+                bars = self._biying_tick_session(fetcher, code, trade_date, is_today).bars
+            else:
+                bars = fetcher.get_history_bars(stock_code, trade_date)
         except Exception as exc:
             errors.append(f"biying: {exc}")
             logger.info("[intraday] history bars via biying failed for %s %s: %s", code, trade_date, exc)
@@ -640,7 +667,7 @@ class IntradaySnapshotService:
                 errors.append("biying: no bars")
                 history_reason = "no_bars"
         raise IntradayDataUnavailable(
-            f"5-minute bars for {trade_date} unavailable (" + "; ".join(errors) + ")",
+            f"{minutes}-minute bars for {trade_date} unavailable (" + "; ".join(errors) + ")",
             reason=self._session_reason(live_reason, history_reason) if is_today else history_reason,
         )
 

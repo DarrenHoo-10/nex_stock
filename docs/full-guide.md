@@ -438,7 +438,7 @@ daily_stock_analysis/
 |--------|------|--------|:----:|
 | `ASHARE_API_KEY` | ashareapi.com 的开盘竞价分时报价密钥，需专业版及以上权限。必盈无可用竞价点时使用；Tushare 可补充最终撮合结果。系统付费 Key：多用户部署下只有主用户的请求使用它，其他用户走必盈 / Tushare。 | - | 可选 |
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
-| `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。个股行情窗口双击日 K 查看历史交易日分时（`GET /api/v1/stocks/{code}/intraday`）也走必盈历史 5 分钟线，未配置时该功能提示需要配置必盈 licence（接口返回 503，`reason=biying_not_configured`）。 | - | 可选 |
+| `BIYING_LICENCE` | 必盈 API 证书，按包年版（3000 次/分钟）设计；作为 Tushare `rt_k` 之后的第二实时源。未显式设置 `REALTIME_SOURCE_PRIORITY` 时自动排在 `tushare` 之后、免费源之前。证书出现在请求 URL 中，日志与异常里会打码；可在 Web 设置页填写。个股行情窗口双击日 K 查看历史交易日分时（`GET /api/v1/stocks/{code}/intraday`）使用普通包年的历史逐笔成交聚合 1 分钟走势，归档起始日为 2026-08-13；API 不传 `interval` 时仍返回 5 分钟线，未配置时该功能提示需要配置必盈 licence（接口返回 503，`reason=biying_not_configured`）。 | - | 可选 |
 | `BIYING_TIMEOUT_SECONDS` | 必盈单次请求超时（秒） | `8` | 可选 |
 | `EASTMONEY_MIN_INTERVAL_SEC` | 东方财富统一限速：同一子域名两次请求的最小间隔（秒），另加 0.1–0.5 秒随机抖动；作用于本进程内所有东方财富请求，见 [数据源说明](data-sources.md) 5.5 | `1.0` | 可选 |
 | `EASTMONEY_BAN_COOLDOWN_MINUTES` | 东方财富某子域名返回 403 后暂停对它请求的分钟数，期间改用其他来源 | `30` | 可选 |

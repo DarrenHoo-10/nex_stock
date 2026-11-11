@@ -25,10 +25,12 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Dict, Iterable, List, Optional
+from typing import Any, Deque, Dict, Iterable, List, NamedTuple, Optional
 from urllib.parse import quote as _url_quote
 
 import pandas as pd
@@ -59,6 +61,12 @@ BIYING_BULK_MAX_CALLS_PER_WINDOW = 3
 BIYING_BULK_WINDOW_SECONDS = 60.0
 _LOTS_TO_SHARES = 100
 _MASK = "***"
+TICK_ARCHIVE_START = "2026-08-13"
+
+
+class TickSession(NamedTuple):
+    auction: List[Dict[str, Any]]
+    bars: List[Dict[str, Any]]
 
 
 class _LicenceMaskFilter(logging.Filter):
@@ -372,13 +380,47 @@ class BiyingFetcher(BaseFetcher):
         )
         return self._rows_to_bars(payload)
 
-    def get_opening_auction(self, code: str, day: str, is_today: bool) -> List[Dict[str, Any]]:
-        """Last valid price per auction minute, plus the actual 09:25 match in shares."""
-        import math
-        import re
-
+    def get_tick_session(self, code: str, day: str, is_today: bool) -> TickSession:
+        """One ordinary-plan tick request supplies both the auction and the regular minute chart."""
+        if not is_today and day < TICK_ARCHIVE_START:
+            return TickSession([], [])
         dated_path = "" if is_today else day.replace("-", "") + "/"
         rows = self._as_rows(self._get_json(f"hsrl/zbjy/{dated_path}{code}/{{licence}}"))
+        return TickSession(self._auction_from_ticks(rows, day), self._minutes_from_ticks(rows, day))
+
+    @staticmethod
+    def _minutes_from_ticks(rows: List[Dict[str, Any]], day: str) -> List[Dict[str, Any]]:
+        bars: Dict[int, Dict[str, Any]] = {}
+        # The provider returns newest first; preserve execution order for coincident timestamps.
+        for row in sorted(reversed(rows), key=lambda tick: str(tick.get("t", ""))):
+            stamp = str(row.get("t", ""))
+            if row.get("d") != day or not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]:[0-5][0-9]", stamp):
+                continue
+            if not ("09:30:00" <= stamp <= "11:30:00" or "13:00:00" <= stamp <= "15:00:00"):
+                continue
+            price, volume = safe_float(row.get("p")), safe_float(row.get("v"))
+            if not price or not math.isfinite(price) or price <= 0:
+                continue
+            if not volume or not math.isfinite(volume) or not volume.is_integer() or volume <= 0:
+                continue
+            # End-of-minute labels: 09:30:01 through 09:31:00 belong to 09:31.
+            hour, minute, second = map(int, stamp.split(":"))
+            slot = hour * 60 + minute + int(second > 0)
+            if slot not in bars:
+                bars[slot] = {
+                    "time": f"{day}T{slot // 60:02}:{slot % 60:02}:00+08:00",
+                    "open": price, "high": price, "low": price, "close": price, "volume": 0, "amount": 0.0,
+                }
+            bar = bars[slot]
+            bar["high"] = max(bar["high"], price)
+            bar["low"] = min(bar["low"], price)
+            bar["close"] = price
+            bar["volume"] += int(volume)  # zbjy reports shares, not lots.
+            bar["amount"] += price * volume
+        return list(bars.values())
+
+    @staticmethod
+    def _auction_from_ticks(rows: List[Dict[str, Any]], day: str) -> List[Dict[str, Any]]:
         quotes = {}
         matches = []
         for row in rows:
@@ -403,7 +445,7 @@ class BiyingFetcher(BaseFetcher):
         return points
 
     def get_history_bars(self, stock_code: str, trade_date: str) -> List[Dict[str, Any]]:
-        """5-minute bars of one past session (``YYYY-MM-DD``), oldest first.
+        """Minute bars of one session (``YYYY-MM-DD``), oldest first.
 
         ``hsstock/history/{code}/5/n/{licence}?st=YYYYMMDD&et=YYYYMMDD``; same row shape as
         :meth:`get_intraday_bars` (``volume`` in shares, ``amount`` in yuan). Rows outside

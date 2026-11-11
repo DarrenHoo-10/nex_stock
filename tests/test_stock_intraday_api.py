@@ -30,7 +30,8 @@ def _patch_service(monkeypatch, service):
     monkeypatch.setattr(stocks_endpoint, "get_intraday_snapshot_service", lambda: service)
 
 
-def test_returns_bars_with_source_and_freshness(monkeypatch) -> None:
+@pytest.mark.parametrize("interval, minutes", [("5min", 5), ("1min", 1)])
+def test_returns_bars_with_source_and_freshness(monkeypatch, interval, minutes) -> None:
     result = BarsResult(
         code="002029",
         bars=[
@@ -47,12 +48,12 @@ def test_returns_bars_with_source_and_freshness(monkeypatch) -> None:
     service = _service_with(result)
     _patch_service(monkeypatch, service)
 
-    response = stocks_endpoint.get_stock_intraday("002029", date="2026-11-06", user=_PRIMARY)
+    response = stocks_endpoint.get_stock_intraday("002029", date="2026-11-06", user=_PRIMARY, interval=interval)
 
-    service.get_session_bars.assert_called_once_with("002029", "2026-11-06")
+    service.get_session_bars.assert_called_once_with("002029", "2026-11-06", minutes=minutes)
     assert response.stock_code == "002029"
     assert response.trade_date == "2026-11-06"
-    assert response.interval == "5min"
+    assert response.interval == interval
     assert response.source == "biying"
     assert response.is_stale is False
     assert [bar.close for bar in response.data] == [8.51, 8.9]

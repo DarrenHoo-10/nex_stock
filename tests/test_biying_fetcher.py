@@ -191,6 +191,35 @@ class TestBiyingHistoryBars(unittest.TestCase):
         self.assertEqual(got[0]["volume"], 12307400)  # 手 -> 股
         self.assertEqual(got[0]["amount"], 104632755.19)
 
+    def test_annual_ticks_are_bucketed_without_inventing_trades(self):
+        day = "2026-11-06"
+        # Newest first, like the provider. Volume is shares and same-second prints are distinct.
+        rows = [{"d": day, "t": stamp, "p": price, "v": volume} for stamp, price, volume in [
+            ("15:00:00", 12, 300), ("12:15:00", 100, 1), ("09:32:00", 8, 0),
+            ("09:31:00", 11, 500), ("09:31:00", 10, 100), ("09:30:04", 9, 200),
+            ("09:25:00", 8, 1000),
+        ]]
+        rows.append({"d": "2026-11-05", "t": "15:00:00", "p": 99, "v": 100})
+        for today, path in [(True, "002029"), (False, "20261106/002029")]:
+            fake, ctx = _patch_http({"hsrl/zbjy/": _response(rows)})
+            with ctx:
+                session = self.fetcher.get_tick_session("002029", day, today)
+            self.assertEqual(fake.urls, [f"https://api.biyingapi.com/hsrl/zbjy/{path}/{LICENCE}"])
+            self.assertEqual(session.auction, [{"time": "09:25:00", "price": 8, "volume": 1000}])
+            self.assertEqual(session.bars, [
+                {"time": f"{day}T09:31:00+08:00", "open": 9, "high": 11, "low": 9, "close": 11,
+                 "volume": 800, "amount": 8300},
+                {"time": f"{day}T15:00:00+08:00", "open": 12, "high": 12, "low": 12, "close": 12,
+                 "volume": 300, "amount": 3600},
+            ])
+
+    def test_before_tick_archive_has_no_bars_and_needs_no_request(self):
+        fake, ctx = _patch_http({})
+        with ctx:
+            session = self.fetcher.get_tick_session("002029", "2026-08-12", False)
+        self.assertEqual(session.bars, [])
+        self.assertEqual(fake.urls, [])
+
     def test_history_bars_error_does_not_leak_licence(self):
         exc = requests.ConnectionError(f"Max retries exceeded with url: /hsstock/history/002029.SZ/5/n/{LICENCE}")
         _, ctx = _patch_http({"hsstock/history/": exc})

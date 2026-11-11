@@ -13,6 +13,7 @@ import { useMineOverview, useStockPlanDetail } from '../../components/plan/mine/
 import { ModelKeyBanner } from '../../components/auth/ModelKeyBanner';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
 import { QuoteSearch } from '../../components/plan/quote/QuoteSearch';
+import { includesStockCode } from '../../utils/stockCode';
 import { watchlistCodeOf } from '../../utils/watchlistCode';
 import { useStockIndex } from '../../hooks/useStockIndex';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -63,6 +64,32 @@ const StatePanel: React.FC<{ title: string; text: string; onRetry: () => void }>
   </section>
 );
 
+const WatchlistEntries: React.FC<{
+  codes: string[];
+  busy: boolean;
+  onRemove: (code: string) => void;
+}> = ({ codes, busy, onRemove }) => {
+  const stockIndex = useStockIndex(true);
+  const names = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of stockIndex.index) map.set(watchlistCodeOf(item), item.nameZh);
+    return map;
+  }, [stockIndex.index]);
+  return (
+    <ul className="wf-list" aria-label="自选列表">
+      {codes.map((code) => (
+        <li key={code}>
+          <span className="wf-name">{names.get(code.toUpperCase()) ?? '—'}</span>
+          <span className="num wf-code">{code}</span>
+          <button type="button" className="btn quiet sm" disabled={busy} onClick={() => onRemove(code)}>
+            移出
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
 /**
  * Shown while the next-day plan service is not available: the watchlist itself (codes from
  * `/stocks/watchlist`, names from the bundled stock index) so added stocks are visible and removable.
@@ -73,12 +100,6 @@ const WatchlistFallback: React.FC<{
   onRemove: (code: string) => void;
   onRetry: () => void;
 }> = ({ codes, busy, onRemove, onRetry }) => {
-  const stockIndex = useStockIndex(true);
-  const names = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const item of stockIndex.index) map.set(watchlistCodeOf(item), item.nameZh);
-    return map;
-  }, [stockIndex.index]);
   return (
     <section className="win watch-fallback" aria-labelledby="plan-page-title">
       <div className="wf-head">
@@ -97,17 +118,7 @@ const WatchlistFallback: React.FC<{
       ) : codes.length === 0 ? (
         <p className="note">还没有自选股。用右上角的搜索框找到股票，在走势图里点「加入自选」。</p>
       ) : (
-        <ul className="wf-list" aria-label="自选列表">
-          {codes.map((code) => (
-            <li key={code}>
-              <span className="wf-name">{names.get(code.toUpperCase()) ?? '—'}</span>
-              <span className="num wf-code">{code}</span>
-              <button type="button" className="btn quiet sm" disabled={busy} onClick={() => onRemove(code)}>
-                移出
-              </button>
-            </li>
-          ))}
-        </ul>
+        <WatchlistEntries codes={codes} busy={busy} onRemove={onRemove} />
       )}
     </section>
   );
@@ -247,7 +258,7 @@ const MinePage: React.FC = () => {
       try {
         await systemConfigApi.removeFromWatchlist(code);
         showPlanToast('已移出自选');
-        navigate({ pathname: location.pathname, search: '' }, { replace: true });
+        if (paramCode === code) navigate({ pathname: location.pathname, search: '' }, { replace: true });
         reload(true);
         reloadWatch();
       } catch (error: unknown) {
@@ -256,7 +267,7 @@ const MinePage: React.FC = () => {
         setBusy(false);
       }
     },
-    [location.pathname, navigate, reload, reloadWatch],
+    [location.pathname, navigate, paramCode, reload, reloadWatch],
   );
 
   const openHoldings = () => {
@@ -316,6 +327,8 @@ const MinePage: React.FC = () => {
 
   const accountData = account.status === 'ready' ? account.data : null;
   const empty = items !== null && items.length === 0;
+  const listedWatchCodes = items?.filter(item => !item.held).map(item => item.code) ?? [];
+  const otherWatchCodes = (watchCodes ?? []).filter(code => !includesStockCode(listedWatchCodes, code));
 
   return (
     <>
@@ -330,11 +343,20 @@ const MinePage: React.FC = () => {
             ) : (
               <StockList
                 items={items}
+                hasOtherWatch={otherWatchCodes.length > 0}
                 selectedCode={selectedCode}
                 maxHoldings={accountData?.rules.maxHoldings ?? null}
                 onSelect={select}
                 onAddWatch={addWatch}
+                onRemoveWatch={removeWatch}
+                removing={busy}
               />
+            )}
+            {items && otherWatchCodes.length > 0 && (
+              <>
+                <p className="group-label">其他自选（含持仓或无次日计划的标的）</p>
+                <WatchlistEntries codes={otherWatchCodes} busy={busy} onRemove={removeWatch} />
+              </>
             )}
           </div>
         </section>
@@ -344,7 +366,7 @@ const MinePage: React.FC = () => {
             <DetailPlaceholderSkeleton />
           ) : empty && !paramCode ? (
             <section className="empty" aria-labelledby="plan-page-title">
-              <h2 id="plan-page-title">还没有自选和持仓</h2>
+              <h2 id="plan-page-title">{otherWatchCodes.length ? '暂无可展示的次日计划' : '还没有自选和持仓'}</h2>
               <p>加几只自选股，或录入你现在的持仓，下一个收盘后这里会出现每只股票的次日计划。</p>
               <div className="actions">
                 <Link className="btn primary" to="/picks">

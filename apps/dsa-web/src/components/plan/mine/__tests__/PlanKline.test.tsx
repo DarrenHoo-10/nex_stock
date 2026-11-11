@@ -36,7 +36,7 @@ describe('PlanKline', () => {
     getHistory.mockReset();
     getQuote.mockReset();
     getIntraday.mockReset();
-    getIntraday.mockResolvedValue({ data: [], isStale: false });
+    getIntraday.mockResolvedValue({ interval: '1min', data: [], isStale: false });
     getQuote.mockResolvedValue({ floatShares: 1e9 });
   });
 
@@ -79,7 +79,7 @@ describe('PlanKline', () => {
     // jsdom has no layout, so the plot is 80px wide: 25 visible candles of 3.2px, x=10 is the 4th candle.
     const FOURTH_DAY = '2026-10-04';
 
-    it('opens the 5-minute chart of the double-clicked day over the candles', async () => {
+    it('opens the one-minute chart of the double-clicked day over the candles', async () => {
       getHistory.mockResolvedValue(history);
       renderChart();
       const canvas = await screen.findByRole('img', { name: /K 线图/ });
@@ -87,11 +87,11 @@ describe('PlanKline', () => {
       fireEvent.doubleClick(canvas, { clientX: 10, clientY: 50 });
 
       await waitFor(() => expect(getIntraday).toHaveBeenCalledWith('002029', FOURTH_DAY, expect.any(Object)));
-      expect(await screen.findByText(`${FOURTH_DAY} 分时（5 分钟）`)).toBeInTheDocument();
+      expect(await screen.findByText(`${FOURTH_DAY} 分时走势（1 分钟）`)).toBeInTheDocument();
       expect(await screen.findByText('这一天没有分时数据')).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: '返回 K 线' }));
-      expect(screen.queryByText(`${FOURTH_DAY} 分时（5 分钟）`)).not.toBeInTheDocument();
+      expect(screen.queryByText(`${FOURTH_DAY} 分时走势（1 分钟）`)).not.toBeInTheDocument();
     });
 
     it('does nothing on the weekly period, where a candle is not one session', async () => {

@@ -56,6 +56,15 @@ def test_primary_watchlist_is_env_stock_list(mu):
         assert session.query(UserWatchlist).count() == 0
 
 
+def test_primary_can_remove_last_stock_and_reload_empty_list(mu):
+    client = mu.as_user(PRIMARY_ID)
+    for code in ("600519", "AAPL"):
+        removed = client.post("/api/v1/stocks/watchlist/remove", json={"stock_code": code})
+        assert removed.status_code == 200
+    assert _codes(client) == []
+    assert WatchlistService(db_manager=mu.db).list_codes(PRIMARY_ID) == []
+
+
 def test_other_users_watchlists_are_private_and_start_empty(mu):
     assert _codes(mu.as_user(USER_A)) == []
 

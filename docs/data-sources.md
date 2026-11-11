@@ -86,7 +86,8 @@ TUSHARE_TOKEN=你的token
 | 全市场快照 | `vip.biyingapi.com/hsrl/real/all`（bulk） | 独立限流约 **3 次/分钟**，本地先挡一道 |
 | 买卖五档 | `hsstock/real/five/{code}` | 成交量由"手"换算为"股" |
 | 当天 5 分钟线 | `hsstock/latest/{code}/5/n?lt=N` | 助手盘中数据使用 |
-| **历史 5 分钟线** | `hsstock/history/{code}/5/n?st=YYYYMMDD&et=YYYYMMDD` | 行情图双击日 K 看分时使用 |
+| **历史 5 分钟线** | `hsstock/history/{code}/5/n?st=YYYYMMDD&et=YYYYMMDD` | API 默认间隔，兼容已有调用方 |
+| **1 分钟走势** | `hsrl/zbjy/{code}`、`hsrl/zbjy/{YYYYMMDD}/{code}` | 普通包年逐笔成交，按分钟取末价、累加股数和价量乘积；与竞价共用一次请求 |
 | 指数 | `hsindex/real/time/{code}` | 如 `000001.SH` |
 
 `{code}` 形如 `600519.SH`、`002029.SZ`、`920001.BJ`，由项目按代码自动补交易所后缀。
@@ -112,7 +113,7 @@ BIYING_TIMEOUT_SECONDS=8   # 可选，单次请求超时（秒）
 **在 Web 里的用处**
 
 - 开盘集合竞价与 5 分钟线独立加载。优先使用必盈当天或历史逐笔交易（历史自 2026-08-13 起归档）。09:15–09:24 每分钟保留最后一个有效价格，09:25 单独展示实际撮合价和成交股数。各分钟的可见性取决于源返回的记录，当天逐笔数据盘中约每小时更新。必盈缺数据时，若配置了 `ASHARE_API_KEY`（多用户部署下只有主用户的请求使用，其他用户跳过这一步），尝试 ashareapi.com 的竞价分时；最后尝试 Tushare 的 `stk_auction`（ETF 用 `etf_auction`）获取最终撮合结果。竞价量不重复计入盘中均价。
-- 个股行情窗口 / 个股计划页：双击日 K 查看当天分时（`GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD`）。当天先走 Tushare `rt_min_daily`，再走必盈当天 5 分钟线；历史交易日只走必盈历史 5 分钟线，并缓存 6 小时。**没有配置 `BIYING_LICENCE` 时，历史分时会返回 503**。503 的 `error` 是 `intraday_unavailable`，`reason` 说明原因：`biying_not_configured`（历史交易日需要必盈证书）、`not_configured`（当天没有任何分钟线数据源）、`no_bars`（数据源没有这天的数据，如停牌、非交易日）、`source_failed`（数据源请求失败），`message` 是对应的中文说明，页面直接显示这条说明，不再显示通用的「检查代理、DNS」。
+- 个股行情窗口 / 个股计划页：双击日 K 查看当天分时（`GET /api/v1/stocks/{code}/intraday?date=YYYY-MM-DD&interval=1min`）。当天先走 Tushare `rt_min_daily` 的 1MIN，再走必盈；必盈当天逐笔约每 60 分钟更新一次、收盘后定稿。历史逐笔自 2026-08-13 起归档，按分钟聚合后缓存 6 小时；更早日期没有逐笔数据，不用 5 分钟线插值。**没有配置 `BIYING_LICENCE` 时，历史分时会返回 503**。503 的 `error` 是 `intraday_unavailable`，`reason` 说明原因：`biying_not_configured`（历史交易日需要必盈证书）、`not_configured`（当天没有任何分钟线数据源）、`no_bars`（数据源没有这天的数据，如停牌、非交易日）、`source_failed`（数据源请求失败），`message` 是对应的中文说明，页面直接显示这条说明，不再显示通用的「检查代理、DNS」。
 - 助手：盘中全市场快照、个股报价、5 分钟线（Tushare 失败后用必盈兜底）。
 
 **确认它在工作**：行情窗口里双击一根历史日 K 能看到分时；或在日志里看到实时来源为 `biying`。证书错误时日志是 `Biying error: ***` 一类的打码信息，HTTP 非 200 为 `Biying HTTP <状态码>`。

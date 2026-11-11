@@ -118,6 +118,7 @@
 .plan-shell .acct-acts{display:flex;gap:4px;margin-top:10px;margin-left:-4px;flex-wrap:wrap}
 .plan-shell .group-label{display:flex;justify-content:space-between;font-size:12px;color:var(--t3);padding:14px 10px 6px}
 .plan-shell .rows{list-style:none;margin:0;padding:0}
+.plan-shell .watch-row-actions{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
 .plan-shell .row{position:relative;isolation:isolate;width:100%;border:0;background:none;text-align:left;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:11px 12px;border-radius:var(--r-row);transition:background .2s}
 .plan-shell .row:hover{background:var(--fill)}
 .plan-shell .row .ind{position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--fill3);box-shadow:inset 0 1px 0 rgba(255,255,255,.22)}

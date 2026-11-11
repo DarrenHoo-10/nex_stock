@@ -9,9 +9,12 @@ import { changeClass, fmtPrice, fmtSignedPct, VERDICT_LABEL, VERDICT_TAG_CLASS }
 
 export interface StockListProps {
   items: StockPlanSummary[];
+  hasOtherWatch: boolean;
   selectedCode: string | null;
   maxHoldings: number | null;
   onSelect: (code: string) => void;
+  onRemoveWatch: (code: string) => void;
+  removing: boolean;
   /** Resolves with an error sentence, or null when the stock was added. */
   onAddWatch: (code: string) => Promise<string | null>;
 }
@@ -44,12 +47,14 @@ const Row: React.FC<{
   selected: boolean;
   reduced: boolean;
   onSelect: (code: string) => void;
-}> = ({ item, selected, reduced, onSelect }) => {
+  onRemove?: (code: string) => void;
+  removing?: boolean;
+}> = ({ item, selected, reduced, onSelect, onRemove, removing }) => {
   const tag = stateTag(item);
   const suspended = item.verdict === 'suspended';
   const hasPrice = item.close != null && !suspended;
   return (
-    <li>
+    <li className={onRemove ? 'watch-row-actions' : undefined}>
       <button
         type="button"
         className="row"
@@ -77,12 +82,18 @@ const Row: React.FC<{
         </span>
         <span className="one">{oneLine(item)}</span>
       </button>
+      {onRemove && (
+        <button type="button" className="btn quiet sm" disabled={removing}
+          aria-label={`将 ${item.name}（${item.code}）移出自选`} onClick={() => onRemove(item.code)}>
+          移除
+        </button>
+      )}
     </li>
   );
 };
 
 /** Held stocks first, then the watchlist; plus the inline 「加自选」 form. */
-export const StockList: React.FC<StockListProps> = ({ items, selectedCode, maxHoldings, onSelect, onAddWatch }) => {
+export const StockList: React.FC<StockListProps> = ({ items, hasOtherWatch, selectedCode, maxHoldings, onSelect, onAddWatch, onRemoveWatch, removing }) => {
   const reduced = usePlanReducedMotion();
   const held = items.filter((item) => item.held);
   const watch = items.filter((item) => !item.held);
@@ -126,7 +137,7 @@ export const StockList: React.FC<StockListProps> = ({ items, selectedCode, maxHo
 
   return (
     <LayoutGroup id="mine-list">
-      {items.length === 0 ? (
+      {items.length === 0 && !hasOtherWatch ? (
         <div className="list-empty">
           <h3>还没有自选和持仓</h3>
           <p>先加几只自选，或去选股挑一些。</p>
@@ -155,11 +166,11 @@ export const StockList: React.FC<StockListProps> = ({ items, selectedCode, maxHo
       {watch.length > 0 ? (
         <ul className="rows" aria-label="自选">
           {watch.map((item) => (
-            <Row key={item.code} item={item} selected={item.code === selectedCode} reduced={reduced} onSelect={onSelect} />
+            <Row onRemove={onRemoveWatch} removing={removing} key={item.code} item={item} selected={item.code === selectedCode} reduced={reduced} onSelect={onSelect} />
           ))}
         </ul>
       ) : (
-        <p className="empty-note">自选里还没有股票。</p>
+        !hasOtherWatch && <p className="empty-note">自选里还没有股票。</p>
       )}
       <div className="add-row">
         {adding ? (

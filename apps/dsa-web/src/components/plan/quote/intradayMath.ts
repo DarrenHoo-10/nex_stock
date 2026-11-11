@@ -1,10 +1,19 @@
 import type { StockIntradayBar } from '../../../api/stocks';
 
-/** An A-share session has 48 five-minute bars (09:35-11:30, 13:05-15:00). */
-export const SESSION_SLOTS = 48;
+/** Minutes on the trading clock, including both sessions' opening and closing timestamps. */
+export const SESSION_SLOTS = 242;
+
+export function minuteSlot(label: string): number {
+  const [hour, minute] = label.split(':').map(Number);
+  const time = hour * 60 + minute;
+  if (time >= 570 && time <= 690) return time - 570;
+  if (time >= 780 && time <= 900) return 121 + time - 780;
+  return -1;
+}
 
 export interface IntradayPoint {
   /** HH:MM (Beijing time). */
+  slot: number;
   label: string;
   close: number;
   /** Volume-weighted average price since the open; null until a bar with volume and amount arrives. */
@@ -32,7 +41,8 @@ export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number)
   let totalAmount = 0;
   let totalVolume = 0;
   let lastAvg: number | null = null;
-  const points: IntradayPoint[] = bars.map((bar) => {
+  const regularBars = bars.filter((bar) => minuteSlot(barLabel(bar.time)) >= 0);
+  const points: IntradayPoint[] = regularBars.map((bar) => {
     const volume = bar.volume ?? 0;
     if (bar.amount != null && volume > 0) {
       totalAmount += bar.amount;
@@ -40,6 +50,7 @@ export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number)
       lastAvg = totalAmount / totalVolume;
     }
     return {
+      slot: minuteSlot(barLabel(bar.time)),
       label: barLabel(bar.time),
       close: bar.close,
       avg: lastAvg,
@@ -49,7 +60,7 @@ export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number)
   });
 
   let reach = 0;
-  for (const bar of bars) {
+  for (const bar of regularBars) {
     reach = Math.max(reach, Math.abs(bar.close - prevClose));
     if (bar.high != null) {
       reach = Math.max(reach, Math.abs(bar.high - prevClose));

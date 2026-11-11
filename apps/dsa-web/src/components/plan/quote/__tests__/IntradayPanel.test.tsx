@@ -28,7 +28,7 @@ describe('IntradayPanel', () => {
   });
 
   it('loads the chosen day and reads out the last bar against the previous close', async () => {
-    getIntraday.mockResolvedValue({ data: BARS, isStale: false });
+    getIntraday.mockResolvedValue({ interval: '1min', data: BARS, isStale: false });
     renderPanel();
 
     expect(await screen.findByRole('img', { name: /七匹狼 2026-11-06/ })).toBeInTheDocument();
@@ -40,7 +40,7 @@ describe('IntradayPanel', () => {
   });
 
   it('shows the auction curve even before there is a regular bar', async () => {
-    getIntraday.mockResolvedValue({ data: [], isStale: false });
+    getIntraday.mockResolvedValue({ interval: '1min', data: [], isStale: false });
     getOpeningAuction.mockResolvedValueOnce({ source: 'ashareapi', points: [
       { time: '09:15:00', price: 8.3 }, { time: '09:25:00', price: 8.52 },
     ] });
@@ -50,7 +50,7 @@ describe('IntradayPanel', () => {
   });
 
   it('displays a match as a single result without adding it to the minute bars', async () => {
-    getIntraday.mockResolvedValue({ data: BARS, isStale: false });
+    getIntraday.mockResolvedValue({ interval: '1min', data: BARS, isStale: false });
     getOpeningAuction.mockResolvedValueOnce({ source: 'biying', points: [
       { time: '09:25:00', price: 8.48, volume: 500 },
     ] });
@@ -62,21 +62,21 @@ describe('IntradayPanel', () => {
 
   it('keeps the regular chart when the auction request fails', async () => {
     getOpeningAuction.mockRejectedValueOnce(new Error('unavailable'));
-    getIntraday.mockResolvedValue({ data: BARS, isStale: false });
+    getIntraday.mockResolvedValue({ interval: '1min', data: BARS, isStale: false });
     renderPanel();
     expect(await screen.findByText('暂无竞价数据')).toBeInTheDocument();
     expect(screen.getByRole('img', { name: /七匹狼/ })).toBeInTheDocument();
   });
 
   it('follows the pointer to another bar', async () => {
-    getIntraday.mockResolvedValue({ data: BARS, isStale: false });
+    getIntraday.mockResolvedValue({ interval: '1min', data: BARS, isStale: false });
     renderPanel();
     const chart = await screen.findByRole('img', { name: /七匹狼/ });
     // jsdom has no layout: give the svg a 960-wide box so client x equals viewBox x.
     chart.getBoundingClientRect = () => ({ left: 0, top: 0, width: 960, height: 400, right: 960, bottom: 400, x: 0, y: 0, toJSON: () => ({}) });
 
-    // x = 58 + (0.5 / 48) * 844 ≈ 67 is the first slot.
-    fireEvent.pointerMove(chart, { clientX: 67, clientY: 100 });
+    // 09:35 is five minutes after open, even when the four preceding minutes are absent.
+    fireEvent.pointerMove(chart, { clientX: 77, clientY: 100 });
 
     const readout = document.querySelector('.qi-readout');
     expect(readout).toHaveTextContent('09:35');
@@ -84,14 +84,21 @@ describe('IntradayPanel', () => {
     expect(readout).toHaveTextContent('-3.95%');
   });
 
+  it('does not display legacy five-minute data as a minute trend', async () => {
+    getIntraday.mockResolvedValue({ interval: '5min', data: BARS, isStale: false });
+    renderPanel();
+    expect(await screen.findByRole('alert')).toHaveTextContent('服务端未返回 1 分钟行情');
+    expect(document.querySelector('.qi-svg')).toBeNull();
+  });
+
   it('shows a stale notice when the provider served old data', async () => {
-    getIntraday.mockResolvedValue({ data: BARS, isStale: true });
+    getIntraday.mockResolvedValue({ interval: '1min', data: BARS, isStale: true });
     renderPanel();
     expect(await screen.findByText('数据可能不是最新')).toBeInTheDocument();
   });
 
   it('closes from the back button and from Escape without bubbling the key', async () => {
-    getIntraday.mockResolvedValue({ data: BARS, isStale: false });
+    getIntraday.mockResolvedValue({ interval: '1min', data: BARS, isStale: false });
     const onClose = renderPanel();
     await screen.findByRole('img', { name: /七匹狼/ });
 
@@ -108,7 +115,7 @@ describe('IntradayPanel', () => {
 
   it('shows the error and retries', async () => {
     getIntraday.mockRejectedValueOnce(new Error('boom'));
-    getIntraday.mockResolvedValueOnce({ data: BARS, isStale: false });
+    getIntraday.mockResolvedValueOnce({ interval: '1min', data: BARS, isStale: false });
     renderPanel();
 
     fireEvent.click(await screen.findByRole('button', { name: '重试' }));
@@ -129,7 +136,7 @@ describe('IntradayPanel', () => {
   });
 
   it('shows the empty state for a day without bars', async () => {
-    getIntraday.mockResolvedValue({ data: [], isStale: false });
+    getIntraday.mockResolvedValue({ interval: '1min', data: [], isStale: false });
     renderPanel();
     expect(await screen.findByText('这一天没有分时数据')).toBeInTheDocument();
   });

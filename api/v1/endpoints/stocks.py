@@ -9,11 +9,11 @@
 2. POST /api/v1/stocks/parse-import 解析 CSV/Excel/剪贴板
 3. GET /api/v1/stocks/{code}/quote 实时行情接口
 4. GET /api/v1/stocks/{code}/history 历史行情接口
-5. GET /api/v1/stocks/{code}/intraday?date= 某个交易日的分时（5 分钟）行情
+5. GET /api/v1/stocks/{code}/intraday?date= 某个交易日的分时行情
 """
 
 import logging
-from typing import Optional
+from typing import Literal, Optional
 import re
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, Depends
@@ -878,7 +878,7 @@ def get_opening_auction(
     "/{stock_code}/intraday",
     response_model=StockIntradayResponse,
     responses={
-        200: {"description": "指定交易日的分时（5 分钟）行情"},
+        200: {"description": "指定交易日的分时行情"},
         422: {"description": "日期格式错误或为未来日期", "model": ErrorResponse},
         503: {
             "description": (
@@ -891,17 +891,20 @@ def get_opening_auction(
     },
     summary="获取个股某个交易日的分时行情",
     description=(
-        "按需返回 A 股某个交易日的 5 分钟线（不落库）。当天走 Tushare / 必盈实时链路，"
-        "历史交易日走必盈历史分钟线（需配置 BIYING_LICENCE）。"
+        "按需返回 A 股某个交易日的 1 或 5 分钟线（默认 5 分钟，不落库）。当天走 Tushare / 必盈实时链路，"
+        "必盈 1 分钟走势按普通包年逐笔成交聚合，历史逐笔自 2026-08-13 起归档。"
     ),
 )
 def get_stock_intraday(
     stock_code: str,
     date: str = Query(..., description="交易日 YYYY-MM-DD", pattern=r"^\d{4}-\d{2}-\d{2}$"),
     user: CurrentUser = Depends(get_current_user),
+    interval: Literal["1min", "5min"] = "5min",
 ) -> StockIntradayResponse:
     try:
-        result = get_intraday_snapshot_service().get_session_bars(stock_code, date, **_on_demand_kwargs(user))
+        result = get_intraday_snapshot_service().get_session_bars(
+            stock_code, date, minutes=1 if interval == "1min" else 5, **_on_demand_kwargs(user),
+        )
     except OnDemandFetchLimited as exc:
         raise _on_demand_limited(exc)
     except IntradayIdentityUnsupported as e:
@@ -913,12 +916,15 @@ def get_stock_intraday(
         )
     except IntradayDataUnavailable as e:
         reason = getattr(e, "reason", "source_failed")
+        message = INTRADAY_UNAVAILABLE_MESSAGES.get(reason, INTRADAY_UNAVAILABLE_MESSAGES["source_failed"])
+        if interval == "1min" and reason == "no_bars":
+            message += " 必盈历史逐笔数据自 2026-08-13 起归档。"
         logger.info("分时行情不可用 %s %s (%s): %s", stock_code, date, reason, e)
         raise HTTPException(
             status_code=503,
             detail={
                 "error": "intraday_unavailable",
-                "message": INTRADAY_UNAVAILABLE_MESSAGES.get(reason, INTRADAY_UNAVAILABLE_MESSAGES["source_failed"]),
+                "message": message,
                 # Top level, not under ``detail``: the Web error parser reads a ``detail`` object as the message.
                 "reason": reason,
             },
@@ -933,6 +939,7 @@ def get_stock_intraday(
     return StockIntradayResponse(
         stock_code=result.code,
         trade_date=result.trade_date or date,
+        interval=interval,
         source=result.source,
         as_of=result.as_of,
         fetched_at=result.fetched_at,

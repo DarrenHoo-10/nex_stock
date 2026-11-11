@@ -31,7 +31,7 @@ export type StockHistoryResponse = {
   data: StockHistoryBar[];
 };
 
-/** One 5-minute bar of a trading day; `time` is Beijing time with offset (2026-11-06T09:35:00+08:00). */
+/** One minute bar of a trading day; `time` is Beijing time with offset (2026-11-06T09:35:00+08:00). */
 export type StockIntradayBar = {
   time: string;
   open?: number | null;
@@ -92,7 +92,7 @@ export const stocksApi = {
     return response.data;
   },
 
-  /** 5-minute bars of one trading day (`YYYY-MM-DD`); A-share only, 503 when no minute source is configured. */
+  /** One-minute bars of one trading day (`YYYY-MM-DD`); A-share only, 503 when no minute source is configured. */
   async getIntraday(
     stockCode: string,
     date: string,
@@ -100,7 +100,7 @@ export const stocksApi = {
   ): Promise<StockIntradayResponse> {
     const response = await apiClient.get<Record<string, unknown>>(
       `/api/v1/stocks/${encodeURIComponent(stockCode)}/intraday`,
-      { params: { date }, signal: options.signal, timeout: 30000 },
+      { params: { date, interval: '1min' }, signal: options.signal, timeout: 30000 },
     );
     return toCamelCase<StockIntradayResponse>(response.data);
   },

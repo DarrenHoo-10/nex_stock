@@ -353,6 +353,10 @@ class TestOpeningAuction(unittest.TestCase):
                 {"time": "09:15:05", "price": 10},
                 {"time": "09:25:02", "price": 10, "volume": 830200},
             ]})
+            # Opening both panels uses one paid-feed request and keeps the auction out of minute volume.
+            bars = service.get_session_bars("600000", "2026-11-05", minutes=1)
+            self.assertEqual([bar["volume"] for bar in bars.bars], [600])
+            http.assert_called_once()
             self.assertIn("/hsrl/zbjy/20261105/600000/", http.call_args.args[0])
             tushare._api.stk_auction.assert_not_called()
 
@@ -397,7 +401,27 @@ class TestSessionBars(unittest.TestCase):
         result = service.get_session_bars("600000", "2026-11-06")
         self.assertEqual(result.source, "tushare")
         self.assertEqual(result.trade_date, "2026-11-06")
+        # A request for the chart cannot reuse the five-minute cache or vice versa.
+        service.get_session_bars("600000", "2026-11-06", minutes=1)
+        service.get_session_bars("600000", "2026-11-06", minutes=1)
+        self.assertEqual([call.kwargs["freq"] for call in tushare._api.rt_min_daily.call_args_list], ["5MIN", "1MIN"])
         biying.get_history_bars.assert_not_called()
+
+    def test_today_without_tushare_uses_annual_ticks_and_reports_provider_delay(self):
+        service, _, _ = _service(biying=BiyingFetcher(licence="test"))
+        with patch("data_provider.biying_fetcher.requests.get") as http, patch.object(service, "_market_open", return_value=True):
+            http.return_value.status_code = 200
+            http.return_value.json.return_value = [
+                {"d": "2026-11-06", "t": "09:30:03", "p": 10, "v": 300},
+                {"d": "2026-11-05", "t": "15:00:00", "p": 99, "v": 500},
+            ]
+            result = service.get_session_bars("600000", "2026-11-06", minutes=1)
+            self.assertEqual(result.source, "biying")
+            self.assertEqual(result.as_of, "2026-11-06T09:31:00+08:00")
+            self.assertEqual(result.stale_reason, "provider_delay")
+            self.assertEqual(len(result.bars), 1)
+            self.assertIn("/hsrl/zbjy/600000/", http.call_args.args[0])
+            http.assert_called_once()
 
     def test_today_falls_back_to_history_when_live_chain_has_no_bars_for_the_day(self):
         biying = MagicMock(spec=BiyingFetcher)

@@ -91,7 +91,7 @@ export const StockChartBody: React.FC<StockChartBodyProps> = ({ target, onAddWat
   const [reloadKey, setReloadKey] = useState(0);
   const [period, setPeriod] = useState<KlinePeriod>('daily');
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  /** The trading day whose 5-minute chart is open over the candles (double-click on a daily candle). */
+  /** The trading day whose one-minute chart is open over the candles (double-click on a daily candle). */
   const [intradayDay, setIntradayDay] = useState<{ date: string; prevClose: number } | null>(null);
 
   useEffect(() => {

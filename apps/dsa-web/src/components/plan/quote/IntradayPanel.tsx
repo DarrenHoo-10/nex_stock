@@ -6,7 +6,7 @@ import type { StockIntradayBar } from '../../../api/stocks';
 import { useUiLanguage } from '../../../contexts/UiLanguageContext';
 import { OpeningAuctionStrip } from './OpeningAuctionStrip';
 import { CHART_COLORS } from './chartTheme';
-import { SESSION_SLOTS, buildIntradaySeries } from './intradayMath';
+import { SESSION_SLOTS, buildIntradaySeries, minuteSlot } from './intradayMath';
 import { formatVolume } from './klineMath';
 
 const W = 960;
@@ -19,7 +19,7 @@ const VOL_TOP = TOP + PRICE_H + 16;
 const VOL_H = 96;
 const AXIS_Y = VOL_TOP + VOL_H + 16;
 const PLOT_W = W - LEFT - RIGHT;
-const AXIS_TIMES = ['09:35', '10:30', '11:30', '14:00', '15:00'];
+const AXIS_TIMES = ['09:30', '10:30', '11:30', '14:00', '15:00'];
 
 type LoadState =
   | { status: 'loading' }
@@ -44,7 +44,7 @@ export interface IntradayPanelProps {
   onClose: () => void;
 }
 
-/** 5-minute price / average / volume of one trading day, laid over the candle chart it was opened from. */
+/** One-minute price / average / volume of one trading day, laid over the candle chart it was opened from. */
 export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, prevClose, digits, onClose }) => {
   const { t } = useUiLanguage();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
@@ -57,7 +57,14 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
     const controller = new AbortController();
     stocksApi
       .getIntraday(code, date, { signal: controller.signal })
-      .then((response) => setState({ status: 'ready', bars: response.data ?? [], stale: response.isStale }))
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        if (response.interval !== '1min') {
+          setState({ status: 'error', message: t('quote.intraday.intervalUnavailable') });
+          return;
+        }
+        setState({ status: 'ready', bars: response.data ?? [], stale: response.isStale });
+      })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
           setState({ status: 'error', message: getParsedApiError(error).message || t('quote.intraday.error') });
@@ -72,7 +79,7 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
 
   const bars = useMemo(() => (state.status === 'ready' ? state.bars : []), [state]);
   const series = useMemo(() => buildIntradaySeries(bars, prevClose), [bars, prevClose]);
-  const slots = Math.max(SESSION_SLOTS, series.points.length);
+  const slots = SESSION_SLOTS;
 
   const xOf = (index: number) => LEFT + ((index + 0.5) / slots) * PLOT_W;
   const yOf = (price: number) => TOP + ((series.max - price) / (series.max - series.min)) * PRICE_H;
@@ -94,7 +101,8 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
     const rect = svg.getBoundingClientRect();
     const x = ((event.clientX - rect.left) / rect.width) * W;
     const index = Math.floor(((x - LEFT) / PLOT_W) * slots);
-    setHover(index >= 0 && index < series.points.length ? index : null);
+    const found = series.points.findIndex((point) => point.slot === index);
+    setHover(found >= 0 ? found : null);
   };
 
   const activeIndex = hover ?? series.points.length - 1;
@@ -134,10 +142,13 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
   } else {
     const half = (series.max - series.min) / 2;
     const gridPrices = [series.max, prevClose + half / 2, prevClose, prevClose - half / 2, series.min];
-    const linePath = series.points.map((point, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yOf(point.close).toFixed(1)}`).join('');
-    const avgSegments = series.points
-      .map((point, i) => (point.avg === null ? null : `${xOf(i).toFixed(1)},${yOf(point.avg).toFixed(1)}`))
-      .filter((pair): pair is string => pair !== null);
+    const pathFor = (field: 'close' | 'avg') => series.points.map((point, i) => {
+      const price = point[field];
+      if (price === null) return '';
+      const prev = series.points[i - 1];
+      const command = !prev || prev[field] === null || point.slot - prev.slot > 1 ? 'M' : 'L';
+      return `${command}${xOf(point.slot).toFixed(1)},${yOf(price).toFixed(1)}`;
+    }).join('');
     const volumeScale = series.maxVolume > 0 ? VOL_H / series.maxVolume : 0;
 
     body = (
@@ -215,7 +226,7 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
             return (
               <rect
                 key={point.label}
-                x={xOf(i) - barWidth / 2}
+                x={xOf(point.slot) - barWidth / 2}
                 y={VOL_TOP + VOL_H - height}
                 width={barWidth}
                 height={height}
@@ -227,24 +238,25 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
           <line x1={LEFT} x2={W - RIGHT} y1={VOL_TOP + VOL_H} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.grid} />
 
           {AXIS_TIMES.map((label) => {
-            const index = series.points.findIndex((point) => point.label === label);
-            // A partial day (today) has no bar for the later labels.
-            return index === -1 ? null : (
+            const index = minuteSlot(label);
+            return (
               <text key={label} x={xOf(index)} y={AXIS_Y} textAnchor="middle" fill={CHART_COLORS.faint} fontSize="11">
                 {label}
               </text>
             );
           })}
 
-          <path d={linePath} fill="none" stroke={CHART_COLORS.ma[0]} strokeWidth="1.6" strokeLinejoin="round" />
-          {avgSegments.length > 1 ? (
-            <polyline points={avgSegments.join(' ')} fill="none" stroke={CHART_COLORS.avgCost} strokeWidth="1.3" />
-          ) : null}
+          <path d={pathFor('close')} fill="none" stroke={CHART_COLORS.ma[0]} strokeWidth="1.6" strokeLinejoin="round" />
+          <path d={pathFor('avg')} fill="none" stroke={CHART_COLORS.avgCost} strokeWidth="1.3" />
+          {series.points.map((point, i) => {
+            if (series.points[i - 1]?.slot === point.slot - 1 || series.points[i + 1]?.slot === point.slot + 1) return null;
+            return <circle key={point.label} cx={xOf(point.slot)} cy={yOf(point.close)} r="1.6" fill={CHART_COLORS.ma[0]} />;
+          })}
 
-          {hover !== null ? (
+          {hover !== null && series.points[hover] ? (
             <g pointerEvents="none">
-              <line x1={xOf(hover)} x2={xOf(hover)} y1={TOP} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.crossLine} strokeDasharray="3 3" />
-              <circle cx={xOf(hover)} cy={yOf(series.points[hover].close)} r="3.5" fill={CHART_COLORS.ma[0]} />
+              <line x1={xOf(series.points[hover].slot)} x2={xOf(series.points[hover].slot)} y1={TOP} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.crossLine} strokeDasharray="3 3" />
+              <circle cx={xOf(series.points[hover].slot)} cy={yOf(series.points[hover].close)} r="3.5" fill={CHART_COLORS.ma[0]} />
             </g>
           ) : null}
         </svg>

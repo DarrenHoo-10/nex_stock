@@ -380,10 +380,58 @@ test.describe('我的股票 page', () => {
     await expect(page.getByText('已加入自选')).toBeVisible();
     expect(seen).toEqual([{ path: '/api/v1/stocks/watchlist/add', body: { stock_code: '600519' } }]);
 
-    await page.locator('.row[data-code="000988"]').click();
-    await page.locator('.detail').getByRole('button', { name: '移出自选' }).click();
+    const watch = page.getByRole('list', { name: '自选' });
+    await page.locator('.list-scroll').evaluate(el => { el.scrollTop = 0; });
+    await page.locator('.win.side').screenshot({ path: test.info().outputPath('watchlist.png'), animations: 'disabled' });
+    await watch.getByRole('button', { name: '将 华工科技（000988）移出自选' }).click();
+    await expect(page.locator('.row[data-code="002475"]')).toHaveAttribute('aria-current', 'true');
     await expect(page.getByText('已移出自选')).toBeVisible();
     expect(seen[1]).toEqual({ path: '/api/v1/stocks/watchlist/remove', body: { stock_code: '000988' } });
+  });
+
+  test('removing a watched holding keeps the holding and other watch entries', async ({ page }) => {
+    await mockPlanApi(page);
+    let stockCodes = ['000988', '002475', 'AAPL'];
+    await page.route('**/api/v1/stocks/watchlist', route => route.fulfill({ json: { stock_codes: stockCodes } }));
+    await page.route('**/api/v1/stocks/watchlist/remove', route => {
+      stockCodes = stockCodes.filter(code => code !== route.request().postDataJSON().stock_code);
+      return route.fulfill({ json: { stock_codes: stockCodes } });
+    });
+    await page.goto('/mine');
+    const extra = page.getByRole('list', { name: '自选列表' });
+    await extra.getByRole('listitem').filter({ hasText: '002475' }).getByRole('button').click();
+    await expect(extra).not.toContainText('002475');
+    await expect(extra).toContainText('AAPL');
+    await expect(page.getByRole('list', { name: '持仓' })).toContainText('002475');
+  });
+
+  test('daily candle opens the minute trend for the selected session', async ({ page }, testInfo) => {
+    await mockPlanApi(page);
+    await page.route('**/api/v1/stocks/*/history?*', (route) => route.fulfill({ json: {
+      data: ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05'].map(date => ({
+        date, open: 41, high: 42, low: 40, close: 41.2, volume: 10000,
+      })),
+    } }));
+    await page.route('**/api/v1/stocks/*/intraday?*', (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      expect(params.get('interval')).toBe('1min');
+      const date = params.get('date');
+      const data = Array.from({ length: 240 }, (_, i) => {
+        const minute = (i < 120 ? 571 : 661) + i;
+        const time = `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+        const close = 41.2 + Math.sin(i / 11) * 0.18 + i / 800;
+        const volume = 1000 + (i * 67) % 2300;
+        return { time: `${date}T${time}:00+08:00`, close, volume, amount: close * volume };
+      });
+      return route.fulfill({ json: { data, interval: '1min', is_stale: false } });
+    });
+    await page.route('**/api/v1/stocks/*/opening-auction?*', route => route.fulfill({ json: { points: [] } }));
+    await page.goto('/mine');
+    await page.getByRole('img', { name: /K 线图/ }).dblclick();
+    const panel = page.getByRole('group', { name: /分时走势/ });
+    await expect(panel.locator('.qi-readout')).toContainText('15:00');
+    await expect(panel.locator('svg rect')).toHaveCount(240);
+    await panel.screenshot({ path: testInfo.outputPath('intraday.png'), animations: 'disabled' });
   });
 
   test('问助手 opens the assistant on the selected stock', async ({ page }) => {

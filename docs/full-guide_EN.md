@@ -376,6 +376,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | Variable | Description | Default | Required |
 |--------|------|--------|:----:|
 | `ASHARE_API_KEY` | ashareapi.com key with professional-tier access to opening auction quotes. Used when Biying has no auction points. Tushare can supply the final match. A system paid key: in a multi-user deployment only the primary user's requests use it, everyone else gets Biying / Tushare. | - | Optional |
+| `BIYING_LICENCE` | The intraday chart requests one-minute prices; the ordinary annual plan provides tick trades for aggregation. Intraday ticks update roughly hourly; historical ticks are archived from 2026-08-13. The API defaults to five minutes when `interval` is omitted. | - | Optional |
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | Optional |
 | `EASTMONEY_MIN_INTERVAL_SEC` | East Money rate limit: minimum seconds between two requests to the same East Money host (plus 0.1-0.5 s jitter), applied to every East Money request in the process | `1.0` | Optional |
 | `EASTMONEY_BAN_COOLDOWN_MINUTES` | Minutes to stop calling an East Money host after it answers HTTP 403, so callers switch to other sources | `30` | Optional |
