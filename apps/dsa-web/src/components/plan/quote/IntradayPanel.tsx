@@ -6,7 +6,7 @@ import type { OpeningAuction, StockIntradayBar } from '../../../api/stocks';
 import { useUiLanguage } from '../../../contexts/UiLanguageContext';
 import { svgPointer } from './svgPointer';
 import { CHART_COLORS } from './chartTheme';
-import { SESSION_SLOTS, buildIntradaySeries, minuteSlot } from './intradayMath';
+import { buildIntradaySeries, minuteSlot } from './intradayMath';
 import { formatVolume } from './klineMath';
 
 const H = 400;
@@ -20,7 +20,7 @@ const AXIS_Y = VOL_TOP + VOL_H + 16;
 const NO_AUCTION: OpeningAuction['points'] = [];
 const auctionFraction = (time: string) => {
   const [, minute, second] = time.split(':').map(Number);
-  return ((minute - 15) * 60 + (second || 0)) / (15 * 60);
+  return Math.min(1, ((minute - 15) * 60 + (second || 0)) / (10 * 60));
 };
 const AXIS_TIMES = ['09:30', '10:30', '11:30', '14:00', '15:00'];
 
@@ -97,12 +97,13 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
   }, []);
   const openX = LEFT + (width - LEFT - RIGHT) * 0.22;
   const regularW = width - RIGHT - openX;
-  const auctionX = (time: string) => LEFT + auctionFraction(time) * (openX - LEFT);
+  const auctionX = (time: string) => LEFT + auctionFraction(time) * (openX - LEFT - 1);
 
   const bars = useMemo(() => (state.status === 'ready' ? state.bars : []), [state]);
-  const auctionPoints = auction?.points ?? NO_AUCTION;
+  const auctionPoints = useMemo(() => auction?.points.filter(p =>
+    p.time >= '09:15' && p.time < '09:26') ?? NO_AUCTION, [auction]);
   const series = useMemo(() => buildIntradaySeries(bars, prevClose, auctionPoints), [bars, prevClose, auctionPoints]);
-  const slots = SESSION_SLOTS;
+  const slots = series.slots;
 
   const xOf = (index: number) => openX + ((index + 0.5) / slots) * regularW;
   const yOf = (price: number) => TOP + ((series.max - price) / (series.max - series.min)) * PRICE_H;
@@ -300,10 +301,10 @@ export const IntradayPanel: React.FC<IntradayPanelProps> = ({ code, name, date, 
           <line x1={LEFT} x2={width - RIGHT} y1={VOL_TOP + VOL_H} y2={VOL_TOP + VOL_H} stroke={CHART_COLORS.grid} />
 
           {AXIS_TIMES.filter(label => width >= 560 || (label !== '10:30' && label !== '14:00')).map((label) => {
-            const index = minuteSlot(label);
+            const index = minuteSlot(label, series.separateLunchBars);
             return (
               <text key={label} x={xOf(index)} y={AXIS_Y} textAnchor="middle" fill={CHART_COLORS.faint} fontSize="11">
-                {label}
+                {label === '11:30' ? '11:30/13:00' : label}
               </text>
             );
           })}

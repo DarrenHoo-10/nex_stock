@@ -1,13 +1,13 @@
 import type { OpeningAuction, StockIntradayBar } from '../../../api/stocks';
 
 /** Minutes on the trading clock, including both sessions' opening and closing timestamps. */
-export const SESSION_SLOTS = 242;
+const SESSION_SLOTS = 241;
 
-export function minuteSlot(label: string): number {
+export function minuteSlot(label: string, separateLunchBars = false): number {
   const [hour, minute] = label.split(':').map(Number);
   const time = hour * 60 + minute;
   if (time >= 570 && time <= 690) return time - 570;
-  if (time >= 780 && time <= 900) return 121 + time - 780;
+  if (time >= 780 && time <= 900) return 120 + Number(separateLunchBars) + time - 780;
   return -1;
 }
 
@@ -25,6 +25,8 @@ export interface IntradayPoint {
 
 export interface IntradaySeries {
   points: IntradayPoint[];
+  slots: number;
+  separateLunchBars: boolean;
   /** Price axis, symmetric around the previous close so up and down moves read equally. */
   min: number;
   max: number;
@@ -42,6 +44,9 @@ export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number,
   let totalVolume = 0;
   let lastAvg: number | null = null;
   const regularBars = bars.filter((bar) => minuteSlot(barLabel(bar.time)) >= 0);
+  // Both boundary quotes remain selectable when the source reports both.
+  const labels = new Set(regularBars.map(bar => barLabel(bar.time)));
+  const separateLunchBars = labels.has('11:30') && labels.has('13:00');
   const points: IntradayPoint[] = regularBars.map((bar) => {
     const volume = bar.volume ?? 0;
     if (bar.amount != null && volume > 0) {
@@ -50,7 +55,7 @@ export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number,
       lastAvg = totalAmount / totalVolume;
     }
     return {
-      slot: minuteSlot(barLabel(bar.time)),
+      slot: minuteSlot(barLabel(bar.time), separateLunchBars),
       label: barLabel(bar.time),
       close: bar.close,
       avg: lastAvg,
@@ -73,6 +78,8 @@ export function buildIntradaySeries(bars: StockIntradayBar[], prevClose: number,
   const half = Math.max(reach * 1.08, prevClose * 0.005);
   return {
     points,
+    slots: SESSION_SLOTS + Number(separateLunchBars),
+    separateLunchBars,
     min: prevClose - half,
     max: prevClose + half,
     maxVolume: points.reduce((peak, point) => Math.max(peak, point.volume),

@@ -444,7 +444,8 @@ test.describe('我的股票 page', () => {
     const baseline = (await chart.locator('line[stroke-dasharray="5 4"]').boundingBox())!;
     expect(Math.abs(match.y + match.height / 2 - baseline.y)).toBeLessThan(1);
     expect(match.x).toBeGreaterThan(band.x);
-    expect(match.x + match.width).toBeLessThan(band.x + band.width);
+    expect(Math.abs(match.x + match.width / 2 - (band.x + band.width))).toBeLessThan(2);
+    await expect(chart.getByText('11:30/13:00')).toBeVisible();
     expect(band.x + band.width).toBeLessThan(firstBar.x);
     expect(Math.abs(band.y + band.height - firstBar.y - firstBar.height)).toBeLessThan(1);
     const matchX = Math.round(match.x + match.width / 2);
@@ -453,7 +454,7 @@ test.describe('我的股票 page', () => {
     await expect(panel.locator('.qi-readout')).toContainText('撮合价');
     expect(Math.abs((await chart.locator('g[pointer-events="none"] line').boundingBox())!.x - matchX)).toBeLessThan(1);
     // Use rendered volume bars as targets so the assertions also cover SVG letterboxing.
-    for (const [index, time] of [[9, '09:40'], [200, '14:21']] as const) {
+    for (const [index, time] of [[9, '09:40'], [119, '11:30'], [120, '13:01'], [200, '14:21']] as const) {
       const bar = (await chart.locator('.qi-minute-volume').nth(index).boundingBox())!;
       const x = Math.round(bar.x + bar.width / 2);
       await page.mouse.move(x, Math.round(bar.y + bar.height / 2));

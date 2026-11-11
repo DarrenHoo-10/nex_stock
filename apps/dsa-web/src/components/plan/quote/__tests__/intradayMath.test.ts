@@ -25,6 +25,12 @@ describe('buildIntradaySeries', () => {
     expect(series.points.map((point) => point.slot)).toEqual([1, 3, 120, 121, 241]);
   });
 
+  it('places 13:01 directly after 11:30 when the feed has no 13:00 bar', () => {
+    const times = ['11:30', '12:59', '13:01'];
+    const series = buildIntradaySeries(times.map(t => bar(`2026-11-06T${t}:00+08:00`, 10, 1, 10)), 10);
+    expect(series.points.map(p => p.slot)).toEqual([120, 121]);
+  });
+
   it('averages cumulative amount over cumulative volume', () => {
     const series = buildIntradaySeries(
       [
