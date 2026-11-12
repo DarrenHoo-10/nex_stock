@@ -157,6 +157,11 @@ def test_stock_core_real_http_identity_topics_and_revocation(services):
         assert result.status_code==200,result.text
         return any(m["content"]=="synthetic first answer" for m in result.json()["messages"])
     _wait(visible)
+    for who in ("owner", "other"):
+        boot = f.stock(prefix + "/status?includeTopics=true", who)
+        assert boot.status_code == 200
+        rows = boot.json()["topics"]
+        assert any(row["conversationId"] == topic for row in rows) == (who == "owner")
     finance=f.core("agents/finance").json()["botId"]
     native=f.core("agents/messages?bot="+finance+"&conversationId="+topic)
     assert native.status_code==200 and "synthetic first answer" in native.text

@@ -22,6 +22,7 @@ import os
 import secrets
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -87,19 +88,30 @@ def _is_auth_enabled_from_env() -> bool:
     return val in ("true", "1", "yes")
 
 
+@lru_cache(maxsize=1)
+def _auth_file_values(path: Path, fingerprint: tuple[int, ...]):
+    """Parse literal settings once per file revision. Never cache session decisions."""
+    _ensure_env_loaded()
+    return dotenv_values(path, interpolate=False)
+
+
 def _read_setting(key: str) -> str:
     """Read one setting: active .env file value first, then the process environment."""
-    _ensure_env_loaded()
     env_file = os.getenv("ENV_FILE")
-    env_path = Path(env_file) if env_file else Path(__file__).resolve().parent.parent / ".env"
-    if env_path.exists():
-        try:
+    env_path = Path(env_file).absolute() if env_file else Path(__file__).resolve().parent.parent / ".env"
+    try:
+        stat = env_path.stat()
+        fingerprint = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        value = _auth_file_values(env_path, fingerprint).get(key)
+        if value and "${" in value:
+            # Interpolation may depend on a process environment value that changed.
             value = dotenv_values(env_path).get(key)
-        except Exception as exc:  # pragma: no cover - defensive branch
-            logger.warning("Failed to read %s from %s: %s", key, env_path, exc)
-            value = None
-        if value is not None and str(value).strip():
-            return str(value).strip()
+        if value and value.strip():
+            return value.strip()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Failed to read %s from %s: %s", key, env_path, exc)
     return (os.getenv(key) or "").strip()
 
 
@@ -255,6 +267,7 @@ def _load_credential_from_file() -> bool:
 def refresh_auth_state() -> None:
     """Reload auth-related state from disk and env."""
     global _auth_enabled, _auth_mode, _session_secret
+    _auth_file_values.cache_clear()
     _auth_enabled = None
     _auth_mode = None
     _session_secret = None

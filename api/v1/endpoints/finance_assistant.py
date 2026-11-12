@@ -6,6 +6,7 @@ import hashlib
 import time
 from concurrent.futures import Future
 from threading import Lock
+from typing import Annotated
 from urllib.parse import urlsplit
 
 import requests
@@ -60,11 +61,20 @@ def core_call(method, path, token, *, data=None, params=None):
 
 
 @router.get("/status")
-def status(request: Request):
+def status(request: Request, include_topics: Annotated[bool, Query(alias="includeTopics")] = False):
     if not setting("FINANCE_CORE_URL"):
         return {"managed": False, "bound": False}
     owner = browser_identity(request)
-    return {"managed": True, "bound": FinanceIdentityStore().bound(owner)}
+    bound = FinanceIdentityStore().bound(owner)
+    result = {"managed": True, "bound": bound}
+    if bound and include_topics:
+        bot_id, token = _session_for_owner(request, owner)
+        code, body = core_call("GET", "agents/topics", token, params={"bot": bot_id})
+        if code != 200:
+            # A missing upstream topic resource is not a legacy Stock installation.
+            return JSONResponse(content=body, status_code=502 if code == 404 else code)
+        result["topics"] = body["topics"]
+    return result
 
 
 @router.post("/connect")
@@ -75,7 +85,10 @@ def connect(request: Request):
 
 
 def core_session(request: Request, *, write: bool):
-    owner = browser_identity(request, write)
+    return _session_for_owner(request, browser_identity(request, write))
+
+
+def _session_for_owner(request: Request, owner):
     config = configuration()
     cookie_value = cookie(request)
     key = (core_url(), owner["issuer"], owner["subject"], owner["instanceId"], owner["coreId"],

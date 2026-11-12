@@ -12,6 +12,20 @@ const topic = { conversationId: 'same-core-topic', title: '群里的复盘', aud
 beforeEach(() => { vi.resetAllMocks(); api.status.mockResolvedValue({ managed: true, bound: true }); api.connect.mockResolvedValue({ managed: true, bound: true }); api.topics.mockResolvedValue([topic]); api.messages.mockResolvedValue({ messages: topic.messages, streaming: [] }); api.tasks.mockResolvedValue([]); api.models.mockResolvedValue({ selection: { selected_connection: 'conn', selected_model: 'chosen', selected_reasoning: 'high', model_selection_version: 3 }, connections: [{ id: 'conn', name: 'Provider', defaultModel: 'chosen', enabled: true, configured: true, models: ['chosen'], options: { chosen: { reasoning: ['low', 'high'] } } }] }); api.action.mockResolvedValue({ conversationId: topic.conversationId }); });
 afterEach(cleanup);
 describe('managed finance assistant', () => {
+    it('shows authorized previews immediately, then replaces them with the fresh history', async () => {
+        api.status.mockResolvedValue({ managed: true, bound: true, topics: [topic] });
+        let finish!: (value: unknown) => void;
+        api.messages.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+        render(<FinanceAssistantBoundary legacy={null}/>);
+        fireEvent.click(await screen.findByRole('button', { name: /^群里的复盘/ }));
+        expect(api.status).toHaveBeenCalledWith(true);
+        expect(api.topics).not.toHaveBeenCalled();
+        expect(api.messages).toHaveBeenCalledWith(topic.conversationId);
+        expect(screen.getByText('公开答案')).toBeVisible();
+        await act(async () => finish({ messages: [{ ...topic.messages[0], content: '完整记录' }], streaming: [] }));
+        expect(screen.queryByText('公开答案')).toBeNull();
+        expect(screen.getByText('完整记录')).toBeVisible();
+    });
     it('renders late history even while the model catalog is pending', async () => {
         vi.useFakeTimers();
         try {

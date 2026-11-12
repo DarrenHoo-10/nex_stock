@@ -59,13 +59,20 @@ export type Feed = {
 };
 const base = '/api/v1/finance/assistant/';
 export const financeApi = {
-  async status() {
+  async status(includeTopics = false) {
     try {
-      const {data}=await apiClient.get<{managed:boolean;bound:boolean}>(base+'status');
+      type Status = {managed: boolean; bound: boolean; topics?: Topic[]};
+      const {data} = includeTopics
+        ? await apiClient.get<Status>(base+'status', {params:{includeTopics:true}})
+        : await apiClient.get<Status>(base+'status');
       if(typeof data.managed!=='boolean'||typeof data.bound!=='boolean')throw new Error('金融助手状态响应无效');
       return data;
     } catch(error) {
-      if(error&&typeof error==='object'&&'response' in error&&(error.response as {status?:number})?.status===404)return {managed:false,bound:false};
+      if (error && typeof error === 'object' && 'response' in error) {
+        const response = error.response as {status?: number; data?: {detail?: unknown}};
+        if (response?.status === 404 && (response.data?.detail == null || response.data.detail === 'Not Found'))
+          return {managed:false,bound:false};
+      }
       throw error;
     }
   },

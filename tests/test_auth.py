@@ -290,3 +290,29 @@ class AuthSetPasswordTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_auth_settings_reuse_file_and_follow_live_changes(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from src import auth
+
+    path = tmp_path / ".env"
+    monkeypatch.setenv("ENV_FILE", str(path))
+    monkeypatch.setenv("SAMPLE_SOURCE", "first")
+    monkeypatch.setenv("SAMPLE_AUTH", "fallback")
+    path.write_text("SAMPLE_AUTH=alpha\nDYNAMIC=${SAMPLE_SOURCE}\n", encoding="utf-8")
+    monkeypatch.setattr(auth, "_ensure_env_loaded", lambda: None)
+    parser = Mock(wraps=auth.dotenv_values)
+    monkeypatch.setattr(auth, "dotenv_values", parser)
+    assert auth.read_auth_setting("SAMPLE_AUTH") == "alpha"
+    assert auth.read_auth_setting("SAMPLE_AUTH") == "alpha"
+    assert parser.call_count == 1
+    assert auth.read_auth_setting("DYNAMIC") == "first"
+    monkeypatch.setenv("SAMPLE_SOURCE", "second")
+    assert auth.read_auth_setting("DYNAMIC") == "second"
+    replacement = tmp_path / "replacement"
+    replacement.write_text("SAMPLE_AUTH=bravo\nDYNAMIC=${SAMPLE_SOURCE}\n", encoding="utf-8")
+    replacement.replace(path)
+    assert auth.read_auth_setting("SAMPLE_AUTH") == "bravo"
+    path.unlink()
+    assert auth.read_auth_setting("SAMPLE_AUTH") == "fallback"
