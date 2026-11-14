@@ -1,7 +1,8 @@
+import type { ReportLanguage } from '../../../types/analysis';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const renderDrawer = async (onClose = vi.fn()) => {
+const renderDrawer = async (onClose = vi.fn(), reportLanguage?: ReportLanguage) => {
   const { ReportMarkdownDrawer } = await import('../ReportMarkdownDrawer');
 
   render(
@@ -9,6 +10,7 @@ const renderDrawer = async (onClose = vi.fn()) => {
       recordId={1}
       stockName="贵州茅台"
       stockCode="600519"
+      reportLanguage={reportLanguage}
       onClose={onClose}
     />,
   );
@@ -107,10 +109,12 @@ describe('ReportMarkdownDrawer', () => {
       },
     }));
 
-    await renderDrawer();
+    await renderDrawer(vi.fn(), 'en');
 
     expect(
       await screen.findByRole('heading', { name: 'Lazy loaded report' }, { timeout: 5000 }),
     ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy Markdown Source' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy Plain Text' })).toBeInTheDocument();
   });
 });
