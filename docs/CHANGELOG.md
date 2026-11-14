@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 个股详情常驻个股分析、明日计划、研报、重大事件和相关新闻五个栏目，支持选择策略生成分析、查看历史报告和打开券商研报原文，可在栏目右侧刷新当前内容。
+
 - [改进] 金融助手打开时一并加载会话列表，切换会话立即显示最近消息，减少重复读取配置的开销。
 
 - [改进] 首尔网关按私有路由清单连接 Stock 与 NexBot 的 ZeroTier 源站，内部服务可通过专用 DNS 解析。

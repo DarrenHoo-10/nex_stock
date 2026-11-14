@@ -1953,6 +1953,17 @@ class MacroSeries(Base):
     fetched_at = Column(DateTime, default=utc_naive_now, nullable=False)
 
 
+class ResearchIndexCache(Base):
+    """Latest public broker reports for one stock and the timestamps of the last check and success."""
+
+    __tablename__ = 'research_index_cache'
+
+    code = Column(String(10), primary_key=True)
+    reports = Column(Text, nullable=False, default='[]')
+    checked_at = Column(DateTime, nullable=False)
+    synced_at = Column(DateTime)
+
+
 class StockEventIngest(Base):
     """Which announcement days of which event kind have been stored for the whole market."""
 

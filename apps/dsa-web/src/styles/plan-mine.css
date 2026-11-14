@@ -80,6 +80,13 @@
 .plan-shell .detail > .empty { max-width: 34em; }
 .plan-shell .detail .actions.sm-top { margin-top: 12px; }
 
+.plan-shell .research-library { margin-top: 18px; }
+.plan-shell .research-library ul { list-style: none; margin: 0; padding: 0; }
+.plan-shell .research-library li { padding: 16px 0; border-top: 1px solid var(--line); }
+.plan-shell .research-library h3 { margin: 6px 0; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
+.plan-shell .research-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--t3); font-size: 13px; }
+.plan-shell .research-meta a { margin-inline-start: auto; color: var(--t1); text-underline-offset: 3px; }
+
 /* ---------- Price ladder marks (colours from the glass tokens; red up, green down) ---------- */
 .plan-shell .ladder .axis { stroke: rgba(255,255,255,.32); stroke-width: 2; stroke-linecap: round; fill: none; }
 .plan-shell .ladder .lv-link { stroke: rgba(255,255,255,.22); fill: none; }
@@ -149,8 +156,26 @@
 .plan-shell .wf-notice { margin-top: 12px; flex-wrap: wrap; align-items: center; }
 .plan-shell .wf-notice span { flex: 1 1 260px; }
 .plan-shell .wf-list { list-style: none; margin: 14px 0 0; padding: 0; border-radius: var(--r-in); background: var(--fill); }
-.plan-shell .wf-list li { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
+.plan-shell .wf-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; }
 .plan-shell .wf-list li + li { border-top: 1px solid var(--line); }
 .plan-shell .wf-name { font-weight: 600; min-width: 6em; }
 .plan-shell .wf-code { color: var(--t3); font-size: 13px; }
 .plan-shell .wf-list .btn { margin-left: auto; }
+
+.plan-shell .stock-section-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
+.plan-shell .stock-section-refresh { margin-inline-start: auto; flex: none; }
+.plan-shell .stock-sections.seg { max-width: 100%; display: inline-flex; flex-wrap: wrap; }
+.plan-shell .stock-sections.seg button { white-space: nowrap; }
+.plan-shell .stock-analysis { margin-top: 18px; }
+.plan-shell .analysis-controls { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.plan-shell .analysis-controls select { min-width: 0; max-width: 100%; width: 16rem; padding: 9px 14px; color: var(--t1); background: var(--fill); border: 1px solid var(--line); border-radius: 12px; font: inherit; }
+.plan-shell .analysis-controls select option { color: #182441; background: white; }
+.plan-shell .analysis-controls button:disabled { opacity: .45; cursor: not-allowed; }
+.plan-shell .stock-record-list { padding: 0; list-style: none; margin: 14px 0; }
+.plan-shell .stock-record-list li { border-top: 1px solid var(--line); }
+.plan-shell .stock-record-list button { width: 100%; display: grid; gap: 6px; text-align: left; color: inherit; padding: 12px 0; background: transparent; border: 0; }
+.plan-shell .analysis-excerpt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 520px) {
+  .plan-shell .stock-sections.seg button { padding: 7px 8px; font-size: 12px; }
+  .plan-shell .analysis-controls select { flex: 1; }
+}

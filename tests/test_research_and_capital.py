@@ -341,3 +341,89 @@ def test_missing_tushare_fields_become_none_not_nan_text():
     assert research_summary([event], TODAY)["ratings"] == {}
     holder = parse_holder_trades(query_rows(fake, _DAY_KINDS["holder_trade"], ann_date="20261105"))[0]
     assert "nan" not in holder["title"] and holder["title"].startswith("股东减持")
+
+def test_research_library_persists_merges_and_falls_back(db, monkeypatch):
+    from datetime import timedelta
+    import requests
+    from api.v1.endpoints import stocks
+    from data_provider import eastmoney_gate
+    from src.services import research_library
+    from src.storage import ResearchIndexCache, utc_naive_now
+
+    forecasts = parse_research([{**r, "report_date": date.today().strftime("%Y%m%d")} for r in REPORT_RC])
+    StockEventRepository(db).upsert(forecasts)
+    event = forecasts[0]
+    title = event["payload"]["title"]
+    day = event["event_date"].isoformat()
+    base = {"stockCode": "600089", "title": title, "publishDate": day,
+            "orgSName": event["payload"]["org"], "infoCode": "AP123", "attachPages": 3}
+    body = {"hits": 3, "data": [base, base, {**base, "infoCode": "AP456", "title": "另一份研报", "attachPages": 0}]}
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(kwargs)
+        if len(calls) > 1:
+            raise requests.Timeout()
+        return SimpleNamespace(json=lambda: body)
+
+    monkeypatch.setattr(eastmoney_gate, "get", get)
+    result = stocks.get_research_library("600089", user=_primary())
+    assert result.eastmoney.status == "ok"
+    assert len(result.reports) == 3
+    merged = next(r for r in result.reports if r.payload.get("info_code") == "AP123")
+    assert merged.payload["forecasts"] and merged.payload["pdf_url"].endswith("/H3_AP123_1.pdf")
+    assert sum("pdf_url" in row.payload for row in result.reports) == 1
+    assert calls[0]["params"]["code"] == "600089" and calls[0]["params"]["pageSize"] == 30
+    assert stocks.get_research_library("600089", user=_primary()) == result
+    assert len(calls) == 1
+    with db.get_session() as session:
+        entry = session.get(ResearchIndexCache, "600089")
+        entry.synced_at = entry.checked_at = utc_naive_now() - timedelta(days=2)
+        last = entry.synced_at
+        session.commit()
+    monkeypatch.setattr(research_library, "allow_on_demand_fetch", lambda user: False)
+    limited = stocks.get_research_library("600089", user=_primary())
+    assert limited.eastmoney.status == "rate_limited" and len(calls) == 1
+    monkeypatch.setattr(research_library, "allow_on_demand_fetch", lambda user: True)
+    failed = stocks.get_research_library("600089", user=_primary())
+    assert failed.eastmoney.status == "unavailable" and failed.reports == result.reports
+    assert calls[-1]["params"]["beginTime"] == (last.date() - timedelta(days=1)).isoformat()
+    assert stocks.get_research_library("600089", user=_primary()) == failed
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("payload, expected", [
+    ({"data": [], "hits": 0}, "ok"), ({"error": "restricted"}, "unavailable"),
+    ({"data": [{"stockCode": "000001"}], "hits": 1}, "unavailable"),
+])
+def test_empty_and_failed_research_indexes_are_distinct_and_cached(db, monkeypatch, payload, expected):
+    from data_provider import eastmoney_gate
+    from src.services.research_library import library_for
+
+    with patch.object(eastmoney_gate, "get", return_value=SimpleNamespace(json=lambda: payload)) as get:
+        for _ in range(2):
+            rows, status = library_for(StockEventRepository(db), "603200", TODAY)
+            assert rows == [] and status["status"] == expected
+        get.assert_called_once()
+
+
+def test_briefs_separate_disclosures_and_related_priority_news(db, monkeypatch):
+    from datetime import datetime
+    from api.v1.endpoints.stocks import get_stock_briefs
+    from src.services import news_digest_service
+    from src.storage import IntelligenceItem
+
+    with db.get_session() as session:
+        for kind, title, importance, breaking, code in [
+            ("announcement", "年度报告", 5, True, "603200"), ("flash", "普通消息", 1, False, "603200"),
+            ("article", "相关报道", 3, False, "603200"), ("flash", "突发", None, True, "603200"),
+            ("article", "其他公司", 5, True, "600000"),
+        ]:
+            session.add(IntelligenceItem(title=title, url="no-url:test", scope_type="symbol", scope_value=code,
+                                         item_kind=kind, importance=importance, is_breaking=breaking,
+                                         published_at=datetime.now()))
+        session.commit()
+    assert [r["title"] for r in get_stock_briefs("603200", "events", _primary())] == ["年度报告"]
+    assert {r["title"] for r in get_stock_briefs("603200", "news", _primary())} == {"相关报道", "突发"}
+    monkeypatch.setattr(news_digest_service, "viewer_announcement_codes", lambda user: set())
+    assert get_stock_briefs("603200", "events", _primary()) == []

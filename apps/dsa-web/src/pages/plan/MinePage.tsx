@@ -7,13 +7,15 @@ import { AccountStrip } from '../../components/plan/mine/AccountStrip';
 import { HoldingsDialog } from '../../components/plan/mine/HoldingsDialog';
 import type { RecordBuyPrefill } from '../../components/plan/mine/PlanView';
 import { RecordBuyDialog } from '../../components/plan/mine/RecordBuyDialog';
+import { StockSections } from '../../components/plan/mine/StockSections';
+import { stockSection, type StockSection } from '../../components/plan/mine/stockSectionsConfig';
 import { StockDetail } from '../../components/plan/mine/StockDetail';
 import { StockList } from '../../components/plan/mine/StockList';
 import { useMineOverview, useStockPlanDetail } from '../../components/plan/mine/useMineData';
 import { ModelKeyBanner } from '../../components/auth/ModelKeyBanner';
 import { PlanPageHeader } from '../../components/plan/PlanPageHeader';
 import { QuoteSearch } from '../../components/plan/quote/QuoteSearch';
-import { includesStockCode } from '../../utils/stockCode';
+import { includesStockCode, normalizeStockCode } from '../../utils/stockCode';
 import { watchlistCodeOf } from '../../utils/watchlistCode';
 import { useStockIndex } from '../../hooks/useStockIndex';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -66,9 +68,10 @@ const StatePanel: React.FC<{ title: string; text: string; onRetry: () => void }>
 
 const WatchlistEntries: React.FC<{
   codes: string[];
+  onSelect: (code: string) => void;
   busy: boolean;
   onRemove: (code: string) => void;
-}> = ({ codes, busy, onRemove }) => {
+}> = ({ codes, onSelect, busy, onRemove }) => {
   const stockIndex = useStockIndex(true);
   const names = useMemo(() => {
     const map = new Map<string, string>();
@@ -81,6 +84,11 @@ const WatchlistEntries: React.FC<{
         <li key={code}>
           <span className="wf-name">{names.get(code.toUpperCase()) ?? '—'}</span>
           <span className="num wf-code">{code}</span>
+          {/^\d{6}$/.test(normalizeStockCode(code)) && (
+            <button type="button" className="btn quiet sm" onClick={() => onSelect(normalizeStockCode(code))}>
+              详情
+            </button>
+          )}
           <button type="button" className="btn quiet sm" disabled={busy} onClick={() => onRemove(code)}>
             移出
           </button>
@@ -96,19 +104,20 @@ const WatchlistEntries: React.FC<{
  */
 const WatchlistFallback: React.FC<{
   codes: string[] | null;
+  onSelect: (code: string) => void;
   busy: boolean;
   onRemove: (code: string) => void;
   onRetry: () => void;
-}> = ({ codes, busy, onRemove, onRetry }) => {
+}> = ({ codes, onSelect, busy, onRemove, onRetry }) => {
   return (
-    <section className="win watch-fallback" aria-labelledby="plan-page-title">
+    <section className="win watch-fallback" aria-labelledby="mine-watchlist-heading">
       <div className="wf-head">
-        <h2 id="plan-page-title">我的自选</h2>
+        <h2 id="mine-watchlist-heading">我的自选</h2>
         {codes ? <span className="wf-count">{codes.length} 只</span> : null}
       </div>
       <p className="notice wf-notice" role="note">
         <b>次日计划还没有就绪</b>
-        <span>后端的次日计划模块还没有就绪，暂时只能维护自选列表；就绪后这里会出现每只股票的计划。</span>
+        <span>可以先查看自选股的研报。次日计划恢复后会显示在个股详情里。</span>
         <button type="button" className="btn sm" onClick={onRetry}>
           重试
         </button>
@@ -118,7 +127,7 @@ const WatchlistFallback: React.FC<{
       ) : codes.length === 0 ? (
         <p className="note">还没有自选股。用右上角的搜索框找到股票，在走势图里点「加入自选」。</p>
       ) : (
-        <WatchlistEntries codes={codes} busy={busy} onRemove={onRemove} />
+        <WatchlistEntries codes={codes} onSelect={onSelect} busy={busy} onRemove={onRemove} />
       )}
     </section>
   );
@@ -137,7 +146,14 @@ const MinePage: React.FC = () => {
   const items = list.status === 'ready' ? list.data.items : null;
   const selectedCode = paramCode ?? items?.[0]?.code ?? null;
   const selectedSummary = items?.find((item) => item.code === selectedCode) ?? null;
-  const detail = useStockPlanDetail(items ? selectedCode : null, overview.version);
+  const section = stockSection(params.get('tab'));
+  const detail = useStockPlanDetail(items && section === 'plan' ? selectedCode : null, overview.version);
+  const changeSection = (next: StockSection) => {
+    const query = new URLSearchParams(params);
+    if (next !== 'analysis') query.set('tab', next);
+    else query.delete('tab');
+    navigate({ search: query.toString() }, { replace: true, state: location.state });
+  };
 
   const [holdingsOpen, setHoldingsOpen] = useState(false);
   const [holdingsKey, setHoldingsKey] = useState(0);
@@ -187,14 +203,14 @@ const MinePage: React.FC = () => {
       const compact = isCompactViewport();
       const opening = compact && !paramCode;
       navigate(
-        { pathname: location.pathname, search: `?code=${encodeURIComponent(code)}` },
+        { pathname: location.pathname, search: `?code=${encodeURIComponent(code)}${section === 'analysis' ? '' : `&tab=${section}`}` },
         { replace: !opening, state: opening ? { fromList: true } : location.state },
       );
       if (compact) {
         window.scrollTo({ top: 0 });
       }
     },
-    [location.pathname, location.state, navigate, paramCode],
+    [location.pathname, location.state, navigate, paramCode, section],
   );
 
   const goBack = useCallback(() => {
@@ -299,30 +315,27 @@ const MinePage: React.FC = () => {
     />
   );
 
-  if (list.status === 'unavailable' || account.status === 'unavailable') {
-    return (
-      <>
-        {header}
-        <WatchlistFallback
-          codes={watchCodes}
-          busy={busy}
-          onRemove={(code) => void removeWatch(code)}
-          onRetry={() => overview.reload()}
-        />
-      </>
-    );
-  }
-  if (list.status === 'error' || list.status === 'notfound') {
-    return (
-      <>
-        {header}
-        <StatePanel
-          title="计划读取失败"
-          text={list.status === 'error' ? list.message : '没有找到计划列表。'}
-          onRetry={() => overview.reload()}
-        />
-      </>
-    );
+  const fallbackDetail = paramCode && includesStockCode(watchCodes ?? [], paramCode) ? (
+    <section className="win detail">
+      <button type="button" className="btn quiet back" onClick={goBack}>‹ 返回列表</button>
+      <h2 id="stock-detail-code">{paramCode}</h2>
+      <StockSections code={paramCode} section={section} onSection={changeSection} onRefreshPlan={() => overview.reload()}>
+        <p className="note">暂无可展示的明日计划。</p>
+      </StockSections>
+    </section>
+  ) : null;
+
+  if (list.status === 'unavailable' || account.status === 'unavailable' || list.status === 'error' || list.status === 'notfound') {
+    return <>
+      {header}
+      {list.status === 'error' || list.status === 'notfound' ? <StatePanel
+        title="计划读取失败"
+        text={list.status === 'error' ? list.message : '没有找到计划列表。'}
+        onRetry={() => overview.reload()}
+      /> : <WatchlistFallback codes={watchCodes} busy={busy} onSelect={select}
+        onRemove={(code) => void removeWatch(code)} onRetry={() => overview.reload()} />}
+      {fallbackDetail}
+    </>;
   }
 
   const accountData = account.status === 'ready' ? account.data : null;
@@ -355,7 +368,7 @@ const MinePage: React.FC = () => {
             {items && otherWatchCodes.length > 0 && (
               <>
                 <p className="group-label">其他自选（含持仓或无次日计划的标的）</p>
-                <WatchlistEntries codes={otherWatchCodes} busy={busy} onRemove={removeWatch} />
+                <WatchlistEntries codes={otherWatchCodes} onSelect={select} busy={busy} onRemove={removeWatch} />
               </>
             )}
           </div>
@@ -378,9 +391,13 @@ const MinePage: React.FC = () => {
               </div>
               <p className="note">也可以在左侧「+ 加自选」里直接输入 6 位代码。</p>
             </section>
+          ) : selectedCode && !selectedSummary && fallbackDetail ? (
+            fallbackDetail
           ) : selectedCode ? (
             <StockDetail
               code={selectedCode}
+              section={section}
+              onSection={changeSection}
               summary={selectedSummary}
               detail={detail.state}
               account={account}

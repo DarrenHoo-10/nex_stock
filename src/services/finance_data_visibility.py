@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 _PUBLIC_GET_VIEWS = (
-    re.compile(r"^/api/v1/stocks/[^/]+/(quote|history|intraday|events|capital|research|qa)$"),
+    re.compile(r"^/api/v1/stocks/[^/]+/(quote|history|intraday|events|capital|research(?:/library)?|qa)$"),
     re.compile(r"^/api/v1/(stocks/search|screening/strategies|boards/anomalies|data/(overview|capabilities|macro))$"),
     re.compile(r"^/api/v1/data/indices/[^/]+/constituents$"),
     re.compile(r"^/api/v1/closing-analysis/public/[0-9]{4}-[0-9]{2}-[0-9]{2}$"),

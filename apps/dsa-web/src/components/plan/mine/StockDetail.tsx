@@ -1,4 +1,6 @@
 import type React from 'react';
+import { StockSections } from './StockSections';
+import type { StockSection } from './stockSectionsConfig';
 import { CountUp as Count } from '../motion/CountUp';
 import { PlanIcon } from '../PlanIcon';
 import type { AccountResponse, Horizon, StockPlan, StockPlanSummary } from '../../../types/dailyPlan';
@@ -9,6 +11,8 @@ import type { Loadable } from './useMineData';
 
 export interface StockDetailProps {
   code: string;
+  section: StockSection;
+  onSection: (section: StockSection) => void;
   /** Row of the list for this code; null when the code is not in the watchlist or holdings. */
   summary: StockPlanSummary | null;
   detail: Loadable<StockPlan>;
@@ -102,6 +106,8 @@ const StateHero: React.FC<{
 /** Right window of the page: one stock's plan, or the loading / error / missing variants of it. */
 export const StockDetail: React.FC<StockDetailProps> = ({
   code,
+  section,
+  onSection,
   summary,
   detail,
   account,
@@ -202,8 +208,10 @@ export const StockDetail: React.FC<StockDetailProps> = ({
     <>
       <BackButton onBack={onBack} />
       <DetailHeader summary={summary} plan={plan} />
-      {body}
-      {suspended && plan ? <ModelFootnote plan={plan} /> : null}
+      <StockSections code={code} section={section} onSection={onSection} onRefreshPlan={onRetry}>
+        {body}
+        {suspended && plan ? <ModelFootnote plan={plan} /> : null}
+      </StockSections>
     </>
   );
 };

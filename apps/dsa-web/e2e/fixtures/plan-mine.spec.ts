@@ -40,12 +40,69 @@ function calls(mock: PlanApiMock, method: string, path: string) {
 
 async function openMine(page: Page, scenario: 'default' | 'empty-account' = 'default', path = '/mine') {
   const mock = await mockPlanApi(page, { scenario });
-  await page.goto(path);
+  await page.goto(path + (path.includes('?') ? '&tab=plan' : '?tab=plan'));
   await expect(page.getByRole('heading', { level: 1, name: '我的股票' })).toBeVisible({ timeout: 20_000 });
   return mock;
 }
 
 test.describe('我的股票 page', () => {
+  test('five persistent sections default to history and require a strategy before generation', async ({ page }) => {
+    await mockPlanApi(page);
+    await page.route('**/agent/skills', route => route.fulfill({ json: { skills: [{ id: 'pullback', name: '缩量回踩' }] } }));
+    await page.route('**/history?*', route => route.fulfill({ json: {
+      total: 1, items: [{ id: 7, stock_code: '002475', created_at: '2026-11-13T16:42:00', analysis_summary: '收盘复核' }],
+    } }));
+    await page.route('**/history/7/markdown', route => route.fulfill({ json: { content: '历史报告正文' } }));
+    await page.route('**/briefs?*', route => route.fulfill({ json: [] }));
+    await page.route('**/analysis/analyze', route => {
+      expect(route.request().postDataJSON()).toMatchObject({ stock_code: '002475', skills: ['pullback'], force_regenerate: true });
+      return route.fulfill({ status: 202, json: { task_id: 'task-1' } });
+    });
+    await page.route('**/analysis/status/task-1', route => route.fulfill({ json: { status: 'completed' } }));
+    await page.goto('/mine?code=002475');
+    const nav = page.getByRole('group', { name: '个股详情' });
+    await expect(nav).toBeVisible({ timeout: 20_000 });
+    await expect(nav.getByRole('button')).toHaveText(['个股分析', '明日计划', '研报', '重大事件', '相关新闻']);
+    const generate = page.getByRole('button', { name: '生成分析' });
+    await expect(generate).toBeDisabled();
+    await page.getByText('收盘复核').click();
+    await expect(page.getByText('历史报告正文')).toBeVisible();
+    await page.getByRole('button', { name: '返回记录' }).click();
+    await page.getByLabel('请选择策略').selectOption('pullback');
+    await generate.click();
+    await expect(page.getByText('分析已完成')).toBeVisible();
+    for (const name of ['重大事件', '相关新闻']) {
+      await nav.getByRole('button', { name }).click();
+      await expect(page.getByText(/暂无已收录/)).toBeVisible();
+      await expect(nav.getByRole('button')).toHaveCount(5);
+    }
+    await page.reload();
+    await expect(nav.getByRole('button', { name: '相关新闻' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('research opens independently and updates when selecting another stock', async ({ page }) => {
+    const api = await mockPlanApi(page);
+    await page.route('**/stocks/*/research/library', async route => {
+      const code = route.request().url().split('/').at(-3);
+      const reports = code === '000988' ? [{
+        title: '公司业绩点评', source: 'eastmoney', event_date: '2026-10-30',
+        payload: { title: '公司业绩点评', org: '测试券商', pages: 3, pdf_url: 'https://pdf.dfcfw.com/pdf/H3_AP123_1.pdf' },
+      }] : [];
+      await route.fulfill({ json: { stock_code: code, reports, eastmoney: { status: 'ok', synced_at: null } } });
+    });
+    await page.goto('/mine?code=000988&tab=research');
+    const link = page.getByRole('link', { name: '查看原文：公司业绩点评' });
+    await expect(link).toBeVisible({ timeout: 20_000 });
+    await expect(link).toHaveAttribute('href', 'https://pdf.dfcfw.com/pdf/H3_AP123_1.pdf');
+    await expect(link).toHaveAttribute('target', '_blank');
+    expect(api.calls.some(call => call.path.includes('/plan/stocks/000988'))).toBe(false);
+    await page.locator('button.row[data-code="002475"]').click();
+    await expect(page.getByText('近三年暂无这只股票的券商研报。')).toBeVisible();
+    await expect(link).toHaveCount(0);
+    await page.getByRole('button', { name: '明日计划', exact: true }).click();
+    await expect(page.getByTestId('mine-verdict')).toHaveText('持有');
+  });
+
   test('renders the account strip and the list with holdings first', async ({ page }) => {
     await openMine(page);
     const account = page.locator('.acct');
@@ -80,7 +137,7 @@ test.describe('我的股票 page', () => {
   test('empty account: 000988 sizes to 2,100 shares with the stop and the max loss', async ({ page }) => {
     await openMine(page, 'empty-account');
     await page.locator('.row[data-code="000988"]').click();
-    await expect(page).toHaveURL(/\/mine\?code=000988$/);
+    await expect(page).toHaveURL(/\/mine\?code=000988&tab=plan$/);
     const detail = page.locator('.detail');
     await expect(detail.getByRole('heading', { level: 2, name: '华工科技' })).toBeVisible();
     await expect(detail.getByTestId('mine-verdict')).toHaveText('买入');
@@ -339,7 +396,7 @@ test.describe('我的股票 page', () => {
     await page.route('**/api/v1/plan/stocks', async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: mineFixture('stocks-states.json') });
     });
-    await page.goto('/mine');
+    await page.goto('/mine?tab=plan');
     const failed = page.locator('.row[data-code="300750"]');
     await expect(failed.locator('.tag')).toHaveText('分析失败');
     await expect(failed).toContainText('模型两次超时');
@@ -399,7 +456,7 @@ test.describe('我的股票 page', () => {
     });
     await page.goto('/mine');
     const extra = page.getByRole('list', { name: '自选列表' });
-    await extra.getByRole('listitem').filter({ hasText: '002475' }).getByRole('button').click();
+    await extra.getByRole('listitem').filter({ hasText: '002475' }).getByRole('button', { name: '移出' }).click();
     await expect(extra).not.toContainText('002475');
     await expect(extra).toContainText('AAPL');
     await expect(page.getByRole('list', { name: '持仓' })).toContainText('002475');
@@ -429,7 +486,7 @@ test.describe('我的股票 page', () => {
       source: 'biying', points: [{ time: '09:15:00', price: 41.4 }, { time: '09:25:00', price: 41.2, volume: 1000 }],
     } }));
     await page.setViewportSize({ width: 1840, height: 900 });
-    await page.goto('/mine?code=002475');
+    await page.goto('/mine?code=002475&tab=plan');
     await page.getByRole('img', { name: /K 线图/ }).dblclick();
     const panel = page.getByRole('group', { name: /分时走势/ });
     await expect(panel.locator('.qi-readout')).toContainText('15:00');
@@ -478,12 +535,19 @@ test.describe('我的股票 page', () => {
     await expect(page.getByTestId('assistant-context-chip')).toContainText('立讯精密');
   });
 
-  test('503 shows the service-not-ready panel with retry', async ({ page }) => {
+  test('research stays accessible from the watchlist when plans are unavailable', async ({ page }) => {
     await mockPlanApi(page, { unavailable: true });
+    await page.route('**/stocks/watchlist', route => route.fulfill({ json: { stock_codes: ['603200'] } }));
+    await page.route('**/stocks/603200/research/library', route => route.fulfill({
+      json: { stock_code: '603200', reports: [], eastmoney: { status: 'unavailable', synced_at: null } },
+    }));
     await page.goto('/mine');
-    const panel = page.getByRole('alert').filter({ hasText: '次日计划服务未就绪' }).first();
-    await expect(panel).toBeVisible();
-    await expect(page.getByRole('button', { name: '重试' })).toBeVisible();
+    const panel = page.getByRole('region', { name: '我的自选' });
+    await expect(panel.getByRole('note')).toContainText('次日计划还没有就绪');
+    await expect(panel.getByRole('button', { name: '重试' })).toBeVisible();
+    await panel.getByRole('button', { name: '详情' }).click();
+    await page.getByRole('group', { name: '个股详情' }).getByRole('button', { name: '研报' }).click();
+    await expect(page.getByText('东方财富研报暂时无法更新。')).toBeVisible();
     await expect(page.getByRole('heading', { level: 1, name: '我的股票' })).toBeVisible();
   });
 
@@ -538,7 +602,7 @@ test.describe('我的股票 page', () => {
     await expect(page.locator('.side')).toBeVisible();
     await expect(page.locator('.detail')).toBeHidden();
     await page.locator('.row[data-code="000988"]').click();
-    await expect(page).toHaveURL(/\/mine\?code=000988$/);
+    await expect(page).toHaveURL(/\/mine\?code=000988&tab=plan$/);
     await expect(page.locator('.detail')).toBeVisible();
     await expect(page.locator('.side')).toBeHidden();
     const back = page.getByRole('button', { name: '‹ 返回列表' });
@@ -546,7 +610,7 @@ test.describe('我的股票 page', () => {
     await expect(back).toBeFocused();
     await expectNoOverflow(page, 'mobile detail');
     await back.click();
-    await expect(page).toHaveURL(/\/mine$/);
+    await expect(page).toHaveURL(/\/mine\?tab=plan$/);
     await expect(page.locator('.side')).toBeVisible();
     await expect(page.locator('.detail')).toBeHidden();
     await expect(page.locator('.row[data-code="000988"]')).toBeFocused();

@@ -561,6 +561,7 @@ class IntelligenceRepository:
         since: datetime,
         kinds: Optional[Sequence[str]] = None,
         limit: int = 10,
+        min_importance_or_breaking: Optional[int] = None,
     ) -> List[IntelligenceItem]:
         """Stored news about one A-share, newest first.
 
@@ -581,6 +582,9 @@ class IntelligenceRepository:
         conditions = [age >= since, or_(*matches)]
         if kinds:
             conditions.append(IntelligenceItem.item_kind.in_(list(kinds)))
+        if min_importance_or_breaking is not None:
+            conditions.append(or_(IntelligenceItem.is_breaking.is_(True),
+                                  IntelligenceItem.importance >= min_importance_or_breaking))
         with self.db.get_session() as session:
             rows = session.execute(
                 select(IntelligenceItem)

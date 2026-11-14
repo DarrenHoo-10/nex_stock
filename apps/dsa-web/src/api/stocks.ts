@@ -72,7 +72,38 @@ export type StockQuoteResponse = {
   updateTime?: string | null;
 };
 
+export interface ResearchLibrary {
+  stockCode: string;
+  eastmoney: { status: 'ok' | 'rate_limited' | 'unavailable'; syncedAt: string | null };
+  reports: Array<{
+    eventDate: string;
+    source: string;
+    title: string;
+    payload: {
+      title?: string; org?: string; rating?: string; infoCode?: string;
+      pages?: number; pdfUrl?: string;
+      forecasts?: Array<{ quarter: string; eps?: number }>;
+    };
+  }>;
+}
+
+export interface StockBrief {
+  title: string; source: string | null; date: string; url: string | null; label: string;
+}
+
 export const stocksApi = {
+  async getBriefs(code: string, section: 'events' | 'news'): Promise<StockBrief[]> {
+    const response = await apiClient.get<StockBrief[]>(`/api/v1/stocks/${encodeURIComponent(code)}/briefs`, {
+      params: { section },
+    });
+    return response.data;
+  },
+
+  async getResearchLibrary(code: string): Promise<ResearchLibrary> {
+    const response = await apiClient.get(`/api/v1/stocks/${encodeURIComponent(code)}/research/library`);
+    return toCamelCase<ResearchLibrary>(response.data);
+  },
+
   /** Daily K-line history (up to 1000 days). */
   async getHistory(
     stockCode: string,

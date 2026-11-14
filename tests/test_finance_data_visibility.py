@@ -10,6 +10,7 @@ from src.services.finance_data_visibility import api_tool_call_is_private, class
     ("GET", "/api/v1/screening/strategies", "public"),
     ("GET", "/api/v1/stocks/AAPL/profile", "private"),
     ("GET", "/api/v1/stocks/AAPL/research", "public"),
+    ("GET", "/api/v1/stocks/603200/research/library", "public"),
     ("GET", "/api/v1/data/overview", "public"),
     ("GET", "/api/v1/data/indices/000300/constituents", "public"),
     ("GET", "/api/v1/boards/anomalies", "public"),

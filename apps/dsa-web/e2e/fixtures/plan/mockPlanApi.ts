@@ -101,6 +101,10 @@ export async function mockPlanApi(page: Page, options: MockPlanApiOptions = {}):
         await json(route, { authEnabled: false, loggedIn: true, passwordSet: true, setupState: 'enabled' });
         return;
       }
+      if (path === '/api/v1/agent/skills') {
+        await json(route, { skills: [], default_skill_id: '' });
+        return;
+      }
       await json(route, { success: true, items: [], total: 0 });
     });
   }

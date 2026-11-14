@@ -287,6 +287,17 @@ class StockResearchResponse(BaseModel):
     fetch: Dict[str, object] = Field(default_factory=dict, description="本次按需从 Tushare 补取的结果（没有补取时为空）")
 
 
+class ResearchIndexStatus(BaseModel):
+    status: Literal["ok", "unavailable", "rate_limited"]
+    synced_at: Optional[str] = None
+
+
+class StockResearchLibraryResponse(BaseModel):
+    stock_code: str
+    reports: List[StockEventItem]
+    eastmoney: ResearchIndexStatus
+
+
 class StockCapitalResponse(BaseModel):
     """个股资金面：两融、主力资金、龙虎榜、北向。各部分独立，失败时该部分为 {status: failed, error}。"""
 

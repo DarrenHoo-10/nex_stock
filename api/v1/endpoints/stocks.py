@@ -30,6 +30,7 @@ from api.v1.schemas.stocks import (
     StockEventsResponse,
     StockCapitalResponse,
     StockResearchResponse,
+    StockResearchLibraryResponse,
     StockQaItem,
     StockQaResponse,
     StockHistoryResponse,
@@ -734,6 +735,56 @@ def get_stock_research(
         summary=research_summary(reports, _date.fromisoformat(as_of), days=days),
         reports=[StockEventItem(**{**event, "kind_label": KIND_LABELS["research"]}) for event in reports],
         fetch=result["fetch"],
+    )
+
+
+@router.get("/{stock_code}/briefs", summary="读取本地个股公告、业绩事件或相关新闻")
+def get_stock_briefs(stock_code: str, section: Literal["events", "news"],
+                     user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+    from datetime import datetime, timedelta
+    from src.repositories.intelligence_repo import IntelligenceRepository
+    from src.repositories.stock_event_repo import StockEventRepository
+    from src.services.news_akshare_source import CN_TZ
+    from src.services.news_digest_service import viewer_announcement_codes
+    from src.services.stock_event_service import KIND_LABELS
+
+    code = _require_a_share(stock_code)
+    today = datetime.now(CN_TZ).replace(tzinfo=None)
+    since = today - timedelta(days=90 if section == "events" else 30)
+    kinds = ("announcement",) if section == "events" else ("flash", "article")
+    own = viewer_announcement_codes(user.user_id) if section == "events" else None
+    rows = [] if own is not None and code not in own else IntelligenceRepository().list_stock_news(
+        code=code, since=since, kinds=kinds, limit=50,
+        min_importance_or_breaking=3 if section == "news" else None,
+    )
+    items = []
+    for row in rows:
+        items.append({"title": row.title, "source": row.source or row.source_name,
+                      "date": (row.published_at or row.fetched_at).isoformat(),
+                      "url": row.url if (row.url or "").startswith(("https://", "http://")) else None,
+                      "label": "公司公告" if section == "events" else "媒体报道"})
+    if section == "events":
+        events = StockEventRepository().list_for_code(
+            code, since=since.date(), until=today.date(),
+            kinds=("forecast", "express", "repurchase", "holder_trade", "pledge"),
+        )
+        items.extend({"title": row["title"], "source": row["source"], "date": row["event_date"],
+                      "url": None, "label": KIND_LABELS[row["kind"]]} for row in events)
+    return sorted(items, key=lambda item: item["date"], reverse=True)[:50]
+
+
+@router.get("/{stock_code}/research/library", response_model=StockResearchLibraryResponse,
+            summary="获取个股研报列表和原文入口")
+def get_research_library(stock_code: str, user: CurrentUser = Depends(get_current_user)) -> StockResearchLibraryResponse:
+    from datetime import date
+    from src.repositories.stock_event_repo import StockEventRepository
+    from src.services.research_library import library_for
+
+    code = _require_a_share(stock_code)
+    reports, status = library_for(StockEventRepository(), code, date.today(), **_on_demand_kwargs(user))
+    return StockResearchLibraryResponse(
+        stock_code=code, eastmoney=status,
+        reports=[StockEventItem(**row, kind_label="券商研报") for row in reports],
     )
 
 
