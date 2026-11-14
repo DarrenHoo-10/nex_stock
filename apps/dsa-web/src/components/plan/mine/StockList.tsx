@@ -1,10 +1,11 @@
 import type React from 'react';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LayoutGroup, motion } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { PLAN_INSTANT, PLAN_SPRING } from '../motion/springs';
 import { usePlanReducedMotion } from '../motion/usePlanMotion';
 import type { PlanVerdict, StockPlanSummary } from '../../../types/dailyPlan';
+import { StockSearchBox } from '../quote/StockSearchBox';
 import { changeClass, fmtPrice, fmtSignedPct, VERDICT_LABEL, VERDICT_TAG_CLASS } from './format';
 
 export interface StockListProps {
@@ -18,8 +19,6 @@ export interface StockListProps {
   /** Resolves with an error sentence, or null when the stock was added. */
   onAddWatch: (code: string) => Promise<string | null>;
 }
-
-const CODE_PATTERN = /^\d{6}$/;
 
 function stateTag(item: StockPlanSummary): { label: string; className: string } {
   // The backend may send a null verdict for a failed analysis.
@@ -98,12 +97,9 @@ export const StockList: React.FC<StockListProps> = ({ items, hasOtherWatch, sele
   const held = items.filter((item) => item.held);
   const watch = items.filter((item) => !item.held);
   const [adding, setAdding] = useState(false);
-  const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const errorId = useId();
   const wasAdding = useRef(false);
 
   // Give focus back to 「加自选」 after the inline form closes.
@@ -114,25 +110,13 @@ export const StockList: React.FC<StockListProps> = ({ items, hasOtherWatch, sele
     wasAdding.current = adding;
   }, [adding]);
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const value = code.trim();
-    if (!CODE_PATTERN.test(value)) {
-      setError('请输入 6 位股票代码。');
-      inputRef.current?.focus();
-      return;
-    }
-    setBusy(true);
-    const result = await onAddWatch(value);
-    setBusy(false);
-    if (result) {
-      setError(result);
-      inputRef.current?.focus();
-      return;
-    }
+  const add = async (code: string) => {
     setError(null);
-    setCode('');
-    setAdding(false);
+    setBusy(true);
+    const failure = await onAddWatch(code);
+    setBusy(false);
+    if (failure) setError(failure);
+    else setAdding(false);
   };
 
   return (
@@ -174,44 +158,21 @@ export const StockList: React.FC<StockListProps> = ({ items, hasOtherWatch, sele
       )}
       <div className="add-row">
         {adding ? (
-          <form className="add-watch" noValidate onSubmit={submit}>
-            <label className="vh" htmlFor={`${errorId}-input`}>
-              股票代码
-            </label>
-            <input
-              id={`${errorId}-input`}
-              ref={inputRef}
-              className="add-input"
-              inputMode="numeric"
-              maxLength={6}
-              autoComplete="off"
-              placeholder="6 位代码，如 000988"
-              value={code}
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? errorId : undefined}
-              onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))}
-              autoFocus
-            />
-            <button type="submit" className="btn sm" disabled={busy}>
-              {busy ? '添加中…' : '添加'}
-            </button>
+          <div className="add-watch" aria-busy={busy}>
+            <StockSearchBox purpose="watchlist" busy={busy} onOpen={(stock) => void add(stock.watchCode)} />
             <button
               type="button"
               className="btn quiet sm"
+              disabled={busy}
               onClick={() => {
                 setAdding(false);
                 setError(null);
-                setCode('');
               }}
             >
-              取消
+              {busy ? '添加中…' : '取消'}
             </button>
-            {error ? (
-              <p className="err" id={errorId} role="alert">
-                {error}
-              </p>
-            ) : null}
-          </form>
+            {error && <p className="err" role="alert">{error}</p>}
+          </div>
         ) : (
           <button ref={triggerRef} type="button" className="btn quiet sm" onClick={() => setAdding(true)}>
             + 加自选

@@ -12,13 +12,16 @@ const RESULT_LIMIT = 10;
 
 export interface StockSearchBoxProps {
   onOpen: (target: QuoteTarget) => void;
+  purpose?: 'quote' | 'watchlist';
+  busy?: boolean;
 }
 
 /**
- * Header search for stocks and ETFs. The symbol index (`stocks.index.json`) is loaded on first focus;
+ * Stock and ETF search for the header and inline watchlist picker. The symbol index (`stocks.index.json`) is loaded on first focus;
  * matching reuses the autocomplete scoring (code, name, pinyin, alias).
  */
-export const StockSearchBox: React.FC<StockSearchBoxProps> = ({ onOpen }) => {
+export const StockSearchBox: React.FC<StockSearchBoxProps> = ({ onOpen, purpose = 'quote', busy = false }) => {
+  const adding = purpose === 'watchlist';
   const { t } = useUiLanguage();
   const listId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -34,12 +37,16 @@ export const StockSearchBox: React.FC<StockSearchBoxProps> = ({ onOpen }) => {
     () => (trimmed ? searchStocks(trimmed, index, { limit: RESULT_LIMIT }) : []),
     [index, trimmed],
   );
-  const rawTarget = useMemo(() => (suggestions.length ? null : targetFromRawCode(trimmed)), [suggestions, trimmed]);
+  const rawTarget = !suggestions.length && (!adding || /^\d{6}$/.test(trimmed))
+    ? targetFromRawCode(trimmed)
+    : null;
   const showList = open && trimmed.length > 0;
   const safeHighlight = Math.min(highlight, Math.max(0, suggestions.length - 1));
 
   const choose = (target: QuoteTarget) => {
+    if (busy) return;
     onOpen(target);
+    if (adding) return;
     setQuery('');
     setOpen(false);
     setHighlight(0);
@@ -47,7 +54,7 @@ export const StockSearchBox: React.FC<StockSearchBoxProps> = ({ onOpen }) => {
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (composing || event.nativeEvent.isComposing) {
+    if (busy || composing || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
       return;
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -59,7 +66,7 @@ export const StockSearchBox: React.FC<StockSearchBoxProps> = ({ onOpen }) => {
       }
       return;
     }
-    if (event.key === 'Enter') {
+    if (event.key === 'Enter' && (open || !adding) && !event.repeat) {
       event.preventDefault();
       const selected = suggestions[safeHighlight];
       if (selected) {
@@ -94,13 +101,15 @@ export const StockSearchBox: React.FC<StockSearchBoxProps> = ({ onOpen }) => {
           ref={inputRef}
           type="search"
           value={query}
-          placeholder={t('quote.search.placeholder')}
-          aria-label={t('quote.search.label')}
+          autoFocus={adding}
+          readOnly={busy}
+          placeholder={t(adding ? 'watchlist.search.placeholder' : 'quote.search.placeholder')}
+          aria-label={t(adding ? 'watchlist.search.placeholder' : 'quote.search.label')}
           role="combobox"
           aria-expanded={showList}
           aria-controls={listId}
           aria-autocomplete="list"
-          aria-activedescendant={showList && suggestions.length ? `${listId}-${safeHighlight}` : undefined}
+          aria-activedescendant={showList && (suggestions.length > 0 || rawTarget) ? `${listId}-${safeHighlight}` : undefined}
           autoComplete="off"
           spellCheck={false}
           onFocus={() => {
@@ -155,7 +164,7 @@ export const StockSearchBox: React.FC<StockSearchBoxProps> = ({ onOpen }) => {
                 choose(rawTarget);
               }}
             >
-              <span className="qs-name">{t('quote.search.openCode', { code: rawTarget.displayCode })}</span>
+              <span className="qs-name">{t(adding ? 'watchlist.search.addCode' : 'quote.search.openCode', { code: rawTarget.displayCode })}</span>
             </li>
           ) : null}
           {status ? (

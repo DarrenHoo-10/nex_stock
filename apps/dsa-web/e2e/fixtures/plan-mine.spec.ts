@@ -428,12 +428,20 @@ test.describe('我的股票 page', () => {
     });
     await page.goto('/mine');
     await page.getByRole('button', { name: '+ 加自选' }).click();
-    await page.getByLabel('股票代码', { exact: true }).fill('12ab');
-    await expect(page.getByLabel('股票代码', { exact: true })).toHaveValue('12');
-    await page.getByRole('button', { name: '添加', exact: true }).click();
-    await expect(page.getByRole('alert').filter({ hasText: '请输入 6 位股票代码' })).toBeVisible();
-    await page.getByLabel('股票代码', { exact: true }).fill('600519');
-    await page.getByRole('button', { name: '添加', exact: true }).click();
+    const search = page.locator('.add-watch').getByRole('combobox');
+    await expect(search).toBeFocused();
+    await search.fill('不存在的股票名称');
+    await expect(page.getByText('没有匹配的股票或 ETF')).toBeVisible();
+    await search.press('Enter');
+    await search.fill('茅台');
+    const match = page.getByRole('option', { name: /贵州茅台.*600519/ });
+    await expect(match).toHaveAttribute('aria-selected', 'true');
+    await search.dispatchEvent('compositionstart');
+    await search.press('Enter');
+    await search.dispatchEvent('compositionend');
+    await expect(match).toBeVisible();
+    expect(seen).toHaveLength(0);
+    await search.press('Enter');
     await expect(page.getByText('已加入自选')).toBeVisible();
     expect(seen).toEqual([{ path: '/api/v1/stocks/watchlist/add', body: { stock_code: '600519' } }]);
 
@@ -444,6 +452,33 @@ test.describe('我的股票 page', () => {
     await expect(page.locator('.row[data-code="002475"]')).toHaveAttribute('aria-current', 'true');
     await expect(page.getByText('已移出自选')).toBeVisible();
     expect(seen[1]).toEqual({ path: '/api/v1/stocks/watchlist/remove', body: { stock_code: '000988' } });
+  });
+
+  test('watchlist picker adds the keyboard selection and accepts an unlisted six-digit code', async ({ page }) => {
+    await mockPlanApi(page);
+    const codes: string[] = [];
+    await page.route('**/api/v1/stocks/watchlist/add', route => {
+      codes.push(route.request().postDataJSON().stock_code);
+      return route.fulfill({ json: { stock_codes: codes } });
+    });
+    await page.goto('/mine');
+    const trigger = page.getByRole('button', { name: '+ 加自选' });
+    await trigger.click();
+    const search = page.locator('.add-watch').getByRole('combobox');
+    await search.fill('银行');
+    const options = page.locator('.add-watch').getByRole('option');
+    await expect(options.nth(1)).toBeVisible();
+    const secondCode = await options.nth(1).locator('.qs-code').innerText();
+    await search.press('ArrowDown');
+    await expect(options.nth(1)).toHaveAttribute('aria-selected', 'true');
+    await search.press('Enter');
+    await expect(trigger).toBeFocused();
+    await trigger.click();
+    await search.fill('999999');
+    await expect(options.first()).toContainText('添加 999999 到自选');
+    await search.press('Enter');
+    await expect(trigger).toBeFocused();
+    expect(codes).toEqual([secondCode, '999999']);
   });
 
   test('removing a watched holding keeps the holding and other watch entries', async ({ page }) => {

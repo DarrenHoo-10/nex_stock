@@ -389,7 +389,7 @@ const MinePage: React.FC = () => {
                   录入持仓
                 </button>
               </div>
-              <p className="note">也可以在左侧「+ 加自选」里直接输入 6 位代码。</p>
+              <p className="note">也可以点左侧「+ 加自选」，输入股票名称或代码，按回车添加。</p>
             </section>
           ) : selectedCode && !selectedSummary && fallbackDetail ? (
             fallbackDetail
