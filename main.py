@@ -54,7 +54,7 @@ if _packaged_import_probe:
         probe_module = importlib.import_module(_packaged_import_probe)
         if _packaged_import_probe == "py_mini_racer":
             # Importing the Python wrapper does not load V8 or its data files.
-            # Exercise the installed runtime to detect missing/mismatched assets.
+            # Evaluate a script to check that the bundled V8 assets load correctly.
             engine = probe_module.MiniRacer()
             try:
                 if engine.eval("1 + 1") != 2:
